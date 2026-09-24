@@ -332,9 +332,6 @@ func (f *fakeGitHub) GenerateJITConfig(_ context.Context, _ int, name string) (g
 	if f.jitErr != nil {
 		return github.JITConfig{}, f.jitErr
 	}
-	if _, ok := f.runners[name]; ok {
-		return github.JITConfig{}, fmt.Errorf("generate: %w", github.ErrRunnerExists)
-	}
 	f.nextID++
 	f.runners[name] = f.nextID
 	return newJIT(f.nextID, name), nil

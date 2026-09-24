@@ -116,8 +116,8 @@ func (c *Controller) retire(ctx context.Context, vmid int, running bool, runnerN
 		}
 	}
 	if running {
-		if err := c.pve.Stop(ctx, vmid); err != nil && !proxmox.IsNotFound(err) {
-			// The VM may have powered itself off in the meantime; Destroy tells.
+		// If the stop fails, the VM may have powered itself off or be gone already; Destroy tells.
+		if err := c.pve.Stop(ctx, vmid); err != nil {
 			c.logger.InfoContext(ctx, "stopping worker failed; destroying anyway", slog.Int("vmid", vmid),
 				slog.String("error", err.Error()))
 		}
@@ -232,9 +232,9 @@ func (c *Controller) create(ctx context.Context, s *scaleSetState, template prox
 		return fmt.Errorf("grow disk: %w", err)
 	}
 
-	jit, err := c.generateJIT(ctx, s.id, name)
+	jit, err := c.gh.GenerateJITConfig(ctx, s.id, name)
 	if err != nil {
-		return err
+		return fmt.Errorf("register runner: %w", err)
 	}
 	registered = true
 
@@ -258,22 +258,6 @@ func (c *Controller) create(ctx context.Context, s *scaleSetState, template prox
 	}
 	log.InfoContext(ctx, "worker ready", slog.Duration("took", c.now().Sub(created)))
 	return nil
-}
-
-// generateJIT registers the worker's runner. If a runner with the name already exists, which only a retried
-// creation of the same VM can cause, it is removed and registered again.
-func (c *Controller) generateJIT(ctx context.Context, scaleSetID int, name string) (github.JITConfig, error) {
-	jit, err := c.gh.GenerateJITConfig(ctx, scaleSetID, name)
-	if errors.Is(err, github.ErrRunnerExists) {
-		if err := c.removeRunner(ctx, name); err != nil {
-			return github.JITConfig{}, fmt.Errorf("replace existing runner: %w", err)
-		}
-		jit, err = c.gh.GenerateJITConfig(ctx, scaleSetID, name)
-	}
-	if err != nil {
-		return github.JITConfig{}, fmt.Errorf("register runner: %w", err)
-	}
-	return jit, nil
 }
 
 // waitForAgent pings the worker's guest agent until it answers or deadline passes.

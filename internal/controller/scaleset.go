@@ -23,21 +23,21 @@ type scaleSetState struct {
 	// controller neither adds nor retires workers, so a restart doesn't disturb running ones.
 	desired int
 	known   bool
-	// jobs maps runner names to the job each is running, from JobStarted (or GitHub refusing to remove the runner)
-	// until JobCompleted.
-	jobs map[string]string
+	// busy holds the runners running a job, from JobStarted (or GitHub refusing to remove the runner) until
+	// JobCompleted.
+	busy map[string]bool
 	// retryAfter holds off new workers after a failed creation.
 	retryAfter time.Time
 }
 
 func newScaleSetState(cfg config.ScaleSet, wake func()) *scaleSetState {
-	return &scaleSetState{cfg: cfg, wake: wake, jobs: map[string]string{}}
+	return &scaleSetState{cfg: cfg, wake: wake, busy: map[string]bool{}}
 }
 
 // DesiredRunners implements github.Handler. The target is minRunners idle workers on top of one per assigned job,
 // capped at maxRunners.
 func (s *scaleSetState) DesiredRunners(_ context.Context, assignedJobs int) (int, error) {
-	target := min(s.cfg.MaxRunners, s.cfg.MinRunners+max(assignedJobs, 0))
+	target := min(s.cfg.MaxRunners, s.cfg.MinRunners+assignedJobs)
 	s.mu.Lock()
 	changed := !s.known || s.desired != target
 	s.desired, s.known = target, true
@@ -51,7 +51,7 @@ func (s *scaleSetState) DesiredRunners(_ context.Context, assignedJobs int) (int
 // JobStarted implements github.Handler.
 func (s *scaleSetState) JobStarted(_ context.Context, job github.Job) error {
 	s.mu.Lock()
-	s.jobs[job.RunnerName] = job.JobID
+	s.busy[job.RunnerName] = true
 	s.mu.Unlock()
 	return nil
 }
@@ -60,7 +60,7 @@ func (s *scaleSetState) JobStarted(_ context.Context, job github.Job) error {
 // destroys it.
 func (s *scaleSetState) JobCompleted(_ context.Context, job github.Job) error {
 	s.mu.Lock()
-	delete(s.jobs, job.RunnerName)
+	delete(s.busy, job.RunnerName)
 	s.mu.Unlock()
 	s.wake()
 	return nil
@@ -73,27 +73,24 @@ func (s *scaleSetState) target() (int, bool) {
 	return s.desired, s.known
 }
 
-// jobFor returns the job a runner is running, if the controller has heard of one.
-func (s *scaleSetState) jobFor(runner string) (string, bool) {
+// hasJob reports whether the controller knows the runner is running a job.
+func (s *scaleSetState) hasJob(runner string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	job, ok := s.jobs[runner]
-	return job, ok
+	return s.busy[runner]
 }
 
 // markRunning records that a runner is in a job the controller didn't hear about: GitHub refused to remove it.
 func (s *scaleSetState) markRunning(runner string) {
 	s.mu.Lock()
-	if _, ok := s.jobs[runner]; !ok {
-		s.jobs[runner] = ""
-	}
+	s.busy[runner] = true
 	s.mu.Unlock()
 }
 
 // forget drops what the scale set knows about a runner whose worker is gone.
 func (s *scaleSetState) forget(runner string) {
 	s.mu.Lock()
-	delete(s.jobs, runner)
+	delete(s.busy, runner)
 	s.mu.Unlock()
 }
 

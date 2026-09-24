@@ -186,7 +186,7 @@ func (c *Controller) scale(ctx context.Context, s *scaleSetState, v view, now ti
 			continue
 		}
 		active++
-		if _, running := s.jobFor(w.name); !running {
+		if !s.hasJob(w.name) {
 			idle = append(idle, w)
 		}
 	}
