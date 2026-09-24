@@ -102,8 +102,10 @@ The default spec matches the standard GitHub-hosted `ubuntu-latest` runner for p
 GitHub's 14 GB is the free space a job gets, not the size of the disk. Each worker's disk is the template's disk
 size plus `freeDiskGiB` (14 by default), because a clone's disk can grow but can't be smaller than its template's.
 
-You can override any of these in the controller config, which the installer writes to
-`/etc/proxmox-actions-runners/config.yaml` in the controller VM. *Planned* example:
+You can override any of these in the controller config, for all scale sets in a top-level `worker:` block or for one
+scale set in its own `worker:` block. The installer writes the config to `/etc/proxmox-actions-runners/config.yaml`
+in the controller VM, and `parcon check config` validates it. Example (also in
+[`deploy/config.example.yaml`](deploy/config.example.yaml)):
 
 ```yaml
 proxmox:
@@ -128,13 +130,16 @@ github:
 metrics:
   listen: 127.0.0.1:9465  # nginx serves it on the LAN at https://<controller-ip>:9464/
 
+worker:            # controller-wide; omit to use the GitHub-matching defaults (2 cores, 8 GiB, 14 GiB free)
+  cores: 2
+
 scaleSets:
   - name: proxmox-ubuntu-26.04
     labels: [proxmox-ubuntu-26.04]
     minRunners: 0
     maxRunners: 3    # start low and raise after measuring host contention
     maxLifetime: 6h  # hard limit per worker VM, matching the hosted job limit
-    worker:          # omit to use the GitHub-matching defaults
+    worker:          # overrides the controller-wide `worker:` block, which defaults to the GitHub-matching spec
       cores: 4
       memoryMiB: 16384
       freeDiskGiB: 50  # added on top of the template's disk size
@@ -206,7 +211,8 @@ only on the `par-runners` pool, the target storage, and the worker network:
 `VM.GuestAgent.Unrestricted` lets the token run commands as root in any VM in `par-runners`. That is accepted: those
 VMs are disposable and already fully under the controller's control, and the token can't reach `par-system`.
 
-To build from source, you need **Go** (see `go.mod`) and **Packer**, which CI uses to build the base images.
+To build from source, use the dev container in `.devcontainer/`, which has Go, Packer, and every other tool at
+pinned versions. See [AGENTS.md](AGENTS.md#development-environment).
 
 ## Limitations
 

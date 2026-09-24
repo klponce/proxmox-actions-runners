@@ -1,0 +1,38 @@
+# Example controller config. The installer writes the real one to /etc/proxmox-actions-runners/config.yaml in the
+# controller VM. All values here are placeholders.
+
+proxmox:
+  url: https://pve.example.com:8006/api2/json
+  tokenId: par@pve!controller
+  tokenSecretFile: /etc/proxmox-actions-runners/pve-token
+  tlsFingerprint: "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+  node: pve1
+  pool: par-runners
+  storage: local-lvm
+  vnet: parnet                     # the worker network the installer creates
+  vmidRange: { start: 10000, end: 10999 }
+  linkedClone: true                # the template is found by its tags, not a fixed VMID
+
+github:
+  configUrl: https://github.com/my-org
+  app:
+    clientId: Iv23liEXAMPLE0000000   # written by the installer's App setup
+    installationId: 7890123
+    privateKeyFile: /etc/proxmox-actions-runners/github-app.pem
+
+metrics:
+  listen: 127.0.0.1:9465  # nginx serves it on the LAN at https://<controller-ip>:9464/
+
+worker:            # controller-wide; omit to use the GitHub-matching defaults (2 cores, 8 GiB, 14 GiB free)
+  cores: 2
+
+scaleSets:
+  - name: proxmox-ubuntu-26.04
+    labels: [proxmox-ubuntu-26.04]
+    minRunners: 0
+    maxRunners: 3    # start low and raise after measuring host contention
+    maxLifetime: 6h  # hard limit per worker VM, matching the hosted job limit
+    worker:          # overrides the controller-wide worker for this scale set
+      cores: 4
+      memoryMiB: 16384
+      freeDiskGiB: 50  # added on top of the template's disk size
