@@ -3,7 +3,6 @@ package proxmox
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -138,20 +137,6 @@ func parentPath(path string) string {
 	return path[:i]
 }
 
-// VNetPaths returns the ACL paths the permissions mention for an SDN VNet, /sdn/zones/<zone>/<vnet>, whatever
-// its zone. The controller's config names the VNet but not its zone.
-func (p Permissions) VNetPaths(vnet string) []string {
-	var paths []string
-	for path := range p {
-		parts := strings.Split(path, "/")
-		if len(parts) == 5 && parts[1] == "sdn" && parts[2] == "zones" && parts[4] == vnet {
-			paths = append(paths, path)
-		}
-	}
-	sort.Strings(paths)
-	return paths
-}
-
 // Requirement is a set of privileges the controller needs on one ACL path.
 type Requirement struct {
 	Path       string
@@ -174,17 +159,15 @@ var (
 	vnetPrivileges    = []string{"SDN.Use"}
 )
 
-// RequiredPrivileges returns what the controller's token needs on the runner pool and the target storage. The VNet
-// requirement is separate (VNetPrivileges), because its ACL path includes a zone the config doesn't name.
-func RequiredPrivileges(pool, storage string) []Requirement {
+// RequiredPrivileges returns what the controller's token needs on the runner pool, the target storage, and the
+// worker VNet in its SDN zone.
+func RequiredPrivileges(pool, storage, zone, vnet string) []Requirement {
 	return []Requirement{
 		{Path: "/pool/" + pool, Privileges: poolPrivileges},
 		{Path: "/storage/" + storage, Privileges: storagePrivileges},
+		{Path: "/sdn/zones/" + zone + "/" + vnet, Privileges: vnetPrivileges},
 	}
 }
-
-// VNetPrivileges returns the privileges the controller needs on the worker VNet.
-func VNetPrivileges() []string { return vnetPrivileges }
 
 // Missing returns the privileges in req that p doesn't grant on req.Path.
 func (p Permissions) Missing(req Requirement) []string {
@@ -195,20 +178,4 @@ func (p Permissions) Missing(req Requirement) []string {
 		}
 	}
 	return missing
-}
-
-// MissingOnVNet returns the VNet privileges p doesn't grant on any /sdn/zones/<zone>/<vnet> path, and the path
-// they were checked on. If no path mentions the VNet, every privilege is missing and path is empty.
-func (p Permissions) MissingOnVNet(vnet string) (path string, missing []string) {
-	best := []string(nil)
-	for i, candidate := range p.VNetPaths(vnet) {
-		m := p.Missing(Requirement{Path: candidate, Privileges: vnetPrivileges})
-		if i == 0 || len(m) < len(best) {
-			path, best = candidate, m
-		}
-	}
-	if path == "" {
-		return "", append([]string(nil), vnetPrivileges...)
-	}
-	return path, best
 }

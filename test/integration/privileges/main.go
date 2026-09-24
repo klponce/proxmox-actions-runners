@@ -12,10 +12,9 @@ import (
 
 func main() {
 	var privs []string
-	for _, req := range proxmox.RequiredPrivileges("pool", "storage") {
+	for _, req := range proxmox.RequiredPrivileges("pool", "storage", "zone", "vnet") {
 		privs = append(privs, req.Privileges...)
 	}
-	privs = append(privs, proxmox.VNetPrivileges()...)
 	slices.Sort(privs)
 	for _, p := range slices.Compact(privs) {
 		fmt.Println(p)

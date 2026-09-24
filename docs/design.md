@@ -106,6 +106,8 @@ A JIT config is a credential: it can register a runner until it is used. It goes
 agent** (`agent/file-write`) after boot, not through cloud-init. Proxmox stores custom cloud-init user data as
 snippet files on node storage and references them from the VM config, so a JIT config passed that way would stay on
 disk outside the VM. The guest agent writes directly into the running guest, and the controller keeps nothing.
+The guest agent creates a file before it writes the content, so the controller then writes an empty marker file, and
+the runner service waits for the marker rather than the config.
 
 Cloud-init is still used for non-secret per-VM settings such as the hostname.
 
@@ -144,9 +146,12 @@ safe to apply again after a crash:
   if its runner is still in a job.
 - **Missing runners.** A ready, running worker whose runner is no longer registered in GitHub is destroyed. The check
   starts 10 minutes after creation and repeats every 5 minutes, with a bounded number of lookups per pass.
-- **Removed scale sets.** Workers of a scale set that is no longer in the config are retired once they're idle.
+- **Removed scale sets.** Workers of a scale set that is no longer in the config are retired once they're idle, and
+  the default `maxLifetime` still applies to them.
+- **Retrying.** Retiring a half-created worker or one of a removed scale set waits for its runner's job. While the job
+  runs, the controller asks GitHub again only at the missing-runner check interval.
 - **Scaling down.** Surplus idle workers are retired oldest first. GitHub refuses to remove a runner that is running a
-  job, and the controller then leaves that worker alone.
+  job. The controller then counts that worker as busy, even if it missed the job's start, and picks another one.
 
 Retiring a worker unregisters its runner, stops the VM, and destroys it; each step accepts that its target may already
 be gone. VMIDs come from the configured range, lowest free first. An ID Proxmox reports as taken by a VM the token

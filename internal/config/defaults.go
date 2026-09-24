@@ -17,6 +17,9 @@ const (
 	// DefaultMaxLifetime matches the job time limit on GitHub-hosted runners.
 	DefaultMaxLifetime = 6 * time.Hour
 
+	// DefaultZone is the SDN zone the installer creates for the worker VNet.
+	DefaultZone = "parzone"
+
 	DefaultMetricsListen = "127.0.0.1:9465"
 	DefaultLinkedClone   = true
 
@@ -59,6 +62,9 @@ func (c *Config) applyDefaults() {
 		(u.Path == "" || u.Path == "/") {
 		u.Path = proxmoxAPIPath
 		c.Proxmox.URL = u.String()
+	}
+	if c.Proxmox.Zone == "" {
+		c.Proxmox.Zone = DefaultZone
 	}
 	if c.Proxmox.LinkedClone == nil {
 		linked := DefaultLinkedClone

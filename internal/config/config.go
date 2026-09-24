@@ -48,6 +48,8 @@ type Proxmox struct {
 	Pool string `yaml:"pool"`
 	// Storage is where clones are created.
 	Storage string `yaml:"storage"`
+	// Zone is the SDN zone that holds VNet. Empty means DefaultZone, the zone the installer creates.
+	Zone string `yaml:"zone"`
 	// VNet is the worker network's SDN VNet.
 	VNet string `yaml:"vnet"`
 	// VMIDRange is the range new VMs take their IDs from.

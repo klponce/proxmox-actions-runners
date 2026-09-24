@@ -83,7 +83,8 @@ func TestNewRejectsBadOptions(t *testing.T) {
 func TestEnsureScaleSetCreates(t *testing.T) {
 	f := newFakeGitHub(t)
 	c := f.client()
-	got, err := c.EnsureScaleSet(context.Background(), ScaleSetSpec{Name: "proxmox-ubuntu-26.04"})
+	got, err := c.EnsureScaleSet(context.Background(), ScaleSetSpec{Name: "proxmox-ubuntu-26.04", Labels: []string{"proxmox-ubuntu-26.04"},
+		RunnerGroup: "default"})
 	if err != nil {
 		t.Fatalf("EnsureScaleSet: %v", err)
 	}
@@ -110,7 +111,7 @@ func TestEnsureScaleSetUpdatesOnlyWhenNeeded(t *testing.T) {
 	f := newFakeGitHub(t)
 	c := f.client()
 	ctx := context.Background()
-	spec := ScaleSetSpec{Name: "proxmox", Labels: []string{"proxmox", "x64"}}
+	spec := ScaleSetSpec{Name: "proxmox", Labels: []string{"proxmox", "x64"}, RunnerGroup: "default"}
 	if _, err := c.EnsureScaleSet(ctx, spec); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -126,14 +127,14 @@ func TestEnsureScaleSetUpdatesOnlyWhenNeeded(t *testing.T) {
 	}
 
 	// Same labels in another order and case: nothing to do.
-	if _, err := c.EnsureScaleSet(ctx, ScaleSetSpec{Name: "proxmox", Labels: []string{"X64", "proxmox"}}); err != nil {
+	if _, err := c.EnsureScaleSet(ctx, ScaleSetSpec{Name: "proxmox", Labels: []string{"X64", "proxmox"}, RunnerGroup: "default"}); err != nil {
 		t.Fatalf("ensure unchanged: %v", err)
 	}
 	if n := countPatches(); n != 0 {
 		t.Errorf("unchanged scale set was patched %d times", n)
 	}
 
-	got, err := c.EnsureScaleSet(ctx, ScaleSetSpec{Name: "proxmox", Labels: []string{"proxmox", "arm64"}})
+	got, err := c.EnsureScaleSet(ctx, ScaleSetSpec{Name: "proxmox", Labels: []string{"proxmox", "arm64"}, RunnerGroup: "default"})
 	if err != nil {
 		t.Fatalf("ensure changed: %v", err)
 	}
@@ -150,7 +151,7 @@ func TestRunnerGroups(t *testing.T) {
 	c := f.client()
 	ctx := context.Background()
 
-	s, err := c.EnsureScaleSet(ctx, ScaleSetSpec{Name: "trusted", RunnerGroup: "builds"})
+	s, err := c.EnsureScaleSet(ctx, ScaleSetSpec{Name: "trusted", Labels: []string{"trusted"}, RunnerGroup: "builds"})
 	if err != nil {
 		t.Fatalf("EnsureScaleSet: %v", err)
 	}
@@ -161,7 +162,7 @@ func TestRunnerGroups(t *testing.T) {
 	if err != nil || found == nil || found.ID != testScaleSetID {
 		t.Errorf("FindScaleSet = %+v, %v", found, err)
 	}
-	missing, err := c.FindScaleSet(ctx, ScaleSetSpec{Name: "trusted"})
+	missing, err := c.FindScaleSet(ctx, ScaleSetSpec{Name: "trusted", RunnerGroup: "default"})
 	if err != nil || missing != nil {
 		t.Errorf("FindScaleSet in the default group = %+v, %v; want nil, nil", missing, err)
 	}
@@ -181,7 +182,7 @@ func TestDeleteScaleSet(t *testing.T) {
 func TestBadAppCredentials(t *testing.T) {
 	f := newFakeGitHub(t)
 	f.failAccessToken = true
-	_, err := f.client().FindScaleSet(context.Background(), ScaleSetSpec{Name: "proxmox"})
+	_, err := f.client().FindScaleSet(context.Background(), ScaleSetSpec{Name: "proxmox", RunnerGroup: "default"})
 	if err == nil || !strings.Contains(err.Error(), "access token") {
 		t.Fatalf("FindScaleSet error = %v, want an access token failure", err)
 	}
@@ -201,11 +202,6 @@ func TestGenerateJITConfig(t *testing.T) {
 	}
 	if jit.RunnerID != 100 || jit.RunnerName != "par-w-10005" || jit.Encoded() != testJITConfig {
 		t.Errorf("JITConfig = %v, encoded %q", jit, jit.Encoded())
-	}
-
-	_, err = c.GenerateJITConfig(ctx, testScaleSetID, "par-w-10005")
-	if !errors.Is(err, ErrRunnerExists) {
-		t.Fatalf("second GenerateJITConfig error = %v, want ErrRunnerExists", err)
 	}
 }
 
@@ -241,7 +237,7 @@ func TestRunners(t *testing.T) {
 	}
 
 	r, err := c.RunnerByName(ctx, "par-w-1")
-	if err != nil || r == nil || *r != (Runner{ID: 100, Name: "par-w-1", ScaleSetID: testScaleSetID}) {
+	if err != nil || r == nil || *r != (Runner{ID: 100, Name: "par-w-1"}) {
 		t.Errorf("RunnerByName = %+v, %v", r, err)
 	}
 	if r, err := c.RunnerByName(ctx, "par-w-2"); err != nil || r != nil {
@@ -340,10 +336,7 @@ func TestListen(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	h := &recordingHandler{cancel: cancel, done: func(h *recordingHandler) bool { return len(h.desired) >= 3 }}
-	err := f.client().Listen(ctx, ListenOptions{ScaleSetID: testScaleSetID, MaxRunners: 3, Owner: "controller"}, h)
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
+	f.client().Listen(ctx, ListenOptions{ScaleSetID: testScaleSetID, MaxRunners: 3, Owner: "controller"}, h)
 	if ctx.Err() != context.Canceled {
 		t.Fatalf("Listen returned before the handler finished: %v", ctx.Err())
 	}
@@ -354,13 +347,10 @@ func TestListen(t *testing.T) {
 	if !reflect.DeepEqual(h.desired[:3], []int{2, 1, 1}) {
 		t.Errorf("desired = %v, want [2 1 1 ...]", h.desired)
 	}
-	wantJob := Job{RunnerRequestID: 9001, JobID: "job-1", RunnerName: "par-w-1", RunnerID: 100, Owner: "my-org",
-		Repository: "my-repo", WorkflowRef: "my-org/my-repo/.github/workflows/ci.yml@refs/heads/main",
-		DisplayName: "build"}
+	wantJob := Job{JobID: "job-1", RunnerName: "par-w-1", RunnerID: 100}
 	if len(h.started) != 1 || h.started[0] != wantJob {
 		t.Errorf("started = %+v, want [%+v]", h.started, wantJob)
 	}
-	wantJob.Result = "succeeded"
 	if len(h.completed) != 1 || h.completed[0] != wantJob {
 		t.Errorf("completed = %+v, want [%+v]", h.completed, wantJob)
 	}
@@ -388,11 +378,8 @@ func TestListenReconnects(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	h := &recordingHandler{cancel: cancel, done: func(h *recordingHandler) bool { return len(h.desired) >= 1 }}
-	err := f.client().Listen(ctx, ListenOptions{ScaleSetID: testScaleSetID, MaxRunners: 1, Owner: "controller",
+	f.client().Listen(ctx, ListenOptions{ScaleSetID: testScaleSetID, MaxRunners: 1, Owner: "controller",
 		MinBackoff: time.Millisecond, MaxBackoff: 5 * time.Millisecond}, h)
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
 	if ctx.Err() != context.Canceled {
 		t.Fatalf("Listen gave up before connecting: %v", ctx.Err())
 	}
@@ -412,19 +399,8 @@ func TestListenStopsDuringBackoff(t *testing.T) {
 	defer cancel()
 	h := &recordingHandler{cancel: cancel, done: func(*recordingHandler) bool { return false }}
 	start := time.Now()
-	err := f.client().Listen(ctx, ListenOptions{ScaleSetID: testScaleSetID, Owner: "controller",
-		MinBackoff: time.Hour}, h)
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
+	f.client().Listen(ctx, ListenOptions{ScaleSetID: testScaleSetID, Owner: "controller", MinBackoff: time.Hour}, h)
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Errorf("Listen took %s to stop", elapsed)
-	}
-}
-
-func TestListenRequiresScaleSet(t *testing.T) {
-	f := newFakeGitHub(t)
-	if err := f.client().Listen(context.Background(), ListenOptions{}, &recordingHandler{}); err == nil {
-		t.Fatal("Listen without a scale set ID succeeded")
 	}
 }

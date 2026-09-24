@@ -73,12 +73,25 @@ func TestScaleUpCreatesReadyWorkers(t *testing.T) {
 		if got := vm.files[JITConfigPath]; got != "jit-for-"+name {
 			t.Errorf("VM %d JIT config = %q, want the one for %s", vmid, got, name)
 		}
+		if _, ok := vm.files[JITReadyPath]; !ok {
+			t.Errorf("VM %d didn't get the JIT ready marker", vmid)
+		}
 		if !h.gh.hasRunner(name) {
 			t.Errorf("runner %s isn't registered", name)
 		}
 		if strings.Contains(vm.config["description"], "jit-for") {
 			t.Errorf("VM %d description leaks the JIT config", vmid)
 		}
+	}
+
+	var writes []string
+	for _, call := range h.pve.calls {
+		if strings.HasPrefix(call, "write 10000 ") {
+			writes = append(writes, call)
+		}
+	}
+	if want := []string{"write 10000 " + JITConfigPath, "write 10000 " + JITReadyPath}; !reflect.DeepEqual(writes, want) {
+		t.Errorf("writes = %v, want the config and then the ready marker", writes)
 	}
 
 	// Already at the target: another pass changes nothing.
@@ -143,6 +156,16 @@ func TestNewestTemplateIsUsed(t *testing.T) {
 	}
 }
 
+func TestNegativeTemplateVersion(t *testing.T) {
+	h := newHarness(t, testConfig())
+	h.pve.addTemplate(testTemplateID, -1)
+	h.want(1)
+	h.pass()
+	if len(h.pve.calls) == 0 || h.pve.calls[0] != "clone 9000->10000 full=false" {
+		t.Errorf("first call = %v, want a linked clone of template 9000", h.pve.calls)
+	}
+}
+
 func TestFullClones(t *testing.T) {
 	cfg := testConfig()
 	full := false
@@ -168,7 +191,7 @@ func TestFinishedWorkerIsReplaced(t *testing.T) {
 	ctx := context.Background()
 	s := h.c.scaleSets[testScaleSet]
 	_ = s.JobStarted(ctx, github.Job{RunnerName: name, JobID: "job-1"})
-	_ = s.JobCompleted(ctx, github.Job{RunnerName: name, JobID: "job-1", Result: "succeeded"})
+	_ = s.JobCompleted(ctx, github.Job{RunnerName: name, JobID: "job-1"})
 	// GitHub hasn't caught up yet and still reports the runner busy; the VM is off, so it goes anyway.
 	h.gh.setBusy(name, true)
 	h.pve.setStatus(first, "stopped")
@@ -222,9 +245,30 @@ func TestScaleDownRetiresOldestIdleWorkers(t *testing.T) {
 	if got := h.readyWorkers(); !reflect.DeepEqual(got, []int{ids[0], ids[1]}) {
 		t.Errorf("workers after scale down = %v, want the two busy ones %v", got, ids[:2])
 	}
-	h.pass() // the busy worker refuses to go on every pass; nothing else changes
-	if got := h.readyWorkers(); len(got) != 2 {
-		t.Errorf("workers after another pass = %v", got)
+	calls := len(h.gh.removed)
+	h.pass() // the refusal marked the oldest worker busy, so nothing is retried
+	if got := h.readyWorkers(); len(got) != 2 || len(h.gh.removed) != calls {
+		t.Errorf("workers after another pass = %v, removed runners %v", got, h.gh.removed)
+	}
+}
+
+func TestScaleDownSkipsWorkerThatRefused(t *testing.T) {
+	h := newHarness(t, testConfig())
+	h.pve.addTemplate(testTemplateID, 1)
+	for range 3 {
+		h.want(len(h.readyWorkers()) + 1)
+		h.pass()
+		h.clock.Advance(time.Minute)
+	}
+	ids := h.readyWorkers()
+	// The oldest runner is in a job the controller didn't hear about, as after a restart.
+	h.gh.setBusy(h.nameOf(ids[0]), true)
+
+	h.want(2)
+	h.pass() // the oldest refuses to go
+	h.pass() // the next oldest idle worker goes instead
+	if got := h.readyWorkers(); !reflect.DeepEqual(got, []int{ids[0], ids[2]}) {
+		t.Errorf("workers after scale down = %v, want %v", got, []int{ids[0], ids[2]})
 	}
 }
 
@@ -297,9 +341,30 @@ func TestRemovedScaleSet(t *testing.T) {
 		t.Errorf("VMs left = %v, want only the busy worker of the removed scale set", got)
 	}
 	h.gh.setBusy(busyName, false)
+	h.pass() // GitHub is asked again only after RunnerCheckEvery
+	if got := h.pve.ids(); !reflect.DeepEqual(got, []int{10001}) {
+		t.Errorf("VMs left = %v, want the retirement retried only after RunnerCheckEvery", got)
+	}
+	h.clock.Advance(5 * time.Minute)
 	h.pass()
 	if got := h.pve.ids(); len(got) != 0 {
 		t.Errorf("VMs left = %v after its job ended", got)
+	}
+}
+
+func TestRemovedScaleSetKeepsDefaultMaxLifetime(t *testing.T) {
+	h := newHarness(t, testConfig())
+	h.pve.add(proxmox.VM{VMID: 10000, Pool: testPool, Status: "running", Tags: workerTags("old", testStart, true)})
+	name := workerName(10000, testStart)
+	if _, err := h.gh.GenerateJITConfig(context.Background(), testScaleSetID, name); err != nil {
+		t.Fatal(err)
+	}
+	h.gh.setBusy(name, true) // stuck in a job
+
+	h.clock.Advance(config.DefaultMaxLifetime + time.Second)
+	h.pass()
+	if got := h.pve.ids(); len(got) != 0 {
+		t.Errorf("VMs left = %v, want the worker past the default maxLifetime destroyed", got)
 	}
 }
 
@@ -369,6 +434,23 @@ func TestFailedCreationIsCleanedUp(t *testing.T) {
 				t.Errorf("%d ready workers after the backoff, want 1", n)
 			}
 		})
+	}
+}
+
+func TestBootTimeoutStartsAtVMStart(t *testing.T) {
+	cfg := testConfig()
+	full := false
+	cfg.Proxmox.LinkedClone = &full
+	h := newHarness(t, cfg)
+	h.pve.addTemplate(testTemplateID, 1)
+	// A full clone that takes longer than the boot timeout, followed by a quick boot.
+	h.pve.onClone = func() { h.clock.Advance(15 * time.Minute) }
+	h.pve.agentReadyAfter = 2
+	h.pve.onPing = func() { h.clock.Advance(time.Second) }
+	h.want(1)
+	h.pass()
+	if n := len(h.readyWorkers()); n != 1 {
+		t.Errorf("%d ready workers, want 1: clone time counted against the boot timeout", n)
 	}
 }
 
@@ -525,8 +607,8 @@ func TestRunStopsWhileRegistering(t *testing.T) {
 	h.gh.ensureErr = []error{errors.New("down"), errors.New("down"), errors.New("down")}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if err := h.c.Run(ctx); err == nil || !strings.Contains(err.Error(), "register scale set") {
-		t.Fatalf("Run error = %v, want a registration error", err)
+	if err := h.c.Run(ctx); err != nil {
+		t.Fatalf("Run = %v, want a clean stop", err)
 	}
 }
 

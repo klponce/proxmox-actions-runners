@@ -123,23 +123,15 @@ func checkProxmox(ctx context.Context, cfg *config.Config, _ string, out io.Writ
 	if err != nil {
 		c.fail("read the token's permissions: %v", err)
 	} else {
-		for _, req := range proxmox.RequiredPrivileges(p.Pool, p.Storage) {
+		for _, req := range proxmox.RequiredPrivileges(p.Pool, p.Storage, p.Zone, p.VNet) {
 			if missing := perms.Missing(req); len(missing) > 0 {
-				c.fail("privileges on %s: missing %s", req.Path, strings.Join(missing, ", "))
+				// A privilege-separated token only gets what both it and its user are granted, so an ACL for the
+				// token alone doesn't show up here.
+				c.fail("privileges on %s: missing %s (grant it to both the token and its user)", req.Path,
+					strings.Join(missing, ", "))
 			} else {
 				c.ok("privileges on %s", req.Path)
 			}
-		}
-		switch path, missing := perms.MissingOnVNet(p.VNet); {
-		case path == "":
-			// A privilege-separated token only gets what both it and its user are granted, so an ACL for the
-			// token alone doesn't show up here.
-			c.fail("privileges on VNet %s: missing %s on /sdn/zones/<zone>/%s (grant it to both the token and "+
-				"its user)", p.VNet, strings.Join(missing, ", "), p.VNet)
-		case len(missing) > 0:
-			c.fail("privileges on %s: missing %s", path, strings.Join(missing, ", "))
-		default:
-			c.ok("privileges on %s", path)
 		}
 	}
 
@@ -196,30 +188,24 @@ func checkGitHub(ctx context.Context, cfg *config.Config, _ string, out io.Write
 		return c.err()
 	}
 
-	for i, s := range cfg.ScaleSets {
+	// Each lookup authenticates, so bad App credentials fail every line.
+	for _, s := range cfg.ScaleSets {
 		found, err := client.FindScaleSet(ctx, github.ScaleSetSpec{Name: s.Name, Labels: s.Labels,
 			RunnerGroup: s.RunnerGroup})
-		if err != nil {
-			if i == 0 {
-				// The first request is the one that authenticates, so a failure here is about the App itself.
-				c.fail("GitHub App %s (installation %d) on %s: %v", cfg.GitHub.App.ClientID,
-					cfg.GitHub.App.InstallationID, cfg.GitHub.ConfigURL, err)
-				return c.err()
-			}
-			c.fail("scale set %s: %v", s.Name, err)
-			continue
-		}
-		if i == 0 {
-			c.ok("GitHub App %s (installation %d) can manage runners on %s", cfg.GitHub.App.ClientID,
-				cfg.GitHub.App.InstallationID, cfg.GitHub.ConfigURL)
-		}
-		if found == nil {
+		switch {
+		case err != nil:
+			c.fail("scale set %s in runner group %s: %v", s.Name, s.RunnerGroup, err)
+		case found == nil:
 			c.ok("scale set %s in runner group %s: not registered yet; the controller creates it on start", s.Name,
 				s.RunnerGroup)
-		} else {
+		default:
 			c.ok("scale set %s in runner group %s: registered with ID %d, labels %s", s.Name, s.RunnerGroup, found.ID,
 				strings.Join(found.Labels, ", "))
 		}
+	}
+	if c.failed == 0 {
+		c.ok("GitHub App %s (installation %d) can manage runners on %s", cfg.GitHub.App.ClientID,
+			cfg.GitHub.App.InstallationID, cfg.GitHub.ConfigURL)
 	}
 	return c.err()
 }

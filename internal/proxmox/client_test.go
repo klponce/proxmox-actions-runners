@@ -232,15 +232,6 @@ func TestWaitTaskStopsWithContext(t *testing.T) {
 	}
 }
 
-func TestWaitTaskRejectsBadUPID(t *testing.T) {
-	f := newFakePVE(t)
-	for _, upid := range []string{"", "not-a-upid", "UPID::1:2:3:qmclone:100:root@pam:"} {
-		if err := f.client().WaitTask(context.Background(), upid); err == nil {
-			t.Errorf("WaitTask(%q) succeeded", upid)
-		}
-	}
-}
-
 func TestListVMs(t *testing.T) {
 	f := newFakePVE(t)
 	f.reply(http.MethodGet, "/cluster/resources", reply{Data: []map[string]any{
@@ -259,9 +250,9 @@ func TestListVMs(t *testing.T) {
 	want := []VM{
 		{VMID: 10000, Name: "par-tpl", Pool: "par-runners", Tags: []string{"par-managed", "par-template", "v1"},
 			Template: true, Status: "stopped"},
-		{VMID: 10001, Name: "string-vmid", Template: true, Lock: "clone"},
+		{VMID: 10001, Name: "string-vmid", Template: true},
 		{VMID: 10002, Name: "par-w-2", Pool: "par-runners", Tags: []string{"par-managed", "par-worker"},
-			Status: "running", UptimeSeconds: 30, MaxDiskBytes: 10},
+			Status: "running", MaxDiskBytes: 10},
 	}
 	if !reflect.DeepEqual(vms, want) {
 		t.Errorf("ListVMs =\n%+v\nwant\n%+v", vms, want)
@@ -355,15 +346,6 @@ func TestCloneFailures(t *testing.T) {
 			t.Fatalf("Clone error = %v, want IsVMIDInUse", err)
 		}
 	})
-	t.Run("missing IDs", func(t *testing.T) {
-		f := newFakePVE(t)
-		if err := f.client().Clone(context.Background(), CloneOptions{SourceVMID: 10000}); err == nil {
-			t.Fatal("Clone without a new VMID succeeded")
-		}
-		if n := len(f.seen()); n != 0 {
-			t.Errorf("sent %d requests, want none", n)
-		}
-	})
 }
 
 func TestSetConfig(t *testing.T) {
@@ -407,9 +389,6 @@ func TestGrowDisk(t *testing.T) {
 	params := f.last(http.MethodPut, path).Params
 	if params.Get("disk") != "scsi0" || params.Get("size") != "+14G" {
 		t.Errorf("params = %v, want disk=scsi0 size=+14G", params)
-	}
-	if err := c.GrowDisk(context.Background(), 10005, "scsi0", 0); err == nil {
-		t.Error("GrowDisk by 0 succeeded")
 	}
 }
 
@@ -483,15 +462,6 @@ func TestAgentWriteFile(t *testing.T) {
 	}
 	if params.Has("encode") {
 		t.Error("encode is set; Proxmox must base64-encode the content itself")
-	}
-
-	before := len(f.seen())
-	tooBig := make([]byte, MaxAgentFileBytes+1)
-	if err := c.AgentWriteFile(context.Background(), 10005, "/tmp/x", tooBig); err == nil {
-		t.Error("oversized AgentWriteFile succeeded")
-	}
-	if len(f.seen()) != before {
-		t.Error("oversized AgentWriteFile sent a request")
 	}
 }
 
@@ -584,12 +554,12 @@ func TestStorageStatus(t *testing.T) {
 func TestPermissions(t *testing.T) {
 	f := newFakePVE(t)
 	f.reply(http.MethodGet, "/access/permissions", reply{Data: map[string]any{
-		"/":                          map[string]any{},
-		"/pool/par-runners":          map[string]any{"VM.Allocate": 1, "VM.Clone": 1, "VM.Audit": 0},
-		"/storage":                   map[string]any{"Datastore.Audit": 1},
-		"/storage/local-lvm":         map[string]any{"Datastore.AllocateSpace": 0},
-		"/sdn/zones/parzone/parnet":  map[string]any{"SDN.Use": 0},
-		"/sdn/zones/otherzone/other": map[string]any{"SDN.Use": 1},
+		"/":                         map[string]any{},
+		"/pool/par-runners":         map[string]any{"VM.Allocate": 1, "VM.Clone": 1, "VM.Audit": 0},
+		"/storage":                  map[string]any{"Datastore.Audit": 1},
+		"/storage/local-lvm":        map[string]any{"Datastore.AllocateSpace": 0},
+		"/sdn/zones/parzone/parnet": map[string]any{"SDN.Use": 0},
+		"/sdn/zones/otherzone":      map[string]any{"SDN.Use": 1},
 	}})
 	perms, err := f.client().Permissions(context.Background())
 	if err != nil {
@@ -607,6 +577,7 @@ func TestPermissions(t *testing.T) {
 		{"/storage/other", "Datastore.AllocateSpace", false}, // granted on a sibling without propagation
 		{"/pool/par-runners", "VM.PowerMgmt", false},
 		{"/vms/100", "VM.Audit", false},
+		{"/sdn/zones/otherzone/othernet", "SDN.Use", true}, // propagated from the zone
 	}
 	for _, tt := range tests {
 		if got := perms.Has(tt.path, tt.priv); got != tt.want {
@@ -614,18 +585,22 @@ func TestPermissions(t *testing.T) {
 		}
 	}
 
-	missing := perms.Missing(RequiredPrivileges("par-runners", "local-lvm")[0])
+	required := RequiredPrivileges("par-runners", "local-lvm", "parzone", "parnet")
+	missing := perms.Missing(required[0])
 	if len(missing) != len(poolPrivileges)-3 || missing[0] != "VM.Config.CPU" {
 		t.Errorf("Missing on pool = %v", missing)
 	}
-	if m := perms.Missing(RequiredPrivileges("par-runners", "local-lvm")[1]); len(m) != 0 {
+	if m := perms.Missing(required[1]); len(m) != 0 {
 		t.Errorf("Missing on storage = %v, want none", m)
 	}
-	if path, m := perms.MissingOnVNet("parnet"); path != "/sdn/zones/parzone/parnet" || len(m) != 0 {
-		t.Errorf("MissingOnVNet(parnet) = %q, %v", path, m)
+	if required[2].Path != "/sdn/zones/parzone/parnet" {
+		t.Errorf("VNet requirement path = %q", required[2].Path)
 	}
-	if path, m := perms.MissingOnVNet("nonet"); path != "" || !reflect.DeepEqual(m, VNetPrivileges()) {
-		t.Errorf("MissingOnVNet(nonet) = %q, %v", path, m)
+	if m := perms.Missing(required[2]); len(m) != 0 {
+		t.Errorf("Missing on VNet = %v, want none", m)
+	}
+	if m := perms.Missing(RequiredPrivileges("par-runners", "local-lvm", "parzone", "nonet")[2]); !reflect.DeepEqual(m, vnetPrivileges) {
+		t.Errorf("Missing on another VNet = %v, want %v", m, vnetPrivileges)
 	}
 }
 

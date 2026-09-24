@@ -18,7 +18,8 @@ const (
 	opCreatePrefix = "create:"
 
 	// retireTimeout bounds one retirement. Retirements outlive a canceled controller context so shutdown doesn't
-	// leave a VM half-destroyed.
+	// leave a VM half-destroyed, and Run waits this long for them; the controller's systemd unit needs a longer
+	// TimeoutStopSec.
 	retireTimeout = 5 * time.Minute
 	// agentPollInterval is how often a booting worker's guest agent is pinged.
 	agentPollInterval = 2 * time.Second
@@ -83,15 +84,23 @@ func (c *Controller) startOp(ctx context.Context, vmid int, op string, fn func(c
 	}()
 }
 
-// startRetire retires a VM in the background. runnerName is empty for a VM that never got a runner. Unless force is
-// set, a VM whose runner is running a job is left alone.
-func (c *Controller) startRetire(ctx context.Context, vm proxmox.VM, runnerName string, force bool, reason string) {
+// startRetire retires a VM in the background. s is the worker's scale set, or nil for a VM without a configured one.
+// runnerName is empty for a VM that never got a runner. Unless force is set, a VM whose runner is running a job is
+// left alone.
+func (c *Controller) startRetire(ctx context.Context, s *scaleSetState, vm proxmox.VM, runnerName string, force bool,
+	reason string) {
 	c.startOp(ctx, vm.VMID, opRetire, func(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), retireTimeout)
 		defer cancel()
 		c.logger.InfoContext(ctx, "retiring worker", slog.Int("vmid", vm.VMID), slog.String("runnerName", runnerName),
 			slog.String("reason", reason))
-		return c.retire(ctx, vm.VMID, vm.Status == "running", runnerName, force)
+		err := c.retire(ctx, vm.VMID, vm.Status == "running", runnerName, force)
+		if errors.Is(err, errRunnerBusy) && s != nil {
+			// The controller missed the job's start, for example across a restart. Count the worker as busy so that
+			// scaling down picks another one.
+			s.markRunning(runnerName)
+		}
+		return err
 	})
 }
 
@@ -107,8 +116,8 @@ func (c *Controller) retire(ctx context.Context, vmid int, running bool, runnerN
 		}
 	}
 	if running {
-		if err := c.pve.Stop(ctx, vmid); err != nil && !proxmox.IsNotFound(err) {
-			// The VM may have powered itself off in the meantime; Destroy tells.
+		// If the stop fails, the VM may have powered itself off or be gone already; Destroy tells.
+		if err := c.pve.Stop(ctx, vmid); err != nil {
 			c.logger.InfoContext(ctx, "stopping worker failed; destroying anyway", slog.Int("vmid", vmid),
 				slog.String("error", err.Error()))
 		}
@@ -223,20 +232,24 @@ func (c *Controller) create(ctx context.Context, s *scaleSetState, template prox
 		return fmt.Errorf("grow disk: %w", err)
 	}
 
-	jit, err := c.generateJIT(ctx, s.id, name)
+	jit, err := c.gh.GenerateJITConfig(ctx, s.id, name)
 	if err != nil {
-		return err
+		return fmt.Errorf("register runner: %w", err)
 	}
 	registered = true
 
 	if err := c.pve.Start(ctx, vmid); err != nil {
 		return fmt.Errorf("start: %w", err)
 	}
-	if err := c.waitForAgent(ctx, vmid, created.Add(c.bootTimeout)); err != nil {
+	// The boot timeout starts now: a full clone can take minutes, and that isn't a slow boot.
+	if err := c.waitForAgent(ctx, vmid, c.now().Add(c.bootTimeout)); err != nil {
 		return err
 	}
 	if err := c.pve.AgentWriteFile(ctx, vmid, JITConfigPath, []byte(jit.Encoded())); err != nil {
 		return fmt.Errorf("deliver JIT config: %w", err)
+	}
+	if err := c.pve.AgentWriteFile(ctx, vmid, JITReadyPath, nil); err != nil {
+		return fmt.Errorf("signal JIT config: %w", err)
 	}
 	if err := c.pve.SetConfig(ctx, vmid, map[string]string{
 		"tags": proxmox.FormatTags(workerTags(s.cfg.Name, created, true)),
@@ -245,22 +258,6 @@ func (c *Controller) create(ctx context.Context, s *scaleSetState, template prox
 	}
 	log.InfoContext(ctx, "worker ready", slog.Duration("took", c.now().Sub(created)))
 	return nil
-}
-
-// generateJIT registers the worker's runner. If a runner with the name already exists, which only a retried
-// creation of the same VM can cause, it is removed and registered again.
-func (c *Controller) generateJIT(ctx context.Context, scaleSetID int, name string) (github.JITConfig, error) {
-	jit, err := c.gh.GenerateJITConfig(ctx, scaleSetID, name)
-	if errors.Is(err, github.ErrRunnerExists) {
-		if err := c.removeRunner(ctx, name); err != nil {
-			return github.JITConfig{}, fmt.Errorf("replace existing runner: %w", err)
-		}
-		jit, err = c.gh.GenerateJITConfig(ctx, scaleSetID, name)
-	}
-	if err != nil {
-		return github.JITConfig{}, fmt.Errorf("register runner: %w", err)
-	}
-	return jit, nil
 }
 
 // waitForAgent pings the worker's guest agent until it answers or deadline passes.

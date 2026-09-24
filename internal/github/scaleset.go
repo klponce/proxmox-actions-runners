@@ -10,19 +10,17 @@ import (
 	"github.com/actions/scaleset"
 )
 
-// DefaultRunnerGroup is GitHub's default runner group.
-const DefaultRunnerGroup = scaleset.DefaultRunnerGroup
-
 // defaultRunnerGroupID is the ID GitHub gives every default runner group. actions/scaleset's own example and ARC
 // rely on it, and repository scale sets can't look runner groups up by name.
 const defaultRunnerGroupID = 1
 
-// ScaleSetSpec is the scale set the controller wants GitHub to have.
+// ScaleSetSpec is the scale set the controller wants GitHub to have. The config fills in every field (see
+// internal/config for the defaults).
 type ScaleSetSpec struct {
 	Name string
-	// Labels are what workflows put in runs-on. Empty means just Name.
+	// Labels are what workflows put in runs-on.
 	Labels []string
-	// RunnerGroup is the runner group's name. Empty means DefaultRunnerGroup.
+	// RunnerGroup is the runner group's name.
 	RunnerGroup string
 }
 
@@ -42,23 +40,9 @@ func fromScaleSet(s *scaleset.RunnerScaleSet) ScaleSet {
 	return ScaleSet{ID: s.ID, Name: s.Name, RunnerGroupID: s.RunnerGroupID, Labels: labels}
 }
 
-func (spec ScaleSetSpec) labels() []string {
-	if len(spec.Labels) == 0 {
-		return []string{spec.Name}
-	}
-	return spec.Labels
-}
-
-func (spec ScaleSetSpec) runnerGroup() string {
-	if spec.RunnerGroup == "" {
-		return DefaultRunnerGroup
-	}
-	return spec.RunnerGroup
-}
-
 // runnerGroupID resolves a runner group name to its ID.
 func (c *Client) runnerGroupID(ctx context.Context, name string) (int, error) {
-	if name == DefaultRunnerGroup {
+	if name == scaleset.DefaultRunnerGroup {
 		return defaultRunnerGroupID, nil
 	}
 	group, err := c.ss.GetRunnerGroupByName(ctx, name)
@@ -70,7 +54,7 @@ func (c *Client) runnerGroupID(ctx context.Context, name string) (int, error) {
 
 // FindScaleSet returns the scale set named spec.Name in spec's runner group, or nil if there is none.
 func (c *Client) FindScaleSet(ctx context.Context, spec ScaleSetSpec) (*ScaleSet, error) {
-	groupID, err := c.runnerGroupID(ctx, spec.runnerGroup())
+	groupID, err := c.runnerGroupID(ctx, spec.RunnerGroup)
 	if err != nil {
 		return nil, err
 	}
@@ -89,14 +73,14 @@ func (c *Client) FindScaleSet(ctx context.Context, spec ScaleSetSpec) (*ScaleSet
 // labels and settings if they differ. Runner self-updates are always disabled, because the template pins the runner
 // version and is rebuilt for each runner release.
 func (c *Client) EnsureScaleSet(ctx context.Context, spec ScaleSetSpec) (ScaleSet, error) {
-	groupID, err := c.runnerGroupID(ctx, spec.runnerGroup())
+	groupID, err := c.runnerGroupID(ctx, spec.RunnerGroup)
 	if err != nil {
 		return ScaleSet{}, err
 	}
 	want := &scaleset.RunnerScaleSet{
 		Name:          spec.Name,
 		RunnerGroupID: groupID,
-		Labels:        toLabels(spec.labels()),
+		Labels:        toLabels(spec.Labels),
 		RunnerSetting: scaleset.RunnerSetting{DisableUpdate: true},
 	}
 

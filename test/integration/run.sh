@@ -175,6 +175,7 @@ proxmox:
   node: $name
   pool: $POOL
   storage: $STORAGE
+  zone: $ZONE
   vnet: $VNET
   vmidRange: { start: $((TEST_VMID + 1)), end: $((TEST_VMID + 10)) }
 github:

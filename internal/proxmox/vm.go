@@ -2,7 +2,6 @@ package proxmox
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -19,12 +18,8 @@ type VM struct {
 	Template bool
 	// Status is "running" or "stopped".
 	Status string
-	// Lock is the config lock, such as "clone" while a clone is in progress. Empty means unlocked.
-	Lock string
 	// MaxDiskBytes is the size of the root disk.
 	MaxDiskBytes int64
-	// UptimeSeconds is zero for a stopped VM.
-	UptimeSeconds int64
 }
 
 // HasTag reports whether the VM has tag.
@@ -46,9 +41,7 @@ type resource struct {
 	Tags     string  `json:"tags"`
 	Template pveBool `json:"template"`
 	Status   string  `json:"status"`
-	Lock     string  `json:"lock"`
 	MaxDisk  pveInt  `json:"maxdisk"`
-	Uptime   pveInt  `json:"uptime"`
 }
 
 // ListVMs returns the QEMU VMs and templates on the client's node that the token can see, sorted by VMID.
@@ -63,15 +56,13 @@ func (c *Client) ListVMs(ctx context.Context) ([]VM, error) {
 			continue
 		}
 		vms = append(vms, VM{
-			VMID:          int(r.VMID),
-			Name:          r.Name,
-			Pool:          r.Pool,
-			Tags:          ParseTags(r.Tags),
-			Template:      bool(r.Template),
-			Status:        r.Status,
-			Lock:          r.Lock,
-			MaxDiskBytes:  int64(r.MaxDisk),
-			UptimeSeconds: int64(r.Uptime),
+			VMID:         int(r.VMID),
+			Name:         r.Name,
+			Pool:         r.Pool,
+			Tags:         ParseTags(r.Tags),
+			Template:     bool(r.Template),
+			Status:       r.Status,
+			MaxDiskBytes: int64(r.MaxDisk),
 		})
 	}
 	sort.Slice(vms, func(i, j int) bool { return vms[i].VMID < vms[j].VMID })
@@ -147,9 +138,6 @@ type CloneOptions struct {
 
 // Clone clones a template and waits for the clone to finish.
 func (c *Client) Clone(ctx context.Context, opts CloneOptions) error {
-	if opts.SourceVMID <= 0 || opts.NewVMID <= 0 {
-		return errors.New("clone: source and new VMID are required")
-	}
 	params := url.Values{"newid": {strconv.Itoa(opts.NewVMID)}}
 	setIf(params, "name", opts.Name)
 	setIf(params, "pool", opts.Pool)
@@ -191,9 +179,6 @@ func (c *Client) SetConfig(ctx context.Context, vmid int, settings map[string]st
 
 // GrowDisk adds addGiB gibibytes to a VM disk, such as "scsi0", and waits for the resize to finish.
 func (c *Client) GrowDisk(ctx context.Context, vmid int, disk string, addGiB int) error {
-	if addGiB <= 0 {
-		return fmt.Errorf("grow disk %s of VM %d: size must be positive, got %d", disk, vmid, addGiB)
-	}
 	params := url.Values{"disk": {disk}, "size": {fmt.Sprintf("+%dG", addGiB)}}
 	err := c.runTask(ctx, func(upid *string) error {
 		return c.put(ctx, c.vmPath(vmid, "resize"), params, upid)

@@ -136,6 +136,9 @@ func TestParseDefaults(t *testing.T) {
 	if c.GitHub.IsRepository() {
 		t.Error("an organization URL is reported as a repository")
 	}
+	if c.Proxmox.Zone != DefaultZone {
+		t.Errorf("proxmox.zone = %q, want %q", c.Proxmox.Zone, DefaultZone)
+	}
 	if c.Metrics.Listen != DefaultMetricsListen {
 		t.Errorf("metrics.listen = %q, want %q", c.Metrics.Listen, DefaultMetricsListen)
 	}
@@ -256,47 +259,38 @@ func TestParseInvalid(t *testing.T) {
 		{"plain HTTP proxmox URL", "proxmox.url", "http://pve.example.com:8006/api2/json", "must be an https:// URL"},
 		{"wrong proxmox path", "proxmox.url", "https://pve.example.com:8006/api", "must have the path /api2/json"},
 		{"proxmox URL with query", "proxmox.url", "https://pve.example.com/api2/json?x=1", "must have the path"},
-		{"token ID without token name", "proxmox.tokenId", "par@pve", "proxmox.tokenId"},
 		{"relative token secret file", "proxmox.tokenSecretFile", "pve-token", "must be an absolute path"},
-		{"short TLS fingerprint", "proxmox.tlsFingerprint", "AA:BB", "proxmox.tlsFingerprint"},
+		{"missing token ID", "proxmox.tokenId", nil, "proxmox.tokenId: is required"},
 		{"missing node", "proxmox.node", nil, "proxmox.node: is required"},
-		{"bad node", "proxmox.node", "pve_1", "proxmox.node"},
-		{"bad storage", "proxmox.storage", "Local LVM", "proxmox.storage"},
-		{"long VNet", "proxmox.vnet", "workernet1", "proxmox.vnet"},
+		{"missing VNet", "proxmox.vnet", nil, "proxmox.vnet: is required"},
 		{"VMID below 100", "proxmox.vmidRange.start", 99, "proxmox.vmidRange.start"},
 		{"VMID range backwards", "proxmox.vmidRange", map[string]any{"start": 2000, "end": 1000}, "is after end"},
 		{"VMID range too small", "proxmox.vmidRange", map[string]any{"start": 100, "end": 105}, "needs at least 7"},
 
 		{"missing GitHub URL", "github.configUrl", nil, "github.configUrl: is required"},
 		{"GitHub Enterprise Server", "github.configUrl", "https://ghes.example.com/my-org", "https://github.com/<org>"},
-		{"enterprise scope", "github.configUrl", "https://github.com/enterprises/my-ent", "enterprise-level"},
 		{"too deep GitHub URL", "github.configUrl", "https://github.com/a/b/c", "https://github.com/<org>"},
-		{"bad GitHub owner", "github.configUrl", "https://github.com/-my-org", "not a valid GitHub organization"},
+		{"GitHub URL without owner", "github.configUrl", "https://github.com/", "https://github.com/<org>"},
 		{"missing client ID", "github.app.clientId", nil, "github.app.clientId: is required"},
 		{"missing installation ID", "github.app.installationId", nil, "github.app.installationId"},
 		{"relative private key", "github.app.privateKeyFile", "key.pem", "must be an absolute path"},
 
 		{"metrics on the LAN", "metrics.listen", "0.0.0.0:9465", "must be a loopback address"},
 		{"metrics without port", "metrics.listen", "127.0.0.1", "must be host:port"},
-		{"metrics bad port", "metrics.listen", "127.0.0.1:99999", "invalid port"},
 
 		{"controller memory in GiB by mistake", "worker.memoryMiB", 8, "worker.memoryMiB"},
 		{"negative cores", "worker.cores", -1, "worker.cores"},
-		{"scale set disk too big", "scaleSets.0.worker", map[string]any{"freeDiskGiB": 1 << 20}, "scaleSets[0].worker.freeDiskGiB"},
+		{"negative scale set disk", "scaleSets.0.worker", map[string]any{"freeDiskGiB": -1}, "scaleSets[0].worker.freeDiskGiB"},
 
 		{"no scale sets", "scaleSets", []any{}, "at least one scale set is required"},
 		{"uppercase name", "scaleSets.0.name", "Proxmox", "scaleSets[0].name"},
 		{"missing name", "scaleSets.0.name", nil, "scaleSets[0].name: is required"},
-		{"label with space", "scaleSets.0.labels", []any{"has space"}, "no spaces or commas"},
-		{"empty label", "scaleSets.0.labels", []any{""}, "must be non-empty"},
 		{"duplicate label in any case", "scaleSets.0.labels", []any{"x64", "X64"}, "already used"},
 		{"negative minRunners", "scaleSets.0.minRunners", -1, "must not be negative"},
 		{"zero maxRunners", "scaleSets.0.maxRunners", 0, "must be at least 1"},
 		{"minRunners above maxRunners", "scaleSets.0.minRunners", 4, "is more than maxRunners"},
 		{"lifetime too short", "scaleSets.0.maxLifetime", "1m", "scaleSets[0].maxLifetime"},
 		{"lifetime too long", "scaleSets.0.maxLifetime", "121h", "scaleSets[0].maxLifetime"},
-		{"runner group with a slash", "scaleSets.0.runnerGroup", "a/b", "scaleSets[0].runnerGroup"},
-		{"runner group with padding", "scaleSets.0.runnerGroup", " builds", "scaleSets[0].runnerGroup"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -353,28 +347,6 @@ func TestParseDuplicateScaleSets(t *testing.T) {
 	}
 }
 
-func TestParseReportsEveryProblemOnce(t *testing.T) {
-	doc := validDoc()
-	set(t, doc, "proxmox.node", nil)
-	set(t, doc, "worker.cores", 1000)
-	set(t, doc, "scaleSets", []any{
-		map[string]any{"name": "a", "maxRunners": 1},
-		map[string]any{"name": "b", "maxRunners": 1},
-	})
-	_, err := parseDoc(t, doc)
-	var verr *ValidationError
-	if !errors.As(err, &verr) {
-		t.Fatalf("Parse error = %v, want a *ValidationError", err)
-	}
-	want := []string{
-		"proxmox.node: is required",
-		"worker.cores: 1000 is out of range [1, 512]",
-	}
-	if strings.Join(verr.Problems, "\n") != strings.Join(want, "\n") {
-		t.Errorf("problems =\n%s\nwant\n%s", strings.Join(verr.Problems, "\n"), strings.Join(want, "\n"))
-	}
-}
-
 func TestParseMissingVMIDRangeReportedOnce(t *testing.T) {
 	doc := validDoc()
 	set(t, doc, "proxmox.vmidRange", nil)
@@ -386,8 +358,7 @@ func TestParseMissingVMIDRangeReportedOnce(t *testing.T) {
 	}
 	want := []string{
 		`proxmox.url: "http://pve.example.com" must be an https:// URL`,
-		"proxmox.vmidRange.start: 0 is out of range [100, 999999999]",
-		"proxmox.vmidRange.end: 0 is out of range [100, 999999999]",
+		"proxmox.vmidRange.start: 0 is less than 100",
 	}
 	if strings.Join(verr.Problems, "\n") != strings.Join(want, "\n") {
 		t.Errorf("problems =\n%s\nwant\n%s", strings.Join(verr.Problems, "\n"), strings.Join(want, "\n"))

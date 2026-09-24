@@ -8,7 +8,6 @@ package controller
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -37,7 +36,7 @@ type GitHub interface {
 	GenerateJITConfig(ctx context.Context, scaleSetID int, runnerName string) (github.JITConfig, error)
 	RunnerByName(ctx context.Context, name string) (*github.Runner, error)
 	RemoveRunner(ctx context.Context, id int64) error
-	Listen(ctx context.Context, opts github.ListenOptions, h github.Handler) error
+	Listen(ctx context.Context, opts github.ListenOptions, h github.Handler)
 }
 
 var (
@@ -53,7 +52,6 @@ const (
 	defaultRunnerCheckEvery = 5 * time.Minute
 	defaultParallelism      = 3
 	defaultRetryBackoff     = 10 * time.Second
-	defaultShutdownTimeout  = 2 * time.Minute
 
 	// rootDisk is the template's root disk, which each worker grows by its free disk space.
 	rootDisk = "scsi0"
@@ -70,7 +68,8 @@ type Options struct {
 
 	// ResyncInterval is how often the loop runs without being woken. Zero means 15s.
 	ResyncInterval time.Duration
-	// BootTimeout is how long a new worker may take to get its JIT config before it is destroyed. Zero means 10m.
+	// BootTimeout is how long a started worker's guest agent may take to answer before the worker is destroyed. Zero
+	// means 10m.
 	BootTimeout time.Duration
 	// RunnerCheckAfter and RunnerCheckEvery control the check that a ready worker's runner still exists in GitHub:
 	// it starts this long after the worker was created and repeats at this interval. Zero means 10m and 5m.
@@ -178,8 +177,8 @@ func (c *Controller) trigger() {
 // the way out it waits for VM operations in flight to finish, but leaves running workers alone: a restarted
 // controller adopts them, so a controller upgrade doesn't cancel jobs.
 func (c *Controller) Run(ctx context.Context) error {
-	if err := c.registerScaleSets(ctx); err != nil {
-		return err
+	if !c.registerScaleSets(ctx) {
+		return nil
 	}
 
 	var listeners sync.WaitGroup
@@ -187,12 +186,7 @@ func (c *Controller) Run(ctx context.Context) error {
 		listeners.Add(1)
 		go func() {
 			defer listeners.Done()
-			err := c.gh.Listen(ctx, github.ListenOptions{ScaleSetID: s.id, MaxRunners: s.cfg.MaxRunners,
-				Owner: c.owner}, s)
-			if err != nil {
-				c.logger.ErrorContext(ctx, "listener stopped", slog.String("scaleSet", s.cfg.Name),
-					slog.String("error", err.Error()))
-			}
+			c.gh.Listen(ctx, github.ListenOptions{ScaleSetID: s.id, MaxRunners: s.cfg.MaxRunners, Owner: c.owner}, s)
 		}()
 	}
 
@@ -206,7 +200,8 @@ func (c *Controller) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			c.logger.InfoContext(ctx, "stopping; running workers are left for the next start")
 			listeners.Wait()
-			c.waitForOps(defaultShutdownTimeout)
+			// Creations stop with ctx, but a retirement runs to the end so it doesn't leave a VM half-destroyed.
+			c.waitForOps(retireTimeout)
 			return nil
 		case <-ticker.C:
 		case <-c.wake:
@@ -215,8 +210,8 @@ func (c *Controller) Run(ctx context.Context) error {
 }
 
 // registerScaleSets makes sure each scale set exists in GitHub and learns its ID, retrying until ctx ends, because
-// GitHub may be unreachable while the controller VM boots.
-func (c *Controller) registerScaleSets(ctx context.Context) error {
+// GitHub may be unreachable while the controller VM boots. It reports false if ctx ended first.
+func (c *Controller) registerScaleSets(ctx context.Context) bool {
 	for _, s := range c.scaleSets {
 		backoff := time.Second
 		for {
@@ -231,12 +226,12 @@ func (c *Controller) registerScaleSets(ctx context.Context) error {
 			c.logger.WarnContext(ctx, "registering scale set failed; retrying", slog.String("scaleSet", s.cfg.Name),
 				slog.Duration("backoff", backoff), slog.String("error", err.Error()))
 			if !sleep(ctx, backoff) {
-				return fmt.Errorf("register scale set %s: %w", s.cfg.Name, ctx.Err())
+				return false
 			}
 			backoff = min(backoff*2, time.Minute)
 		}
 	}
-	return nil
+	return true
 }
 
 // waitForOps waits up to timeout for VM operations in flight.

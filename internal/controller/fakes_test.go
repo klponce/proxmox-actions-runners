@@ -59,8 +59,9 @@ type fakeProxmox struct {
 	vms map[int]*fakeVM
 	// agentReadyAfter is how many pings a started VM's agent ignores. Negative means it never answers.
 	agentReadyAfter int
-	// onPing runs on every ping, for example to advance a clock.
-	onPing func()
+	// onClone and onPing run on every clone and ping, for example to advance a clock.
+	onClone func()
+	onPing  func()
 	// fail maps an operation name ("clone", "configure", "grow", "start", "write", "destroy") to an error for it.
 	fail  map[string]error
 	calls []string
@@ -168,6 +169,9 @@ func (f *fakeProxmox) Clone(_ context.Context, opts proxmox.CloneOptions) error 
 	if _, exists := f.vms[opts.NewVMID]; exists {
 		return &proxmox.APIError{StatusCode: http.StatusInternalServerError,
 			Message: fmt.Sprintf("VM %d already exists on node 'pve1'", opts.NewVMID)}
+	}
+	if f.onClone != nil {
+		f.onClone()
 	}
 	f.vms[opts.NewVMID] = &fakeVM{
 		vm: proxmox.VM{VMID: opts.NewVMID, Name: opts.Name, Pool: opts.Pool, Status: "stopped",
@@ -328,9 +332,6 @@ func (f *fakeGitHub) GenerateJITConfig(_ context.Context, _ int, name string) (g
 	if f.jitErr != nil {
 		return github.JITConfig{}, f.jitErr
 	}
-	if _, ok := f.runners[name]; ok {
-		return github.JITConfig{}, fmt.Errorf("generate: %w", github.ErrRunnerExists)
-	}
 	f.nextID++
 	f.runners[name] = f.nextID
 	return newJIT(f.nextID, name), nil
@@ -343,7 +344,7 @@ func (f *fakeGitHub) RunnerByName(_ context.Context, name string) (*github.Runne
 	if !ok {
 		return nil, nil
 	}
-	return &github.Runner{ID: id, Name: name, ScaleSetID: testScaleSetID}, nil
+	return &github.Runner{ID: id, Name: name}, nil
 }
 
 func (f *fakeGitHub) RemoveRunner(_ context.Context, id int64) error {
@@ -361,10 +362,9 @@ func (f *fakeGitHub) RemoveRunner(_ context.Context, id int64) error {
 	return nil
 }
 
-func (f *fakeGitHub) Listen(ctx context.Context, _ github.ListenOptions, h github.Handler) error {
+func (f *fakeGitHub) Listen(ctx context.Context, _ github.ListenOptions, h github.Handler) {
 	f.handlers <- h
 	<-ctx.Done()
-	return nil
 }
 
 func (f *fakeGitHub) hasRunner(name string) bool {

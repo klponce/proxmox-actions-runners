@@ -1,6 +1,7 @@
 package github
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -13,18 +14,10 @@ import (
 
 // Job describes a job in a scale set message.
 type Job struct {
-	// RunnerRequestID identifies the job's request for a runner.
-	RunnerRequestID int64
-	JobID           string
+	JobID string
 	// RunnerName and RunnerID are set once a runner has picked the job up.
-	RunnerName  string
-	RunnerID    int
-	Owner       string
-	Repository  string
-	WorkflowRef string
-	DisplayName string
-	// Result is set for completed jobs, such as "succeeded", "failed", or "canceled".
-	Result string
+	RunnerName string
+	RunnerID   int
 }
 
 // Stats are GitHub's counts for a scale set, reported with every message.
@@ -79,28 +72,20 @@ const (
 
 // Listen runs the scale set's message session until ctx ends, passing messages to h. When the session fails, for
 // example because GitHub is unreachable or a previous session still exists after a crash, Listen logs the error
-// and opens a new session after an exponential backoff. It returns nil when ctx is canceled.
-func (c *Client) Listen(ctx context.Context, opts ListenOptions, h Handler) error {
-	if opts.ScaleSetID <= 0 {
-		return errors.New("listen: scale set ID is required")
-	}
-	minBackoff, maxBackoff := opts.MinBackoff, opts.MaxBackoff
-	if minBackoff <= 0 {
-		minBackoff = defaultMinBackoff
-	}
-	if maxBackoff < minBackoff {
-		maxBackoff = max(defaultMaxBackoff, minBackoff)
-	}
+// and opens a new session after an exponential backoff. It returns when ctx is canceled.
+func (c *Client) Listen(ctx context.Context, opts ListenOptions, h Handler) {
+	minBackoff := cmp.Or(opts.MinBackoff, defaultMinBackoff)
+	maxBackoff := max(cmp.Or(opts.MaxBackoff, defaultMaxBackoff), minBackoff)
 
 	backoff := minBackoff
 	for {
 		started := time.Now()
 		err := c.listenOnce(ctx, opts, h)
 		if ctx.Err() != nil {
-			return nil
+			return
 		}
 		if err == nil {
-			// actions/scaleset's listener only returns on failure, but don't rely on it.
+			// actions/scaleset's listener only returns on failure; this keeps err.Error() below safe regardless.
 			err = errors.New("session ended without an error")
 		}
 		if time.Since(started) >= healthySession {
@@ -113,7 +98,7 @@ func (c *Client) Listen(ctx context.Context, opts ListenOptions, h Handler) erro
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil
+			return
 		case <-timer.C:
 		}
 		backoff = min(backoff*2, maxBackoff)
@@ -164,26 +149,11 @@ func (a *adapter) HandleDesiredRunnerCount(ctx context.Context, count int) (int,
 }
 
 func (a *adapter) HandleJobStarted(ctx context.Context, m *scaleset.JobStarted) error {
-	job := jobFrom(m.JobMessageBase)
-	job.RunnerName, job.RunnerID = m.RunnerName, m.RunnerID
-	return a.h.JobStarted(ctx, job)
+	return a.h.JobStarted(ctx, Job{JobID: m.JobID, RunnerName: m.RunnerName, RunnerID: m.RunnerID})
 }
 
 func (a *adapter) HandleJobCompleted(ctx context.Context, m *scaleset.JobCompleted) error {
-	job := jobFrom(m.JobMessageBase)
-	job.RunnerName, job.RunnerID, job.Result = m.RunnerName, m.RunnerID, m.Result
-	return a.h.JobCompleted(ctx, job)
-}
-
-func jobFrom(m scaleset.JobMessageBase) Job {
-	return Job{
-		RunnerRequestID: m.RunnerRequestID,
-		JobID:           m.JobID,
-		Owner:           m.OwnerName,
-		Repository:      m.RepositoryName,
-		WorkflowRef:     m.JobWorkflowRef,
-		DisplayName:     m.JobDisplayName,
-	}
+	return a.h.JobCompleted(ctx, Job{JobID: m.JobID, RunnerName: m.RunnerName, RunnerID: m.RunnerID})
 }
 
 // statsAdapter passes GitHub's statistics to a StatsRecorder.

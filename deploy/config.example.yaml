@@ -9,6 +9,7 @@ proxmox:
   node: pve1
   pool: par-runners
   storage: local-lvm
+  zone: parzone                    # the SDN zone the installer creates; this is the default
   vnet: parnet                     # the worker network the installer creates
   vmidRange: { start: 10000, end: 10999 }
   linkedClone: true                # the template is found by its tags, not a fixed VMID

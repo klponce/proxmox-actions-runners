@@ -21,7 +21,8 @@ const (
 	TagReady = "par-ready"
 	// TagTemplate marks a runner template.
 	TagTemplate = "par-template"
-	// TagBuild marks a template build VM, which the template builder owns.
+	// TagBuild marks a VM that the template builder or the installer creates, such as a build VM or a smoke-test
+	// clone. Its creator destroys it; the controller leaves it alone.
 	TagBuild = "par-build"
 
 	// tagScaleSetPrefix is followed by the worker's scale set name.
@@ -33,8 +34,12 @@ const (
 )
 
 // JITConfigPath is where the controller writes a worker's JIT config through the guest agent. The template's
-// runner service waits for this file, runs one job with it, deletes it, and powers the VM off.
+// runner service runs one job with it, deletes it, and powers the VM off.
 const JITConfigPath = "/run/par-runner/jitconfig"
+
+// JITReadyPath is the empty file the controller writes once JITConfigPath is complete. The template's runner service
+// waits for it rather than for the config itself, because the guest agent creates a file before writing its content.
+const JITReadyPath = "/run/par-runner/ready"
 
 // workerName returns the VM and runner name for a worker. It includes the creation time so a reused VMID never
 // reuses a runner name that GitHub might still know.

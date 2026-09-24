@@ -72,8 +72,9 @@ Keep these true. If a change needs to break one, discuss it first.
 5. **Only touch what we own.** Every managed VM is tagged, for example with `par-managed` and a scale set tag, and
    lives in the runner pool. The controller must never modify or delete an untagged VM. It must never modify an
    existing template: the template builder creates a new version instead, and an old version is deleted only once
-   no worker uses it. The Proxmox token's ACLs enforce the same limit, and the controller and gateway VMs sit in
-   `par-system`, outside the token's reach.
+   no worker uses it. Build VMs and smoke-test clones belong to the template builder or installer that creates
+   them, which destroys them, including ones a failed run left. The Proxmox token's ACLs enforce the same limit,
+   and the controller and gateway VMs sit in `par-system`, outside the token's reach.
 6. **GitHub-matching defaults.** Default worker hardware is 2 vCPU, 8 GiB RAM, and 14 GiB of free disk space,
    matching `ubuntu-latest` for private repositories. The free space is added on top of the template's disk size,
    because a clone's disk can grow but never shrink below its template's. The defaults are defined in exactly one
@@ -230,10 +231,12 @@ See [docs/install.md](docs/install.md) for the full design.
 - Scripts are numbered and run in order: `10-runner.sh` (the pinned runner in `/opt/actions-runner`, its job
   environment in `.env`, and `/home/runner/work`), `20-par-runner.sh` (the one-job units), `30-minimal-tools.sh`,
   then `images/common/cleanup.sh`, which every image build shares.
-- `par-runner.path` waits for the JIT config the controller writes through the guest agent to
-  `/run/par-runner/jitconfig` (`controller.JITConfigPath`). `par-runner.service` hands the file to the `runner`
-  user, passes the config to `run.sh` in `ACTIONS_RUNNER_INPUT_JITCONFIG` (never on a command line), deletes the
-  file, runs one job, and powers the VM off when the runner exits for any reason, which signals completion.
+- The controller writes the JIT config through the guest agent to `/run/par-runner/jitconfig`
+  (`controller.JITConfigPath`), then writes the empty marker `/run/par-runner/ready` (`controller.JITReadyPath`).
+  `par-runner.path` waits for the marker, not the config, because the guest agent creates a file before it writes
+  the content. `par-runner.service` hands the config to the `runner` user, passes it to `run.sh` in
+  `ACTIONS_RUNNER_INPUT_JITCONFIG` (never on a command line), deletes both files, runs one job, and powers the VM
+  off when the runner exits for any reason, which signals completion.
 - The template must create `/run/par-runner` at boot, root-only (`20-par-runner.sh` uses a `tmpfiles.d` entry): the
   guest agent's file-write can't create directories, so without it every worker fails at the JIT step.
 - Runners work in `/home/runner/work` (`github.WorkFolder`), as on GitHub-hosted runners.
