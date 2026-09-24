@@ -394,6 +394,31 @@ func TestParseMissingVMIDRangeReportedOnce(t *testing.T) {
 	}
 }
 
+func TestVMIDRangeSplit(t *testing.T) {
+	tests := []struct {
+		r                 VMIDRange
+		workers, reserved VMIDRange
+	}{
+		{VMIDRange{10000, 10999}, VMIDRange{10000, 10995}, VMIDRange{10996, 10999}},
+		// The smallest range validation allows for one runner.
+		{VMIDRange{100, 104}, VMIDRange{100, 100}, VMIDRange{101, 104}},
+	}
+	for _, tt := range tests {
+		if got := tt.r.Workers(); got != tt.workers {
+			t.Errorf("%+v.Workers() = %+v, want %+v", tt.r, got, tt.workers)
+		}
+		if got := tt.r.Reserved(); got != tt.reserved {
+			t.Errorf("%+v.Reserved() = %+v, want %+v", tt.r, got, tt.reserved)
+		}
+		if tt.r.Workers().Size()+tt.r.Reserved().Size() != tt.r.Size() {
+			t.Errorf("%+v: worker and reserved IDs don't add up to the range", tt.r)
+		}
+		if tt.r.Workers().Contains(tt.r.Reserved().Start) {
+			t.Errorf("%+v: worker and reserved IDs overlap", tt.r)
+		}
+	}
+}
+
 func TestParseDecodeErrors(t *testing.T) {
 	tests := []struct {
 		name string

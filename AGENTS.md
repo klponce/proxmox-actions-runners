@@ -149,10 +149,11 @@ go test ./...
 go vet ./...
 gofmt -l .                                # must print nothing
 golangci-lint run
-go test -tags integration ./...           # needs a real Proxmox node; see internal/proxmox/integration_test.go
+test/integration/run.sh                   # needs SSH to a throwaway Proxmox node; see test/integration/README.md
 packer fmt -check -recursive images
 packer validate images/runner-base
-shellcheck images/common/*.sh images/runner-base/scripts/*.sh images/ubuntu-26.04/*.sh images/ubuntu-26.04/tests/*.sh
+shellcheck images/common/*.sh images/runner-base/scripts/*.sh images/ubuntu-26.04/*.sh images/ubuntu-26.04/tests/*.sh \
+  test/integration/*.sh test/integration/node/*.sh
 bats install/tests
 ```
 
@@ -165,6 +166,9 @@ packer init images/runner-base && packer build -var version=dev images/runner-ba
 packer init images/ubuntu-26.04
 packer build -var base_image=output-runner-base/par-runner-base-dev.qcow2 images/ubuntu-26.04
 ```
+
+Run the integration suite when you change how the controller talks to Proxmox: the fakes only check what the code
+expects, and the suite has already caught a missing privilege (`Pool.Audit`) that every unit test passed with.
 
 ## Go conventions
 
@@ -236,6 +240,9 @@ See [docs/install.md](docs/install.md) for the full design.
 - The controller relies on the template having its root disk on `scsi0`, a cloud-init drive (for `ipconfig0`), and
   the guest agent enabled in its VM config. The template builder tags each template `par-managed`, `par-template`,
   and `par-tv-<build time in Unix seconds>`; the controller clones the newest one.
+- The template builder puts templates, build VMs, and smoke-test clones in the reserved VMIDs at the end of the
+  range (`config.VMIDRange.Reserved`), never in the worker IDs. A new template reports `template: 0` for about 10s,
+  and in the worker IDs it would look like a half-created worker clone and be destroyed.
 
 ## Change hygiene
 

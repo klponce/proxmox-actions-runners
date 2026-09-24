@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -389,13 +390,78 @@ func TestForeignVMIDIsSkipped(t *testing.T) {
 
 func TestVMIDRangeExhausted(t *testing.T) {
 	cfg := testConfig()
-	cfg.Proxmox.VMIDRange = config.VMIDRange{Start: 10000, End: 10001}
+	// Two worker IDs, 10000 and 10001, and the four reserved ones.
+	cfg.Proxmox.VMIDRange = config.VMIDRange{Start: 10000, End: 10005}
 	h := newHarness(t, cfg)
 	h.pve.addTemplate(testTemplateID, 1)
 	h.want(5)
 	h.pass()
-	if n := len(h.readyWorkers()); n != 2 {
-		t.Errorf("%d workers, want 2 (the whole range)", n)
+	if got := h.readyWorkers(); !reflect.DeepEqual(got, []int{10000, 10001}) {
+		t.Errorf("ready workers = %v, want [10000 10001]: the worker IDs, never the reserved ones", got)
+	}
+}
+
+// Proxmox reports status from pvestatd, up to about 10s late, and "unknown" for a VM it hasn't sampled yet. A ready
+// worker in that state must be left alone, not retired as not running.
+func TestUnknownStatusKeepsWorker(t *testing.T) {
+	h := newHarness(t, testConfig())
+	h.pve.addTemplate(testTemplateID, 1)
+	h.want(1)
+	h.pass()
+	ready := h.readyWorkers()
+	if len(ready) != 1 {
+		t.Fatalf("ready workers = %v, want one", ready)
+	}
+	vmid := ready[0]
+	name := h.nameOf(vmid)
+
+	for _, status := range []string{"unknown", ""} {
+		h.pve.setStatus(vmid, status)
+		h.pass()
+		if _, ok := h.pve.snapshot(vmid); !ok {
+			t.Fatalf("worker with status %q was destroyed", status)
+		}
+		if !h.gh.hasRunner(name) {
+			t.Fatalf("worker with status %q lost its runner", status)
+		}
+	}
+
+	// Once Proxmox says it stopped, it is retired as usual.
+	h.pve.setStatus(vmid, "stopped")
+	h.pass()
+	if _, ok := h.pve.snapshot(vmid); ok {
+		t.Error("stopped worker wasn't retired")
+	}
+}
+
+// A new template shows template: 0 for about 10s while it already carries the template's tags, like a half-created
+// worker clone. In the reserved part of the VMID range it must be left alone, and used only once Proxmox reports it
+// as a template.
+func TestTemplateInReservedIDsIsNeverAStray(t *testing.T) {
+	h := newHarness(t, testConfig()) // VMID range 10000-10009; 10006-10009 are reserved
+	h.pve.addTemplate(testTemplateID, 1)
+	newTemplate := proxmox.VM{VMID: 10009, Pool: testPool, Tags: []string{TagManaged, TagTemplate, "par-tv-2"}}
+	h.pve.add(newTemplate)
+	// Something else the template builder owns in the reserved IDs, such as a smoke-test clone.
+	h.pve.add(proxmox.VM{VMID: 10008, Pool: testPool, Status: "running", Tags: []string{TagManaged}})
+
+	h.want(1)
+	h.pass()
+	if got := h.pve.ids(); !reflect.DeepEqual(got, []int{testTemplateID, 10000, 10008, 10009}) {
+		t.Fatalf("VMs = %v, want the old template, one worker, and both reserved VMs untouched", got)
+	}
+	if h.pve.calls[0] != "clone 9000->10000 full=false" {
+		t.Errorf("first call = %q, want a clone of the old template while the new one isn't reported yet",
+			h.pve.calls[0])
+	}
+
+	// Proxmox catches up: the new template is used for the next worker.
+	newTemplate.Template = true
+	h.pve.add(newTemplate)
+	h.want(2)
+	h.pass()
+	if !slices.Contains(h.pve.calls, "clone 10009->10001 full=false") {
+		t.Errorf("calls = %v, want a clone of the new template 10009", h.pve.calls)
 	}
 }
 

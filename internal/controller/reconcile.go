@@ -27,7 +27,8 @@ type view struct {
 }
 
 // observe sorts the VMs Proxmox lists into a view. It considers only VMs in the configured pool that carry
-// TagManaged, and never counts a VM outside the VMID range as a worker or stray (AGENTS.md, invariant 5).
+// TagManaged, and never counts a VM outside the worker part of the VMID range as a worker or stray (AGENTS.md,
+// invariant 5).
 func (c *Controller) observe(vms []proxmox.VM) view {
 	v := view{workers: map[string][]worker{}, used: map[int]bool{}}
 	var newest int64 = -1
@@ -47,7 +48,11 @@ func (c *Controller) observe(vms []proxmox.VM) view {
 			}
 			continue
 		}
-		if !c.cfg.Proxmox.VMIDRange.Contains(vm.VMID) || vm.HasTag(TagBuild) {
+		// Only the worker part of the range holds workers and their half-created leftovers. The reserved part holds
+		// templates and build VMs, and a new template shows template: 0 for about 10s while it already has the
+		// template's tags, the same as a half-created clone; looking only at worker IDs keeps it from being
+		// destroyed as a stray.
+		if !c.cfg.Proxmox.VMIDRange.Workers().Contains(vm.VMID) || vm.HasTag(TagBuild) {
 			continue
 		}
 		if !vm.HasTag(TagWorker) {
@@ -121,7 +126,10 @@ func (c *Controller) retireReason(ctx context.Context, s *scaleSetState, w worke
 		// destroyed rather than repaired. If its runner already has a job, the retirement waits for it.
 		return "left half-created", false
 	case w.vm.Status != "running":
-		return "not running", false
+		// Proxmox reports status from pvestatd, up to about 10s late: a VM it hasn't sampled yet is "unknown".
+		// Only an explicit "stopped", handled above, says a worker is done; anything else is looked at again next
+		// pass.
+		return "", false
 	}
 
 	// A ready, running worker whose runner is gone from GitHub has nothing left to do: its runner finished a job
@@ -203,9 +211,9 @@ func (c *Controller) scale(ctx context.Context, s *scaleSetState, v view, now ti
 	}
 }
 
-// allocateVMID returns the lowest free VMID in the configured range and reserves it.
+// allocateVMID returns the lowest free VMID in the worker part of the configured range and reserves it.
 func (c *Controller) allocateVMID(used map[int]bool) (int, bool) {
-	r := c.cfg.Proxmox.VMIDRange
+	r := c.cfg.Proxmox.VMIDRange.Workers()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for id := r.Start; id <= r.End; id++ {
