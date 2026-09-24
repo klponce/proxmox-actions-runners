@@ -18,9 +18,13 @@ RUN apt-get update \
         git \
         less \
         libjson-perl \
+        ovmf \
+        qemu-system-x86 \
+        qemu-utils \
         shellcheck \
         sudo \
         unzip \
+        xorriso \
     && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \
@@ -50,4 +54,6 @@ ENV GOPATH=/home/${USERNAME}/go \
     GOCACHE=/home/${USERNAME}/.cache/go-build \
     GOLANGCI_LINT_CACHE=/home/${USERNAME}/.cache/golangci-lint \
     GOTOOLCHAIN=local \
+    PACKER_PLUGIN_PATH=/home/${USERNAME}/.cache/packer/plugins \
+    PACKER_CACHE_DIR=/home/${USERNAME}/.cache/packer/cache \
     PATH=/home/${USERNAME}/go/bin:${PATH}
