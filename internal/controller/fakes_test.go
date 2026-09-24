@@ -314,6 +314,8 @@ type fakeGitHub struct {
 	latest       github.RunnerRelease
 	releaseErr   error
 	releaseCalls int
+	// releaseBlock, if set, holds each lookup until it is closed.
+	releaseBlock chan struct{}
 }
 
 func newFakeGitHub() *fakeGitHub {
@@ -485,6 +487,9 @@ func (h *harness) nameOf(vmid int) string {
 }
 
 func (f *fakeGitHub) LatestRunnerRelease(context.Context) (github.RunnerRelease, error) {
+	if f.releaseBlock != nil {
+		<-f.releaseBlock
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.releaseCalls++

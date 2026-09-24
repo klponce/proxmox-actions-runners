@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"reflect"
@@ -121,6 +122,36 @@ func TestRunnerFreshness(t *testing.T) {
 				t.Errorf("runnerFreshness = %v, %v; want %v, %v", level, show, tt.wantLevel, tt.wantShow)
 			}
 		})
+	}
+}
+
+func TestSlowRunnerLookupDoesntHoldUpThePass(t *testing.T) {
+	h := newHarness(t, testConfig())
+	h.pve.addTemplate(10009, 1)
+	h.gh.releaseBlock = make(chan struct{})
+	h.want(1)
+
+	done := make(chan error, 1)
+	go func() { done <- h.c.reconcile(context.Background()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("reconcile waited for the release lookup")
+	}
+	// A lookup is already in flight, so the next pass doesn't start another.
+	if err := h.c.reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	close(h.gh.releaseBlock)
+	h.c.ops.Wait()
+	if h.gh.releaseCalls != 1 {
+		t.Errorf("release lookups = %d, want 1", h.gh.releaseCalls)
+	}
+	if n := len(h.readyWorkers()); n != 1 {
+		t.Errorf("%d ready workers, want 1 created while the lookup was pending", n)
 	}
 }
 

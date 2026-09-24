@@ -117,8 +117,7 @@ type Controller struct {
 	// lastRunnerCheck is when each worker's runner was last looked up, by VMID.
 	lastRunnerCheck map[int]time.Time
 
-	// nextRunnerCheck is when the template's runner is next compared with the latest release. Only the reconcile
-	// loop uses it.
+	// nextRunnerCheck is when the template's runner is next compared with the latest release.
 	nextRunnerCheck time.Time
 }
 
