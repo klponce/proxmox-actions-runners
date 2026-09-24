@@ -12,6 +12,7 @@ import (
 	"github.com/klponce/proxmox-actions-runners/internal/config"
 	"github.com/klponce/proxmox-actions-runners/internal/github"
 	"github.com/klponce/proxmox-actions-runners/internal/proxmox"
+	"github.com/klponce/proxmox-actions-runners/internal/vmtags"
 )
 
 // checkTimeout bounds each check command.
@@ -21,9 +22,10 @@ const checkTimeout = 30 * time.Second
 const supportedPVEMajor = 9
 
 var checks = map[string]func(ctx context.Context, cfg *config.Config, path string, out io.Writer) error{
-	"config":  checkConfig,
-	"proxmox": checkProxmox,
-	"github":  checkGitHub,
+	"config":   checkConfig,
+	"proxmox":  checkProxmox,
+	"github":   checkGitHub,
+	"template": checkTemplate,
 }
 
 // runCheck handles "parcon check <target> [-config path]".
@@ -89,21 +91,9 @@ func checkProxmox(ctx context.Context, cfg *config.Config, _ string, out io.Writ
 	p := cfg.Proxmox
 	c := &checker{out: out}
 
-	secret, err := config.ReadSecretFile(p.TokenSecretFile)
+	client, err := newProxmoxClient(cfg)
 	if err != nil {
-		c.fail("token secret: %v", err)
-		return c.err()
-	}
-	client, err := proxmox.New(proxmox.Options{
-		URL:            p.URL,
-		TokenID:        p.TokenID,
-		TokenSecret:    secret,
-		TLSFingerprint: p.TLSFingerprint,
-		Node:           p.Node,
-		UserAgent:      "parcon/" + buildVersion(),
-	})
-	if err != nil {
-		c.fail("client: %v", err)
+		c.fail("%v", err)
 		return c.err()
 	}
 
@@ -163,6 +153,23 @@ func checkProxmox(ctx context.Context, cfg *config.Config, _ string, out io.Writ
 	return c.err()
 }
 
+// newProxmoxClient builds the Proxmox VE client from the config.
+func newProxmoxClient(cfg *config.Config) (*proxmox.Client, error) {
+	p := cfg.Proxmox
+	secret, err := config.ReadSecretFile(p.TokenSecretFile)
+	if err != nil {
+		return nil, fmt.Errorf("proxmox token: %w", err)
+	}
+	return proxmox.New(proxmox.Options{
+		URL:            p.URL,
+		TokenID:        p.TokenID,
+		TokenSecret:    secret,
+		TLSFingerprint: p.TLSFingerprint,
+		Node:           p.Node,
+		UserAgent:      "parcon/" + buildVersion(),
+	})
+}
+
 // newGitHubClient builds the GitHub client from the config.
 func newGitHubClient(cfg *config.Config) (*github.Client, error) {
 	key, err := config.ReadSecretFile(cfg.GitHub.App.PrivateKeyFile)
@@ -208,6 +215,69 @@ func checkGitHub(ctx context.Context, cfg *config.Config, _ string, out io.Write
 			cfg.GitHub.App.InstallationID, cfg.GitHub.ConfigURL)
 	}
 	return c.err()
+}
+
+// latestRunnerRelease looks up the latest actions/runner release. Tests replace it.
+var latestRunnerRelease = func(ctx context.Context, cfg *config.Config) (github.RunnerRelease, error) {
+	client, err := newGitHubClient(cfg)
+	if err != nil {
+		return github.RunnerRelease{}, err
+	}
+	return client.LatestRunnerRelease(ctx)
+}
+
+// checkTemplate shows the runner template workers are cloned from and whether its actions/runner is recent enough:
+// GitHub stops accepting a runner that doesn't update itself 30 days after a newer release. It fails if there is no
+// template, or if the template is github.RunnerUpdateErrorAfter behind.
+func checkTemplate(ctx context.Context, cfg *config.Config, _ string, out io.Writer) error {
+	c := &checker{out: out}
+	client, err := newProxmoxClient(cfg)
+	if err != nil {
+		c.fail("%v", err)
+		return c.err()
+	}
+	vms, err := client.ListVMs(ctx)
+	if err != nil {
+		c.fail("list VMs: %v", err)
+		return c.err()
+	}
+	tpl, ok := vmtags.NewestTemplate(vms, cfg.Proxmox.Pool)
+	if !ok {
+		c.fail("no runner template in pool %s (a template tagged %s, %s and %s<unix time>)", cfg.Proxmox.Pool,
+			vmtags.Managed, vmtags.Template, vmtags.TemplateVersionPrefix)
+		return c.err()
+	}
+	now := time.Now()
+	created, _ := vmtags.Int(tpl, vmtags.TemplateVersionPrefix)
+	have, _ := vmtags.String(tpl, vmtags.RunnerVersionPrefix)
+	if have == "" {
+		have = "unknown"
+	}
+	c.ok("runner template %d, created %s ago, actions/runner %s", tpl.VMID, formatDays(now.Sub(time.Unix(created, 0))),
+		have)
+
+	latest, err := latestRunnerRelease(ctx, cfg)
+	if err != nil {
+		c.fail("latest actions/runner release: %v", err)
+		return c.err()
+	}
+	age := now.Sub(latest.PublishedAt)
+	deadline := latest.PublishedAt.Add(github.RunnerUpdateDeadline).UTC().Format(time.DateOnly)
+	switch {
+	case !latest.NewerThan(have):
+		c.ok("actions/runner %s is the latest release", latest.Version)
+	case age >= github.RunnerUpdateErrorAfter:
+		c.fail("actions/runner %s was released %s ago; GitHub stops accepting older runners after %s: install a "+
+			"newer runner image", latest.Version, formatDays(age), deadline)
+	default:
+		c.ok("actions/runner %s was released %s ago; install a newer runner image before %s", latest.Version,
+			formatDays(age), deadline)
+	}
+	return c.err()
+}
+
+func formatDays(d time.Duration) string {
+	return fmt.Sprintf("%d days", int(d.Hours()/24))
 }
 
 func formatGiB(bytes int64) string {

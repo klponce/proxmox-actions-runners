@@ -14,7 +14,6 @@ import (
 	"github.com/klponce/proxmox-actions-runners/internal/config"
 	"github.com/klponce/proxmox-actions-runners/internal/controller"
 	"github.com/klponce/proxmox-actions-runners/internal/github"
-	"github.com/klponce/proxmox-actions-runners/internal/proxmox"
 )
 
 // runController handles "parcon run": it runs the controller until SIGINT or SIGTERM.
@@ -63,18 +62,7 @@ func runController(args []string, stderr io.Writer) error {
 
 // newController builds the controller and its clients from the config and the secret files it names.
 func newController(cfg *config.Config, logger *slog.Logger) (*controller.Controller, error) {
-	secret, err := config.ReadSecretFile(cfg.Proxmox.TokenSecretFile)
-	if err != nil {
-		return nil, fmt.Errorf("proxmox token: %w", err)
-	}
-	pve, err := proxmox.New(proxmox.Options{
-		URL:            cfg.Proxmox.URL,
-		TokenID:        cfg.Proxmox.TokenID,
-		TokenSecret:    secret,
-		TLSFingerprint: cfg.Proxmox.TLSFingerprint,
-		Node:           cfg.Proxmox.Node,
-		UserAgent:      "parcon/" + buildVersion(),
-	})
+	pve, err := newProxmoxClient(cfg)
 	if err != nil {
 		return nil, err
 	}
