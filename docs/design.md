@@ -26,6 +26,9 @@ does the same on Proxmox.
   Docker-in-Docker. Isolation comes from throwing the VM away after the job.
 - Standard Linux runners for private repositories have 2 CPUs, 8 GB RAM, and a 14 GB SSD. Public repositories get
   4 CPUs and 16 GB. These numbers set the controller's default worker size.
+- The 14 GB is free space for the job, not the disk size: the hosted image's preinstalled toolset takes tens of GB
+  more. The controller therefore sizes each worker's disk as the template's disk plus `freeDiskGiB` (14 by default).
+  A clone's disk can grow but can't be smaller than its template's, so a fixed 14 GiB disk wouldn't work anyway.
 - Self-hosted runner usage is not billed. Hosted minutes on private repositories are, beyond the plan's included
   allowance.
 
@@ -40,6 +43,10 @@ scale set APIs", and GitHub announced it for "containers, virtual machines, and 
 - a long-polling message session that reports the desired runner count
 - JIT runner config generation
 - GitHub App, PAT, or KMS/HSM-signed authentication
+
+The controller supports GitHub App authentication only, identified by the App's Client ID, the installation ID, and
+the private key, which is what `actions/scaleset` expects. Personal access tokens aren't supported: they belong to a
+person, carry broader scopes, and break when that person leaves.
 
 `internal/github` wraps this module rather than reimplementing the protocol. The controller writes only the Proxmox
 half: clone, configure, start, deliver the JIT config, destroy. The module's README says the API is stable but the
@@ -76,8 +83,10 @@ sequenceDiagram
     C->>PVE: destroy stopped VM
 ```
 
-The controller keeps N workers in flight to match GitHub's desired count. Proxmox is disposable capacity. A VM that
-exits, times out, or is orphaned is destroyed and never reused.
+The controller keeps N workers in flight to match GitHub's desired count, clamped to `minRunners`/`maxRunners`. It
+doesn't clone a VM for a specific job: GitHub assigns queued jobs to whichever registered runner is idle, so
+`minRunners` above zero already acts as a warm pool. Proxmox is disposable capacity. A VM that exits, times out, or
+is orphaned is destroyed and never reused.
 
 ### Delivering the JIT config
 
@@ -106,11 +115,16 @@ Orphaned VMs are the main way VM autoscalers fail. The controller guards against
   `linkedClone: false`. ([VM Templates and Clones](https://pve.proxmox.com/wiki/VM_Templates_and_Clones))
 - **API tokens** default to separated privileges: the effective rights are the intersection of the user's and the
   token's ACLs. ([User Management](https://pve.proxmox.com/wiki/User_Management))
-- **Scope everything to a resource pool.** Grant `VM.Clone` on the template only. Grant the VM privileges on the
-  runner pool only, and the datastore and SDN privileges on the target storage and bridge only. The token then can't
-  touch any other VM on the cluster.
-- **Guest-agent privileges** changed between releases. PVE 9 splits them into `VM.GuestAgent.*`. Earlier releases
-  gate the agent behind `VM.Monitor`. Check the privilege names against the installed version.
+- **Scope everything to a resource pool.** Grant the VM privileges on the runner pool only (the templates live there
+  too), and the datastore and SDN privileges on the target storage and the worker VNet only. The token then can't
+  touch any other VM on the cluster, including the controller and gateway VMs in `par-system`.
+- **Guest-agent privileges** changed between releases. PVE 9 splits them into `VM.GuestAgent.Audit`, `FileRead`,
+  `FileWrite`, `FileSystemMgmt`, and `Unrestricted`. Earlier releases gate the agent behind `VM.Monitor`. The
+  controller needs `Audit` for `agent/ping`, `FileWrite` for `agent/file-write` (JIT delivery), and `Unrestricted`
+  for `agent/exec` and `agent/exec-status` (template build). List each privilege in the role by name rather than
+  writing `VM.Config.*` or `VM.GuestAgent.*`.
+- **Clone permissions:** cloning needs `VM.Clone` on the source and `VM.Allocate` on the new VMID or on the target
+  pool. Growing the clone's disk needs `VM.Config.Disk`, and converting a build VM to a template needs `VM.Allocate`.
 
 Check endpoint names and privileges against the installed Proxmox VE version. The API viewer is the authoritative
 reference.
@@ -124,20 +138,39 @@ controller's metrics are the signals to watch.
 
 ## Network isolation
 
-Workers run untrusted code and should be treated as hostile to everything around them:
+Workers run untrusted code and should be treated as hostile to everything around them. Home labs and company
+networks differ too much to rely on the user's bridges, VLANs, or router rules, so the project brings its own
+network:
 
-- Put workers on a dedicated bridge or VLAN with internet egress.
-- Use the Proxmox firewall (or the router) to deny the management network, the Proxmox API, and the controller host.
-  Allow only the gateway and DNS.
-- Don't bake reusable credentials (VPN keys, registry passwords, cloud keys) into the template. Jobs that need
-  network access should get short-lived credentials at run time, for example through GitHub OIDC.
+- Workers attach only to an isolated SDN VNet with no uplink and no host IP. The host acts as a switch for it and
+  never routes worker traffic.
+- A small gateway VM with one NIC on the LAN and one on the worker network is the only way out. It serves DHCP and
+  DNS, NATs outbound traffic, and drops traffic to the LAN, the Proxmox host, the controller VM, and private and
+  link-local ranges.
+- The controller never talks to workers over the network. It uses the Proxmox API and the guest agent.
+
+Alternatives considered:
+
+| Option | Why not |
+| ------ | ------- |
+| Workers on an existing bridge or VLAN | Isolation depends on the user's switch and router setup, which the installer can't check |
+| SDN simple zone with SNAT, with the host as gateway | The host routes untrusted traffic, isolation depends on the host's firewall setup, and host DHCP needs the `dnsmasq` package |
+| Route through the controller VM | Puts hostile traffic next to the VM that holds the secrets |
+
+Don't bake reusable credentials (VPN keys, registry passwords, cloud keys) into the template. Jobs that need network
+access should get short-lived credentials at run time, for example through GitHub OIDC. See
+[install.md](install.md#networking) for the network details.
 
 ## Trust levels and scale sets
 
 Use separate scale sets for jobs with different trust levels. For example, keep jobs that build untrusted code apart
-from jobs that hold deployment secrets. Workflows then pick the right one by label. One-job VMs already stop one job
-from seeing another job's data, but separate scale sets also let you give them different networks and
-different Proxmox pools.
+from jobs that hold deployment secrets. Workflows then pick the right one by label, and GitHub runner groups control
+which repositories and workflows may use each scale set. One-job VMs already stop one job from seeing another job's
+data.
+
+All scale sets share one worker network and one runner pool. Separate networks or pools per scale set were
+considered and dropped: they would multiply the gateway and SDN setup for little gain over one-job VMs on a network
+that can only reach the internet.
 
 ## Sources
 
@@ -152,3 +185,5 @@ Opened on 2026-09-24:
 - [GARM](https://github.com/cloudbase/garm)
 - [Proxmox VE: VM Templates and Clones](https://pve.proxmox.com/wiki/VM_Templates_and_Clones)
 - [Proxmox VE: User Management](https://pve.proxmox.com/wiki/User_Management)
+- [Registering a GitHub App from a manifest](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest)
+- [Generating a user access token for a GitHub App (device flow)](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app)

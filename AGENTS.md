@@ -5,9 +5,14 @@ Guidance for coding agents (and humans) working in this repository.
 ## Project overview
 
 `proxmox-actions-runners` is a Go controller that serves GitHub Actions jobs with ephemeral VMs on Proxmox VE.
-It is modeled on Actions Runner Controller (ARC): it registers a GitHub **runner scale set**, long-polls it for job
-assignments, and for each job clones a **worker VM** from an Ubuntu 26.04 **template** that mirrors GitHub-hosted
-runners. The worker runs exactly one job with a JIT runner config and is then destroyed.
+It is modeled on Actions Runner Controller (ARC): it registers a GitHub **runner scale set**, long-polls it for the
+number of runners GitHub wants, and keeps that many **worker VMs** running, each cloned from an Ubuntu 26.04
+**template** that mirrors GitHub-hosted runners. Each worker runs exactly one job with a JIT runner config and is then
+destroyed.
+
+The project supports exactly one setup: a single standalone Proxmox VE 9 node, installed by `install/install.sh`.
+Don't add support for clusters, containers or Kubernetes, other hypervisors, or per-scale-set networks. The README's
+*Limitations* section lists what is out of scope and why.
 
 The project is in early development. Most of the layout below is planned. When you add a component, follow this
 document. If you change the design, update this document. [docs/design.md](docs/design.md) explains the reasoning
@@ -25,6 +30,10 @@ behind the invariants and the alternatives that were rejected.
   running the `images/ubuntu-26.04/` scripts through the guest agent.
 - **Controller VM**: the VM the installer creates to run the `parcon` controller. It lives in the `par-system` pool,
   outside the token's reach.
+- **Worker network**: the isolated Proxmox SDN VNet (`parnet` in the simple zone `parzone`) that workers attach to.
+  It has no uplink, no host IP, and no host SNAT or DHCP.
+- **Gateway VM**: the VM the installer creates in `par-system` with one NIC on the LAN and one on the worker network.
+  It is the worker network's only way out: it provides DHCP, DNS, and NAT to the internet, and blocks the LAN.
 - **Installer**: `install/install.sh`, run as root on a Proxmox VE 9 node. See [docs/install.md](docs/install.md).
 - **Worker**: a VM cloned from the template to run one job.
 - **Linked clone**: a copy-on-write clone of the template. It is fast and saves space. Full clones are also
@@ -52,9 +61,9 @@ Keep these true. If a change needs to break one, discuss it first.
 
 1. **One VM, one job.** Runners are always ephemeral. A worker VM is destroyed after its job finishes or fails and
    is never reused or returned to a pool after running a job.
-2. **Reconciliation, not event scripts.** The controller compares desired state (job assignments and
-   `minRunners`/`maxRunners`) with actual state (managed VMs in Proxmox and runners in GitHub) and converges.
-   Every step must be idempotent and safe to retry, with backoff.
+2. **Reconciliation, not event scripts.** The controller compares desired state (GitHub's desired runner count,
+   clamped to `minRunners`/`maxRunners`) with actual state (managed VMs in Proxmox and runners in GitHub) and
+   converges. Every step must be idempotent and safe to retry, with backoff.
 3. **Crash-safe.** The controller holds no state that it can't rebuild. On restart it rebuilds its view from
    Proxmox VM tags and metadata plus GitHub, then cleans up orphans such as VMs with no runner, runners with no VM,
    and half-created clones. A half-created clone is destroyed, not repaired.
@@ -63,24 +72,30 @@ Keep these true. If a change needs to break one, discuss it first.
 5. **Only touch what we own.** Every managed VM is tagged, for example with `par-managed` and a scale set tag, and
    lives in the runner pool. The controller must never modify or delete an untagged VM. It must never modify an
    existing template: the template builder creates a new version instead, and an old version is deleted only once
-   no worker uses it. The Proxmox token's ACLs enforce the same limit, and the controller VM sits in `par-system`,
-   outside the token's reach.
-6. **GitHub-matching defaults.** Default worker hardware is 2 vCPU, 8 GiB RAM, and a 14 GiB disk, matching
-   `ubuntu-latest` for private repositories. The defaults are defined in exactly one place (`internal/config`)
-   and can be overridden per controller and per scale set.
+   no worker uses it. The Proxmox token's ACLs enforce the same limit, and the controller and gateway VMs sit in
+   `par-system`, outside the token's reach.
+6. **GitHub-matching defaults.** Default worker hardware is 2 vCPU, 8 GiB RAM, and 14 GiB of free disk space,
+   matching `ubuntu-latest` for private repositories. The free space is added on top of the template's disk size,
+   because a clone's disk can grow but never shrink below its template's. The defaults are defined in exactly one
+   place (`internal/config`) and can be overridden per controller and per scale set.
 7. **Secrets never leak.** The GitHub App private key, the Proxmox API token, installation tokens, and JIT configs
    must never be logged, put in error messages, or stored in VM notes, tags, config, or cloud-init snippets. Pass
    JIT configs to the running VM only through the QEMU guest agent. Cloud-init carries only non-secret settings.
 8. **Minimal host footprint.** The installer changes the Proxmox host only through `pveum`, `qm`, `pvesh`, and
-   `pvesm`, and only to create objects it tags or names as ours: pools, role, user, token, ACLs, and VMs. It
-   installs no packages, services, binaries, or snippets, and doesn't edit host network or storage config. The only
-   exception is opt-in SDN mode. Every host change must appear in the plan the installer prints, and
-   `install.sh uninstall` must remove it. Everything else runs inside the controller VM.
+   `pvesm`, and only to create objects it tags or names as ours: pools, role, user, token, ACLs, VMs, and the worker
+   network's SDN zone and VNet. It installs no packages, services, binaries, or snippets, and doesn't edit host
+   network or storage config by hand. The worker network has no host IP, SNAT, or DHCP, so the host never routes
+   worker traffic. Every host change must appear in the plan the installer prints, and `install.sh uninstall` must
+   remove it. Everything else runs inside the controller and gateway VMs.
+9. **Workers are isolated.** Workers attach only to the worker network. Their only way out is the gateway VM, which
+   allows DHCP, DNS, and outbound internet traffic and drops everything else, including the LAN, the Proxmox host,
+   the controller VM, and private and link-local ranges. The controller reaches workers only through the Proxmox API
+   and the guest agent, never over the network.
 
 ## Repository layout (planned)
 
 ```
-cmd/parcon/            `parcon` binary: `run` (controller service), `template build`, `check`; flags, wiring, signals
+cmd/parcon/            `parcon` binary: `run`, `template build`, `check`, `github app create`; flags, wiring, signals
 internal/config/       config schema, defaults, validation
 internal/github/       thin wrapper over actions/scaleset: GitHub App auth, scale set, message session, JIT configs
 internal/proxmox/      Proxmox API client wrapper: clone, configure, start, stop, destroy, list by tag, guest-agent writes
@@ -89,9 +104,11 @@ internal/metrics/      Prometheus metrics
 internal/template/     template build: clone base, run provisioning through guest-exec, clean up, convert, smoke test
 install/               install.sh (the only thing that runs on the Proxmox host) and its bats tests
 images/controller/     Packer (qemu builder, CI only): controller VM base image, shipped as a release asset
+images/gateway/        Packer (qemu builder, CI only): gateway VM image (nftables, dnsmasq), shipped as a release asset
 images/runner-base/    Packer (qemu builder, CI only): runner base image with qemu-guest-agent, shipped as a release asset
 images/ubuntu-26.04/   in-guest provisioning scripts for the runner template, run by `parcon template build`
-deploy/                example config, systemd unit for the controller VM
+deploy/                example config, systemd unit for the controller VM, nginx config for the metrics endpoint
+site/                  GitHub Pages helper page for the GitHub App manifest flow (static, no third-party scripts)
 docs/                  design notes
 ```
 
@@ -108,6 +125,7 @@ gofmt -l .                                # must print nothing
 golangci-lint run
 go test -tags integration ./...           # needs real Proxmox + GitHub credentials
 packer validate images/controller
+packer validate images/gateway
 packer validate images/runner-base
 shellcheck install/install.sh images/ubuntu-26.04/*.sh
 bats install/tests
@@ -126,10 +144,17 @@ Run the build, test, vet, and format checks before you consider a change done.
   `integration` build tag.
 - Proxmox tasks (clone, destroy, and others) are asynchronous. Always wait for the task to finish and check its exit
   status. Don't assume success when the call returns.
+- Take new VMIDs only from the configured `vmidRange`, and treat a "VMID already exists" clone failure as a retryable
+  race. `/cluster/nextid` can hand the same ID to two clones started at once.
+- Find the current template by its tags (`par-template` and the newest version tag), never by a fixed VMID.
 - Keep dependencies few and well-maintained. Pin `actions/scaleset` and keep `internal/github` thin, because its
   interfaces may still change during the preview.
 - Expose Prometheus metrics for queue depth, desired vs. actual workers, clone and boot latency, VM count by state,
-  reaped VMs, and API failures. A job that stays queued is the main signal operators need.
+  reaped VMs, and API failures. A job that stays queued is the main signal operators need. `parcon` serves
+  `/metrics`, `/healthz`, and `/readyz` over plain HTTP on `127.0.0.1:9465` only. nginx in the controller VM serves
+  them over HTTPS on port 9464. Don't make `parcon` listen on the LAN or handle TLS itself.
+- Authenticate to GitHub only as a GitHub App (Client ID, installation ID, private key). Don't add PAT support.
+- Never log the manifest-flow code. It can be exchanged for the App's private key until it is used or expires.
 
 ## Installer guidelines (`install/install.sh`)
 
@@ -137,9 +162,9 @@ See [docs/install.md](docs/install.md) for the full design.
 
 - Keep invariant 8. If a feature seems to need a new host change, put it in the controller VM instead, or discuss it
   first.
-- Preflight checks come first and change nothing. They include root, Proxmox VE 9.x, amd64, KVM, quorum, clock
-  sync, tools, storage, space, bridges, and name or ID clashes. Add a check whenever a later step could fail on host
-  state.
+- Preflight checks come first and change nothing. They include root, Proxmox VE 9.x, amd64, KVM, standalone node,
+  clock sync, tools, storage, space, the LAN bridge, SDN support, worker subnet overlap, and name or ID clashes. Add a
+  check whenever a later step could fail on host state.
 - Use Bash with `set -euo pipefail`, put the body in `main`, and call it on the last line so a truncated
   `curl | bash` download can't run.
 - Use only tools that ship with Proxmox VE 9. Parse JSON with `perl -MJSON`, not `jq`.
@@ -158,6 +183,8 @@ See [docs/install.md](docs/install.md) for the full design.
   machine-id and SSH host keys, and clean cloud-init state before converting to a template.
 - Scripts run as root inside the build VM through `guest-exec`. There is no SSH and no network path from the
   controller. They must be idempotent and exit non-zero on failure.
+- Keep the template's disk as small as the toolset allows. Every worker's disk is the template's size plus
+  `freeDiskGiB`, and the root filesystem must grow to fill the disk at first boot.
 - `qemu-guest-agent` comes from the runner base image (`images/runner-base/`). Pin the `actions/runner` version and
   disable runner auto-update. The controller rebuilds the template on each runner release instead.
 - The runner service waits for the JIT config file that the controller writes through the guest agent (for example,
