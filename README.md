@@ -136,6 +136,7 @@ worker:            # controller-wide; omit to use the GitHub-matching defaults (
 scaleSets:
   - name: proxmox-ubuntu-26.04
     labels: [proxmox-ubuntu-26.04]
+    runnerGroup: default  # GitHub runner group; repository scale sets must use "default"
     minRunners: 0
     maxRunners: 3    # start low and raise after measuring host contention
     maxLifetime: 6h  # hard limit per worker VM, matching the hosted job limit

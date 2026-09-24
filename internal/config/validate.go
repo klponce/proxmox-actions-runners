@@ -45,6 +45,7 @@ var (
 	// Scale set names become runs-on labels and Proxmox tags, so they are limited to characters both accept.
 	scaleSetNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 	labelPattern        = regexp.MustCompile(`^[^\s,]+$`)
+	runnerGroupPattern  = regexp.MustCompile(`^[^\s/?&#%][^/?&#%]{0,63}$`)
 )
 
 // ValidationError lists every problem found in a config, each prefixed with the field's path.
@@ -234,6 +235,13 @@ func (c *Config) validateScaleSets(v *validator) {
 			} else {
 				labels[key] = prefix
 			}
+		}
+
+		switch {
+		case !runnerGroupPattern.MatchString(s.RunnerGroup) || strings.TrimSpace(s.RunnerGroup) != s.RunnerGroup:
+			v.addf(prefix+".runnerGroup", "%q is not a valid runner group name", s.RunnerGroup)
+		case c.GitHub.IsRepository() && s.RunnerGroup != DefaultRunnerGroup:
+			v.addf(prefix+".runnerGroup", "repository scale sets must use the %q runner group", DefaultRunnerGroup)
 		}
 
 		if s.MinRunners < 0 {
