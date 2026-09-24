@@ -218,7 +218,8 @@ See [docs/install.md](docs/install.md) for the full design.
 - The runner service waits for the JIT config file the controller writes through the guest agent to
   `/run/par-runner/jitconfig` (`controller.JITConfigPath`), for example with a systemd path unit. It restricts the
   file to the `runner` user, runs one job with `run.sh --jitconfig`, deletes the file, and powers the VM off, which
-  signals completion.
+  signals completion. The template must create `/run/par-runner` at boot (for example with a `tmpfiles.d` entry):
+  the guest agent's file-write can't create directories, so without it every worker fails at the JIT step.
 - The controller relies on the template having its root disk on `scsi0`, a cloud-init drive (for `ipconfig0`), and
   the guest agent enabled in its VM config. The template builder tags each template `par-managed`, `par-template`,
   and `par-tv-<build time in Unix seconds>`; the controller clones the newest one.

@@ -80,7 +80,7 @@ func allPrivileges() map[string]any {
 	pool := map[string]any{}
 	for _, p := range []string{"VM.Allocate", "VM.Clone", "VM.Config.CPU", "VM.Config.Memory", "VM.Config.Disk",
 		"VM.Config.Network", "VM.Config.Cloudinit", "VM.Config.Options", "VM.PowerMgmt", "VM.Audit",
-		"VM.GuestAgent.Audit", "VM.GuestAgent.FileWrite", "VM.GuestAgent.Unrestricted"} {
+		"VM.GuestAgent.Audit", "VM.GuestAgent.FileWrite", "VM.GuestAgent.Unrestricted", "Pool.Audit"} {
 		pool[p] = 1
 	}
 	return map[string]any{
@@ -141,7 +141,8 @@ func TestCheckProxmox(t *testing.T) {
 			want: []string{
 				"FAIL  privileges on /pool/par-runners: missing VM.GuestAgent.FileWrite",
 				"ok    privileges on /storage/local-lvm",
-				"FAIL  privileges on VNet parnet: no ACL on /sdn/zones/<zone>/parnet; missing SDN.Use",
+				"FAIL  privileges on VNet parnet: missing SDN.Use on /sdn/zones/<zone>/parnet (grant it to both " +
+					"the token and its user)",
 			},
 		},
 		{
