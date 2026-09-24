@@ -170,6 +170,13 @@ workers alone, so restarting or upgrading it doesn't cancel jobs.
   writing `VM.Config.*` or `VM.GuestAgent.*`.
 - **Clone permissions:** cloning needs `VM.Clone` on the source and `VM.Allocate` on the new VMID or on the target
   pool. Growing the clone's disk needs `VM.Config.Disk`, and converting a build VM to a template needs `VM.Allocate`.
+- **Seeing pools:** `/cluster/resources` reports a VM's `pool` only to callers with `Pool.Audit` on it. Without it
+  the controller can't tell its VMs from others, so the token needs it (found on PVE 9.2).
+- **`/cluster/resources` lags.** VM tags there are current, but `status` and `template` come from `pvestatd` and
+  trail reality by up to about 10 seconds (measured on PVE 9.2): a fresh clone is `unknown` with the template's
+  tags, a started VM stays `unknown` for about 4s, a stopped VM still shows `running` for about 9s, and a new
+  template shows `template: 0` for about 9s. Treat `unknown` as "don't know yet", act only on an explicit
+  `stopped`, and never destroy a VM tagged `par-template` because its template flag hasn't caught up.
 
 Check endpoint names and privileges against the installed Proxmox VE version. The API viewer is the authoritative
 reference.
