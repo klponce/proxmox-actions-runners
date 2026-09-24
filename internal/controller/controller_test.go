@@ -232,9 +232,30 @@ func TestScaleDownRetiresOldestIdleWorkers(t *testing.T) {
 	if got := h.readyWorkers(); !reflect.DeepEqual(got, []int{ids[0], ids[1]}) {
 		t.Errorf("workers after scale down = %v, want the two busy ones %v", got, ids[:2])
 	}
-	h.pass() // the busy worker refuses to go on every pass; nothing else changes
-	if got := h.readyWorkers(); len(got) != 2 {
-		t.Errorf("workers after another pass = %v", got)
+	calls := len(h.gh.removed)
+	h.pass() // the refusal marked the oldest worker busy, so nothing is retried
+	if got := h.readyWorkers(); len(got) != 2 || len(h.gh.removed) != calls {
+		t.Errorf("workers after another pass = %v, removed runners %v", got, h.gh.removed)
+	}
+}
+
+func TestScaleDownSkipsWorkerThatRefused(t *testing.T) {
+	h := newHarness(t, testConfig())
+	h.pve.addTemplate(testTemplateID, 1)
+	for range 3 {
+		h.want(len(h.readyWorkers()) + 1)
+		h.pass()
+		h.clock.Advance(time.Minute)
+	}
+	ids := h.readyWorkers()
+	// The oldest runner is in a job the controller didn't hear about, as after a restart.
+	h.gh.setBusy(h.nameOf(ids[0]), true)
+
+	h.want(2)
+	h.pass() // the oldest refuses to go
+	h.pass() // the next oldest idle worker goes instead
+	if got := h.readyWorkers(); !reflect.DeepEqual(got, []int{ids[0], ids[2]}) {
+		t.Errorf("workers after scale down = %v, want %v", got, []int{ids[0], ids[2]})
 	}
 }
 

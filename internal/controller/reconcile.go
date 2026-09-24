@@ -84,7 +84,7 @@ func (c *Controller) reconcile(ctx context.Context) error {
 	v := c.observe(vms)
 
 	for _, vm := range v.strays {
-		c.startRetire(ctx, vm, "", true, "left half-created")
+		c.startRetire(ctx, nil, vm, "", true, "left half-created")
 	}
 
 	checks := 0
@@ -95,7 +95,7 @@ func (c *Controller) reconcile(ctx context.Context) error {
 				continue
 			}
 			if reason, force := c.retireReason(ctx, s, w, now, &checks); reason != "" {
-				c.startRetire(ctx, w.vm, w.name, force, reason)
+				c.startRetire(ctx, s, w.vm, w.name, force, reason)
 			}
 		}
 	}
@@ -212,10 +212,10 @@ func (c *Controller) scale(ctx context.Context, s *scaleSetState, v view, now ti
 
 	case active > target && creating == 0:
 		// Retire the oldest idle workers first; they are closest to maxLifetime anyway. A worker whose runner
-		// picked up a job in the meantime refuses to go (RemoveRunner fails), and stays.
+		// picked up a job in the meantime refuses to go (RemoveRunner fails), stays, and counts as busy from then on.
 		sort.Slice(idle, func(i, j int) bool { return idle[i].created.Before(idle[j].created) })
 		for _, w := range idle[:min(active-target, len(idle))] {
-			c.startRetire(ctx, w.vm, w.name, false, "more workers than GitHub wants")
+			c.startRetire(ctx, s, w.vm, w.name, false, "more workers than GitHub wants")
 		}
 	}
 }

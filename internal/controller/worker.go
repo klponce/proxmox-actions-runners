@@ -83,15 +83,23 @@ func (c *Controller) startOp(ctx context.Context, vmid int, op string, fn func(c
 	}()
 }
 
-// startRetire retires a VM in the background. runnerName is empty for a VM that never got a runner. Unless force is
-// set, a VM whose runner is running a job is left alone.
-func (c *Controller) startRetire(ctx context.Context, vm proxmox.VM, runnerName string, force bool, reason string) {
+// startRetire retires a VM in the background. s is the worker's scale set, or nil for a VM without a configured one.
+// runnerName is empty for a VM that never got a runner. Unless force is set, a VM whose runner is running a job is
+// left alone.
+func (c *Controller) startRetire(ctx context.Context, s *scaleSetState, vm proxmox.VM, runnerName string, force bool,
+	reason string) {
 	c.startOp(ctx, vm.VMID, opRetire, func(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), retireTimeout)
 		defer cancel()
 		c.logger.InfoContext(ctx, "retiring worker", slog.Int("vmid", vm.VMID), slog.String("runnerName", runnerName),
 			slog.String("reason", reason))
-		return c.retire(ctx, vm.VMID, vm.Status == "running", runnerName, force)
+		err := c.retire(ctx, vm.VMID, vm.Status == "running", runnerName, force)
+		if errors.Is(err, errRunnerBusy) && s != nil {
+			// The controller missed the job's start, for example across a restart. Count the worker as busy so that
+			// scaling down picks another one.
+			s.markRunning(runnerName)
+		}
+		return err
 	})
 }
 

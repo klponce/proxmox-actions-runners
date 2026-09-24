@@ -23,7 +23,8 @@ type scaleSetState struct {
 	// controller neither adds nor retires workers, so a restart doesn't disturb running ones.
 	desired int
 	known   bool
-	// jobs maps runner names to the job each is running, from JobStarted until JobCompleted.
+	// jobs maps runner names to the job each is running, from JobStarted (or GitHub refusing to remove the runner)
+	// until JobCompleted.
 	jobs map[string]string
 	// retryAfter holds off new workers after a failed creation.
 	retryAfter time.Time
@@ -78,6 +79,15 @@ func (s *scaleSetState) jobFor(runner string) (string, bool) {
 	defer s.mu.Unlock()
 	job, ok := s.jobs[runner]
 	return job, ok
+}
+
+// markRunning records that a runner is in a job the controller didn't hear about: GitHub refused to remove it.
+func (s *scaleSetState) markRunning(runner string) {
+	s.mu.Lock()
+	if _, ok := s.jobs[runner]; !ok {
+		s.jobs[runner] = ""
+	}
+	s.mu.Unlock()
 }
 
 // forget drops what the scale set knows about a runner whose worker is gone.

@@ -149,7 +149,7 @@ safe to apply again after a crash:
 - **Retrying.** Retiring a half-created worker or one of a removed scale set waits for its runner's job. While the job
   runs, the controller asks GitHub again only at the missing-runner check interval.
 - **Scaling down.** Surplus idle workers are retired oldest first. GitHub refuses to remove a runner that is running a
-  job, and the controller then leaves that worker alone.
+  job. The controller then counts that worker as busy, even if it missed the job's start, and picks another one.
 
 Retiring a worker unregisters its runner, stops the VM, and destroys it; each step accepts that its target may already
 be gone. VMIDs come from the configured range, lowest free first. An ID Proxmox reports as taken by a VM the token
