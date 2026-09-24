@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Installs the pinned GitHub Actions runner in /opt/actions-runner. Self-updates are disabled on the scale set, so
-# a new runner release means bumping the version here and rebuilding the template.
+# Installs the GitHub Actions runner in /opt/actions-runner. Self-updates are disabled on the scale set, so a new
+# runner release means a new image: the Packer build passes the version in PAR_RUNNER_VERSION and PAR_RUNNER_SHA256
+# (images/runner/runner.pkr.hcl), and GitHub requires such runners to be updated within 30 days of a release.
 set -euo pipefail
 
-RUNNER_VERSION=2.337.0
-RUNNER_SHA256=70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613
+RUNNER_VERSION=${PAR_RUNNER_VERSION:?PAR_RUNNER_VERSION is required}
+RUNNER_SHA256=${PAR_RUNNER_SHA256:?PAR_RUNNER_SHA256 is required}
 RUNNER_DIR=/opt/actions-runner
 # Global, not local: the EXIT trap runs after main returns.
 TMP_DIR=""
@@ -31,6 +32,11 @@ main() {
 
   # Where the setup-* actions cache tool versions, as on GitHub-hosted runners.
   install -d -o runner -g runner /opt/hostedtoolcache /home/runner/work
+
+  # Jobs use Docker without sudo.
+  if getent group docker >/dev/null; then
+    usermod -aG docker runner
+  fi
 
   # The runner passes the variables in .env to every job.
   cat >"$RUNNER_DIR/.env" <<'EOF'
