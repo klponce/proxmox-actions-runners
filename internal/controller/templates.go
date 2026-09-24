@@ -35,7 +35,7 @@ func (c *Controller) pruneTemplates(ctx context.Context, vms []proxmox.VM, newes
 		inUse[int(ref)] = true
 	}
 	for _, vm := range vms {
-		if !vmtags.IsTemplate(vm, pool) || vm.VMID == newest.VMID || inUse[vm.VMID] || c.isBusy(vm.VMID) {
+		if !vmtags.IsTemplate(vm, pool) || vm.VMID == newest.VMID || inUse[vm.VMID] {
 			continue
 		}
 		c.startOp(ctx, vm.VMID, opPruneTemplate, func(ctx context.Context) error {

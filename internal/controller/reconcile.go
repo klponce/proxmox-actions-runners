@@ -45,7 +45,7 @@ func (c *Controller) observe(vms []proxmox.VM) view {
 		// templates and the installer's par-build clones, and a newly imported template shows template: 0 for about
 		// 10s while it already has the template's tags, the same as a half-created clone; looking only at worker IDs
 		// keeps it from being destroyed as a stray.
-		if !c.cfg.Proxmox.VMIDRange.Workers().Contains(vm.VMID) || vm.HasTag(vmtags.Build) {
+		if !c.cfg.Proxmox.VMIDRange.Workers().Contains(vm.VMID) {
 			continue
 		}
 		if !vm.HasTag(vmtags.Worker) {

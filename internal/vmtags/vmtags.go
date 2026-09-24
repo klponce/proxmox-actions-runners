@@ -22,7 +22,7 @@ const (
 	// Template marks a runner template that workers are cloned from. The installer imports templates with it.
 	Template = "par-template"
 	// Build marks a VM the installer creates and destroys itself, such as its smoke-test clone. It lives in the
-	// reserved VMIDs, and the controller leaves it alone.
+	// reserved VMIDs, which the controller never treats as workers or leftovers.
 	Build = "par-build"
 )
 
