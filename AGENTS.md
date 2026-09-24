@@ -97,7 +97,7 @@ Keep these true. If a change needs to break one, discuss it first.
 ## Repository layout (planned)
 
 ```
-cmd/parcon/            `parcon` binary: `run`, `check`, `github app create`; flags, wiring, signals
+cmd/parcon/            `parcon` binary: `run`, `check`, `github app create|import|wait-installation`; flags, wiring, signals
 internal/config/       config schema, defaults, validation
 internal/github/       thin wrapper over actions/scaleset: GitHub App auth, scale set, message session, JIT configs
 internal/proxmox/      Proxmox API client wrapper: clone, configure, start, stop, destroy, list by tag, guest-agent writes
@@ -196,6 +196,11 @@ expects, and the suite has already caught a missing privilege (`Pool.Audit`) tha
   them over HTTPS on port 9464. Don't make `parcon` listen on the LAN or handle TLS itself.
 - Authenticate to GitHub only as a GitHub App (Client ID, installation ID, private key). Don't add PAT support.
 - Never log the manifest-flow code. It can be exchanged for the App's private key until it is used or expires.
+  `parcon github app` commands read the code and keys from stdin, never from arguments.
+- `github.app` is optional when the config is parsed, because the installer checks Proxmox before it creates the
+  App. A command that talks to GitHub as the App (`parcon run`, `parcon check github`) calls
+  `(*config.Config).RequireGitHubApp` first; one that needs only public GitHub data, like `parcon check template`,
+  doesn't.
 
 ## Installer guidelines (`install/install.sh`)
 
