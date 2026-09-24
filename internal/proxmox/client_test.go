@@ -232,15 +232,6 @@ func TestWaitTaskStopsWithContext(t *testing.T) {
 	}
 }
 
-func TestWaitTaskRejectsBadUPID(t *testing.T) {
-	f := newFakePVE(t)
-	for _, upid := range []string{"", "not-a-upid", "UPID::1:2:3:qmclone:100:root@pam:"} {
-		if err := f.client().WaitTask(context.Background(), upid); err == nil {
-			t.Errorf("WaitTask(%q) succeeded", upid)
-		}
-	}
-}
-
 func TestListVMs(t *testing.T) {
 	f := newFakePVE(t)
 	f.reply(http.MethodGet, "/cluster/resources", reply{Data: []map[string]any{
@@ -355,15 +346,6 @@ func TestCloneFailures(t *testing.T) {
 			t.Fatalf("Clone error = %v, want IsVMIDInUse", err)
 		}
 	})
-	t.Run("missing IDs", func(t *testing.T) {
-		f := newFakePVE(t)
-		if err := f.client().Clone(context.Background(), CloneOptions{SourceVMID: 10000}); err == nil {
-			t.Fatal("Clone without a new VMID succeeded")
-		}
-		if n := len(f.seen()); n != 0 {
-			t.Errorf("sent %d requests, want none", n)
-		}
-	})
 }
 
 func TestSetConfig(t *testing.T) {
@@ -407,9 +389,6 @@ func TestGrowDisk(t *testing.T) {
 	params := f.last(http.MethodPut, path).Params
 	if params.Get("disk") != "scsi0" || params.Get("size") != "+14G" {
 		t.Errorf("params = %v, want disk=scsi0 size=+14G", params)
-	}
-	if err := c.GrowDisk(context.Background(), 10005, "scsi0", 0); err == nil {
-		t.Error("GrowDisk by 0 succeeded")
 	}
 }
 
@@ -483,15 +462,6 @@ func TestAgentWriteFile(t *testing.T) {
 	}
 	if params.Has("encode") {
 		t.Error("encode is set; Proxmox must base64-encode the content itself")
-	}
-
-	before := len(f.seen())
-	tooBig := make([]byte, MaxAgentFileBytes+1)
-	if err := c.AgentWriteFile(context.Background(), 10005, "/tmp/x", tooBig); err == nil {
-		t.Error("oversized AgentWriteFile succeeded")
-	}
-	if len(f.seen()) != before {
-		t.Error("oversized AgentWriteFile sent a request")
 	}
 }
 

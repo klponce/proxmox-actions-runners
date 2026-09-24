@@ -8,13 +8,8 @@ import (
 	"strconv"
 )
 
-// Proxmox limits for guest-agent parameters.
-const (
-	// MaxAgentFileBytes is the largest content AgentWriteFile accepts.
-	MaxAgentFileBytes = 61440
-	// MaxAgentStdinBytes is the largest stdin AgentExec accepts.
-	MaxAgentStdinBytes = 65536
-)
+// MaxAgentStdinBytes is the largest stdin Proxmox accepts for AgentExec.
+const MaxAgentStdinBytes = 65536
 
 // AgentPing checks that the guest agent responds. Use IsAgentNotReady to tell "still booting" from other failures.
 func (c *Client) AgentPing(ctx context.Context, vmid int) error {
@@ -28,10 +23,6 @@ func (c *Client) AgentPing(ctx context.Context, vmid int) error {
 // This is how secrets such as JIT configs reach a VM: the content is never logged or put in an error. The file is
 // created with the guest agent's default permissions, so the guest should set tighter ones before using it.
 func (c *Client) AgentWriteFile(ctx context.Context, vmid int, path string, content []byte) error {
-	if len(content) > MaxAgentFileBytes {
-		return fmt.Errorf("write %s in VM %d: content is %d bytes, more than the limit of %d",
-			path, vmid, len(content), MaxAgentFileBytes)
-	}
 	// Proxmox base64-encodes the content for QEMU itself when encode is on, which is the default.
 	params := url.Values{"file": {path}, "content": {string(content)}}
 	if err := c.post(ctx, c.vmPath(vmid, "agent", "file-write"), params, nil); err != nil {

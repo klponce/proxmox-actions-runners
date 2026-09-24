@@ -20,23 +20,11 @@ type taskStatus struct {
 	Type       string `json:"type"`
 }
 
-// upidNode returns the node a task runs on. A UPID looks like UPID:<node>:<pid>:<pstart>:<start>:<type>:<id>:<user>:.
-func upidNode(upid string) (string, error) {
-	parts := strings.Split(upid, ":")
-	if len(parts) < 9 || parts[0] != "UPID" || parts[1] == "" {
-		return "", fmt.Errorf("invalid task ID %q", upid)
-	}
-	return parts[1], nil
-}
-
 // WaitTask polls a task until it stops. It returns nil if the task succeeded, including with warnings, and a
-// *TaskError otherwise. If ctx ends first, the task keeps running in Proxmox and ctx's error is returned.
+// *TaskError otherwise. If ctx ends first, the task keeps running in Proxmox and ctx's error is returned. Tasks run
+// on the client's node, the only one there is.
 func (c *Client) WaitTask(ctx context.Context, upid string) error {
-	node, err := upidNode(upid)
-	if err != nil {
-		return err
-	}
-	path := "/nodes/" + joinSegments(node, "tasks", upid, "status")
+	path := c.nodePath("tasks", upid, "status")
 	return c.poll(ctx, func() (bool, error) {
 		var st taskStatus
 		if err := c.get(ctx, path, nil, &st); err != nil {

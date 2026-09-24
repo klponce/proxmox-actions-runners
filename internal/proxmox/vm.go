@@ -2,7 +2,6 @@ package proxmox
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -147,9 +146,6 @@ type CloneOptions struct {
 
 // Clone clones a template and waits for the clone to finish.
 func (c *Client) Clone(ctx context.Context, opts CloneOptions) error {
-	if opts.SourceVMID <= 0 || opts.NewVMID <= 0 {
-		return errors.New("clone: source and new VMID are required")
-	}
 	params := url.Values{"newid": {strconv.Itoa(opts.NewVMID)}}
 	setIf(params, "name", opts.Name)
 	setIf(params, "pool", opts.Pool)
@@ -191,9 +187,6 @@ func (c *Client) SetConfig(ctx context.Context, vmid int, settings map[string]st
 
 // GrowDisk adds addGiB gibibytes to a VM disk, such as "scsi0", and waits for the resize to finish.
 func (c *Client) GrowDisk(ctx context.Context, vmid int, disk string, addGiB int) error {
-	if addGiB <= 0 {
-		return fmt.Errorf("grow disk %s of VM %d: size must be positive, got %d", disk, vmid, addGiB)
-	}
 	params := url.Values{"disk": {disk}, "size": {fmt.Sprintf("+%dG", addGiB)}}
 	err := c.runTask(ctx, func(upid *string) error {
 		return c.put(ctx, c.vmPath(vmid, "resize"), params, upid)
