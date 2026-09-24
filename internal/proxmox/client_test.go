@@ -584,12 +584,12 @@ func TestStorageStatus(t *testing.T) {
 func TestPermissions(t *testing.T) {
 	f := newFakePVE(t)
 	f.reply(http.MethodGet, "/access/permissions", reply{Data: map[string]any{
-		"/":                          map[string]any{},
-		"/pool/par-runners":          map[string]any{"VM.Allocate": 1, "VM.Clone": 1, "VM.Audit": 0},
-		"/storage":                   map[string]any{"Datastore.Audit": 1},
-		"/storage/local-lvm":         map[string]any{"Datastore.AllocateSpace": 0},
-		"/sdn/zones/parzone/parnet":  map[string]any{"SDN.Use": 0},
-		"/sdn/zones/otherzone/other": map[string]any{"SDN.Use": 1},
+		"/":                         map[string]any{},
+		"/pool/par-runners":         map[string]any{"VM.Allocate": 1, "VM.Clone": 1, "VM.Audit": 0},
+		"/storage":                  map[string]any{"Datastore.Audit": 1},
+		"/storage/local-lvm":        map[string]any{"Datastore.AllocateSpace": 0},
+		"/sdn/zones/parzone/parnet": map[string]any{"SDN.Use": 0},
+		"/sdn/zones/otherzone":      map[string]any{"SDN.Use": 1},
 	}})
 	perms, err := f.client().Permissions(context.Background())
 	if err != nil {
@@ -607,6 +607,7 @@ func TestPermissions(t *testing.T) {
 		{"/storage/other", "Datastore.AllocateSpace", false}, // granted on a sibling without propagation
 		{"/pool/par-runners", "VM.PowerMgmt", false},
 		{"/vms/100", "VM.Audit", false},
+		{"/sdn/zones/otherzone/othernet", "SDN.Use", true}, // propagated from the zone
 	}
 	for _, tt := range tests {
 		if got := perms.Has(tt.path, tt.priv); got != tt.want {
@@ -614,18 +615,22 @@ func TestPermissions(t *testing.T) {
 		}
 	}
 
-	missing := perms.Missing(RequiredPrivileges("par-runners", "local-lvm")[0])
+	required := RequiredPrivileges("par-runners", "local-lvm", "parzone", "parnet")
+	missing := perms.Missing(required[0])
 	if len(missing) != len(poolPrivileges)-3 || missing[0] != "VM.Config.CPU" {
 		t.Errorf("Missing on pool = %v", missing)
 	}
-	if m := perms.Missing(RequiredPrivileges("par-runners", "local-lvm")[1]); len(m) != 0 {
+	if m := perms.Missing(required[1]); len(m) != 0 {
 		t.Errorf("Missing on storage = %v, want none", m)
 	}
-	if path, m := perms.MissingOnVNet("parnet"); path != "/sdn/zones/parzone/parnet" || len(m) != 0 {
-		t.Errorf("MissingOnVNet(parnet) = %q, %v", path, m)
+	if required[2].Path != "/sdn/zones/parzone/parnet" {
+		t.Errorf("VNet requirement path = %q", required[2].Path)
 	}
-	if path, m := perms.MissingOnVNet("nonet"); path != "" || !reflect.DeepEqual(m, VNetPrivileges()) {
-		t.Errorf("MissingOnVNet(nonet) = %q, %v", path, m)
+	if m := perms.Missing(required[2]); len(m) != 0 {
+		t.Errorf("Missing on VNet = %v, want none", m)
+	}
+	if m := perms.Missing(RequiredPrivileges("par-runners", "local-lvm", "parzone", "nonet")[2]); !reflect.DeepEqual(m, vnetPrivileges) {
+		t.Errorf("Missing on another VNet = %v, want %v", m, vnetPrivileges)
 	}
 }
 

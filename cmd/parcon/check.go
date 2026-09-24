@@ -123,23 +123,15 @@ func checkProxmox(ctx context.Context, cfg *config.Config, _ string, out io.Writ
 	if err != nil {
 		c.fail("read the token's permissions: %v", err)
 	} else {
-		for _, req := range proxmox.RequiredPrivileges(p.Pool, p.Storage) {
+		for _, req := range proxmox.RequiredPrivileges(p.Pool, p.Storage, p.Zone, p.VNet) {
 			if missing := perms.Missing(req); len(missing) > 0 {
-				c.fail("privileges on %s: missing %s", req.Path, strings.Join(missing, ", "))
+				// A privilege-separated token only gets what both it and its user are granted, so an ACL for the
+				// token alone doesn't show up here.
+				c.fail("privileges on %s: missing %s (grant it to both the token and its user)", req.Path,
+					strings.Join(missing, ", "))
 			} else {
 				c.ok("privileges on %s", req.Path)
 			}
-		}
-		switch path, missing := perms.MissingOnVNet(p.VNet); {
-		case path == "":
-			// A privilege-separated token only gets what both it and its user are granted, so an ACL for the
-			// token alone doesn't show up here.
-			c.fail("privileges on VNet %s: missing %s on /sdn/zones/<zone>/%s (grant it to both the token and "+
-				"its user)", p.VNet, strings.Join(missing, ", "), p.VNet)
-		case len(missing) > 0:
-			c.fail("privileges on %s: missing %s", path, strings.Join(missing, ", "))
-		default:
-			c.ok("privileges on %s", path)
 		}
 	}
 

@@ -136,6 +136,9 @@ func TestParseDefaults(t *testing.T) {
 	if c.GitHub.IsRepository() {
 		t.Error("an organization URL is reported as a repository")
 	}
+	if c.Proxmox.Zone != DefaultZone {
+		t.Errorf("proxmox.zone = %q, want %q", c.Proxmox.Zone, DefaultZone)
+	}
 	if c.Metrics.Listen != DefaultMetricsListen {
 		t.Errorf("metrics.listen = %q, want %q", c.Metrics.Listen, DefaultMetricsListen)
 	}
