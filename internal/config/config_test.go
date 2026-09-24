@@ -365,27 +365,20 @@ func TestParseMissingVMIDRangeReportedOnce(t *testing.T) {
 	}
 }
 
-func TestVMIDRangeSplit(t *testing.T) {
+func TestVMIDRangeWorkers(t *testing.T) {
 	tests := []struct {
-		r                 VMIDRange
-		workers, reserved VMIDRange
+		r, workers VMIDRange
 	}{
-		{VMIDRange{10000, 10999}, VMIDRange{10000, 10995}, VMIDRange{10996, 10999}},
+		{VMIDRange{10000, 10999}, VMIDRange{10000, 10995}},
 		// The smallest range validation allows for one runner.
-		{VMIDRange{100, 104}, VMIDRange{100, 100}, VMIDRange{101, 104}},
+		{VMIDRange{100, 104}, VMIDRange{100, 100}},
 	}
 	for _, tt := range tests {
 		if got := tt.r.Workers(); got != tt.workers {
 			t.Errorf("%+v.Workers() = %+v, want %+v", tt.r, got, tt.workers)
 		}
-		if got := tt.r.Reserved(); got != tt.reserved {
-			t.Errorf("%+v.Reserved() = %+v, want %+v", tt.r, got, tt.reserved)
-		}
-		if tt.r.Workers().Size()+tt.r.Reserved().Size() != tt.r.Size() {
-			t.Errorf("%+v: worker and reserved IDs don't add up to the range", tt.r)
-		}
-		if tt.r.Workers().Contains(tt.r.Reserved().Start) {
-			t.Errorf("%+v: worker and reserved IDs overlap", tt.r)
+		if tt.r.Size()-tt.r.Workers().Size() != ReservedVMIDs {
+			t.Errorf("%+v: %d IDs reserved, want %d", tt.r, tt.r.Size()-tt.r.Workers().Size(), ReservedVMIDs)
 		}
 	}
 }

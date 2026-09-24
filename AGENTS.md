@@ -250,9 +250,9 @@ See [docs/install.md](docs/install.md) for the full design.
   and the tags `par-managed`, `par-template`, `par-tv-<import time in Unix seconds>`, and
   `par-rv-<actions/runner version>` (`internal/vmtags`). The controller clones the newest `par-tv`, tags each worker
   `par-tpl-<template VMID>`, and destroys older templates that no worker references.
-- Templates go in the reserved VMIDs at the end of the range (`config.VMIDRange.Reserved`), never in the worker
-  IDs. A new template reports `template: 0` for about 10s, and in the worker IDs it would look like a half-created
-  worker clone and be destroyed.
+- Templates go in the reserved VMIDs, the last `config.ReservedVMIDs` IDs of the range, never in the worker IDs
+  (`config.VMIDRange.Workers`). A new template reports `template: 0` for about 10s, and in the worker IDs it would
+  look like a half-created worker clone and be destroyed.
 
 ## Change hygiene
 

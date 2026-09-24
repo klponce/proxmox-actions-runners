@@ -86,16 +86,11 @@ func (r VMIDRange) Contains(id int) bool {
 }
 
 // Workers returns the part of the range that worker VMs take their IDs from: everything but the last ReservedVMIDs
-// IDs.
+// IDs, which hold templates and the installer's smoke-test clones. Keeping those apart from workers lets the
+// controller tell a new template, whose template flag Proxmox reports late, from a half-created worker clone, which
+// carries the template's tags.
 func (r VMIDRange) Workers() VMIDRange {
 	return VMIDRange{Start: r.Start, End: r.End - ReservedVMIDs}
-}
-
-// Reserved returns the last ReservedVMIDs IDs of the range, which hold templates and the installer's smoke-test
-// clones. Keeping them apart from workers lets the controller tell a new template, whose template flag
-// Proxmox reports late, from a half-created worker clone, which carries the template's tags.
-func (r VMIDRange) Reserved() VMIDRange {
-	return VMIDRange{Start: max(r.Start, r.End-ReservedVMIDs+1), End: r.End}
 }
 
 // GitHub says which organization or repository the scale sets belong to and how to authenticate.
