@@ -240,6 +240,9 @@ See [docs/install.md](docs/install.md) for the full design.
 - The controller relies on the template having its root disk on `scsi0`, a cloud-init drive (for `ipconfig0`), and
   the guest agent enabled in its VM config. The template builder tags each template `par-managed`, `par-template`,
   and `par-tv-<build time in Unix seconds>`; the controller clones the newest one.
+- The template builder puts templates, build VMs, and smoke-test clones in the reserved VMIDs at the end of the
+  range (`config.VMIDRange.Reserved`), never in the worker IDs. A new template reports `template: 0` for about 10s,
+  and in the worker IDs it would look like a half-created worker clone and be destroyed.
 
 ## Change hygiene
 
