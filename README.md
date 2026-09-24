@@ -211,6 +211,9 @@ only on the `par-runners` pool, the target storage, and the worker network:
 `VM.GuestAgent.Unrestricted` lets the token run commands as root in any VM in `par-runners`. That is accepted: those
 VMs are disposable and already fully under the controller's control, and the token can't reach `par-system`.
 
+`parcon check proxmox` checks the token against this list, which lives in `internal/proxmox/access.go`. Keep the
+two in sync.
+
 To build from source, use the dev container in `.devcontainer/`, which has Go, Packer, and every other tool at
 pinned versions. See [AGENTS.md](AGENTS.md#development-environment).
 

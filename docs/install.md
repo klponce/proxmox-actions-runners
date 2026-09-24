@@ -174,6 +174,8 @@ include the agent avoids both changes to the host.
     `qm guest exec --pass-stdin`, so they never appear on a command line or on the host's disk:
     - `/etc/proxmox-actions-runners/config.yaml` with the settings and the Proxmox host's pinned TLS fingerprint
     - the Proxmox token as a file readable only by the controller's user
+    The installer then runs `parcon check proxmox` in the VM. It confirms the Proxmox VE version, that the token has
+    every privilege it needs on the pool, storage, and VNet, and that the storage accepts VM disks.
 11. **Create the GitHub App** with the manifest flow described under *GitHub App setup*. The code the user pastes is
     passed to `parcon github app create` in the controller VM, so the App's private key goes straight from GitHub
     into the controller VM and never passes through the host. A re-run skips this step if the controller VM already
