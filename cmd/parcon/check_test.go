@@ -141,7 +141,8 @@ func TestCheckProxmox(t *testing.T) {
 			want: []string{
 				"FAIL  privileges on /pool/par-runners: missing VM.GuestAgent.FileWrite",
 				"ok    privileges on /storage/local-lvm",
-				"FAIL  privileges on VNet parnet: no ACL on /sdn/zones/<zone>/parnet; missing SDN.Use",
+				"FAIL  privileges on VNet parnet: missing SDN.Use on /sdn/zones/<zone>/parnet (grant it to both " +
+					"the token and its user)",
 			},
 		},
 		{
