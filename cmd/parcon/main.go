@@ -8,6 +8,9 @@
 //	parcon check proxmox [-config path]
 //	parcon check github [-config path]
 //	parcon check template [-config path]
+//	parcon github app create [-key-file path] < code
+//	parcon github app import [-key-file path] < key.pem
+//	parcon github app wait-installation -client-id id -target url [-key-file path] [-timeout duration]
 package main
 
 import (
@@ -29,6 +32,14 @@ const usage = `usage:
   parcon check proxmox [-config path]   check the Proxmox VE API, token privileges, and storage
   parcon check github [-config path]    check the GitHub App credentials and scale set registration
   parcon check template [-config path]  check the runner template and its actions/runner version
+  parcon github app create [-key-file path] < code
+                                        create the GitHub App from the manifest code on stdin, write its key,
+                                        and print its clientId, appId, and slug as JSON
+  parcon github app import [-key-file path] < key.pem
+                                        write an existing GitHub App's private key from stdin
+  parcon github app wait-installation -client-id id -target url [-key-file path] [-timeout duration]
+                                        wait until the App is installed on the target and print the
+                                        installation ID
 `
 
 // errUsage marks a command-line mistake, which exits with status 2 like the flag package does.
@@ -57,6 +68,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runController(args[1:], stderr)
 	case "check":
 		return runCheck(args[1:], stdout, stderr)
+	case "github":
+		return runGitHub(args[1:], stdout, stderr)
 	case "help", "-h", "-help", "--help":
 		fmt.Fprint(stdout, usage)
 		return nil
