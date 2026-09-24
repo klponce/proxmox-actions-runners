@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/klponce/proxmox-actions-runners/internal/config"
+	"github.com/klponce/proxmox-actions-runners/internal/github"
 	"github.com/klponce/proxmox-actions-runners/internal/proxmox"
 )
 
@@ -22,6 +23,7 @@ const supportedPVEMajor = 9
 var checks = map[string]func(ctx context.Context, cfg *config.Config, path string, out io.Writer) error{
 	"config":  checkConfig,
 	"proxmox": checkProxmox,
+	"github":  checkGitHub,
 }
 
 // runCheck handles "parcon check <target> [-config path]".
@@ -163,6 +165,59 @@ func checkProxmox(ctx context.Context, cfg *config.Config, _ string, out io.Writ
 			}
 		}
 		c.ok("list VMs: %d in pool %s on node %s", inPool, p.Pool, p.Node)
+	}
+	return c.err()
+}
+
+// newGitHubClient builds the GitHub client from the config.
+func newGitHubClient(cfg *config.Config) (*github.Client, error) {
+	key, err := config.ReadSecretFile(cfg.GitHub.App.PrivateKeyFile)
+	if err != nil {
+		return nil, err
+	}
+	return github.New(github.Options{
+		ConfigURL:      cfg.GitHub.ConfigURL,
+		ClientID:       cfg.GitHub.App.ClientID,
+		InstallationID: cfg.GitHub.App.InstallationID,
+		PrivateKeyPEM:  key,
+		Version:        buildVersion(),
+	})
+}
+
+// checkGitHub confirms that the GitHub App credentials work and shows which scale sets are already registered.
+// It only reads: the scale sets are created when the controller starts.
+func checkGitHub(ctx context.Context, cfg *config.Config, _ string, out io.Writer) error {
+	c := &checker{out: out}
+	client, err := newGitHubClient(cfg)
+	if err != nil {
+		c.fail("GitHub App: %v", err)
+		return c.err()
+	}
+
+	for i, s := range cfg.ScaleSets {
+		found, err := client.FindScaleSet(ctx, github.ScaleSetSpec{Name: s.Name, Labels: s.Labels,
+			RunnerGroup: s.RunnerGroup})
+		if err != nil {
+			if i == 0 {
+				// The first request is the one that authenticates, so a failure here is about the App itself.
+				c.fail("GitHub App %s (installation %d) on %s: %v", cfg.GitHub.App.ClientID,
+					cfg.GitHub.App.InstallationID, cfg.GitHub.ConfigURL, err)
+				return c.err()
+			}
+			c.fail("scale set %s: %v", s.Name, err)
+			continue
+		}
+		if i == 0 {
+			c.ok("GitHub App %s (installation %d) can manage runners on %s", cfg.GitHub.App.ClientID,
+				cfg.GitHub.App.InstallationID, cfg.GitHub.ConfigURL)
+		}
+		if found == nil {
+			c.ok("scale set %s in runner group %s: not registered yet; the controller creates it on start", s.Name,
+				s.RunnerGroup)
+		} else {
+			c.ok("scale set %s in runner group %s: registered with ID %d, labels %s", s.Name, s.RunnerGroup, found.ID,
+				strings.Join(found.Labels, ", "))
+		}
 	}
 	return c.err()
 }
