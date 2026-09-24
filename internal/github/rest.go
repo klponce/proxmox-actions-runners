@@ -3,9 +3,11 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -47,33 +49,55 @@ func (c *Client) LatestRunnerRelease(ctx context.Context) (RunnerRelease, error)
 
 func latestRunnerRelease(ctx context.Context, client *http.Client, apiBase string) (RunnerRelease, error) {
 	const path = "/repos/actions/runner/releases/latest"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+path, nil)
-	if err != nil {
-		return RunnerRelease{}, err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	req.Header.Set("User-Agent", systemName)
-	resp, err := client.Do(req)
-	if err != nil {
-		return RunnerRelease{}, fmt.Errorf("latest runner release: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return RunnerRelease{}, fmt.Errorf("latest runner release: GET %s: %s", path, resp.Status)
-	}
 	var out struct {
 		TagName     string    `json:"tag_name"`
 		PublishedAt time.Time `json:"published_at"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
-		return RunnerRelease{}, fmt.Errorf("latest runner release: decode: %w", err)
+	status, err := restCall(ctx, client, apiBase, http.MethodGet, path, "", &out)
+	switch {
+	case err != nil:
+		return RunnerRelease{}, fmt.Errorf("latest runner release: %w", err)
+	case status != http.StatusOK:
+		return RunnerRelease{}, fmt.Errorf("latest runner release: GET %s: %d %s", path, status,
+			http.StatusText(status))
 	}
 	version := strings.TrimPrefix(out.TagName, "v")
 	if _, ok := parseVersion(version); !ok {
 		return RunnerRelease{}, fmt.Errorf("latest runner release: unexpected tag %q", out.TagName)
 	}
 	return RunnerRelease{Version: version, PublishedAt: out.PublishedAt}, nil
+}
+
+// restCall sends a request to GitHub's REST API at apiBase, with token as the bearer token if it isn't empty, and
+// decodes a 2xx JSON response into out. It returns the status code. Errors never include the URL, whose path may
+// hold a secret.
+func restCall(ctx context.Context, client *http.Client, apiBase, method, path, token string, out any) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, method, apiBase+path, nil)
+	if err != nil {
+		return 0, errors.New("invalid request")
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("User-Agent", systemName)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		// A *url.Error quotes the URL; keep only the cause.
+		if uerr, ok := errors.AsType[*url.Error](err); ok {
+			err = uerr.Err
+		}
+		return 0, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode/100 != 2 {
+		return resp.StatusCode, nil
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out); err != nil {
+		return 0, fmt.Errorf("decode the response: %w", err)
+	}
+	return resp.StatusCode, nil
 }
 
 // Staleness is how far a runner is behind the latest release.
