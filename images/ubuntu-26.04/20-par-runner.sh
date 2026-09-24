@@ -4,25 +4,16 @@
 # the worker is done. The paths must match controller.JITConfigPath and controller.JITReadyPath.
 set -euo pipefail
 
-# write_file MODE PATH writes stdin to PATH with MODE, atomically, so a rerun or an interrupted run never leaves a
-# partial file. (install from /dev/stdin fails depending on how bash implements the heredoc.)
-write_file() {
-  local mode=$1 path=$2 tmp
-  tmp=$(mktemp "$path.XXXXXX")
-  cat >"$tmp"
-  chmod "$mode" "$tmp"
-  mv -f "$tmp" "$path"
-}
-
 main() {
   # The guest agent writes as root; the directory must exist first, and only root may write to it.
-  write_file 0644 /etc/tmpfiles.d/par-runner.conf <<'EOF'
+  cat >/etc/tmpfiles.d/par-runner.conf <<'EOF'
 d /run/par-runner 0700 root root -
 EOF
+  chmod 0644 /etc/tmpfiles.d/par-runner.conf
   systemd-tmpfiles --create /etc/tmpfiles.d/par-runner.conf
 
   install -d /usr/local/libexec/par-runner
-  write_file 0755 /usr/local/libexec/par-runner/run-once <<'EOF'
+  cat >/usr/local/libexec/par-runner/run-once <<'EOF'
 #!/bin/sh
 # Runs the GitHub Actions runner for one job with the JIT config the controller delivered. The config goes to the
 # runner in an environment variable, so it never appears on a command line, and the file is deleted before the
@@ -35,8 +26,9 @@ rm -f "$config" /run/par-runner/ready
 cd /opt/actions-runner
 exec ./run.sh
 EOF
+  chmod 0755 /usr/local/libexec/par-runner/run-once
 
-  write_file 0644 /etc/systemd/system/par-runner.path <<'EOF'
+  cat >/etc/systemd/system/par-runner.path <<'EOF'
 [Unit]
 Description=Wait for the JIT runner config from proxmox-actions-runners
 
@@ -49,8 +41,9 @@ Unit=par-runner.service
 [Install]
 WantedBy=multi-user.target
 EOF
+  chmod 0644 /etc/systemd/system/par-runner.path
 
-  write_file 0644 /etc/systemd/system/par-runner.service <<'EOF'
+  cat >/etc/systemd/system/par-runner.service <<'EOF'
 [Unit]
 Description=GitHub Actions runner for one job (proxmox-actions-runners)
 Wants=network-online.target
@@ -70,6 +63,7 @@ ExecStopPost=+/usr/bin/systemctl --no-block poweroff
 [Install]
 WantedBy=multi-user.target
 EOF
+  chmod 0644 /etc/systemd/system/par-runner.service
 
   systemctl daemon-reload
   # Start it now as well, so the unit is live in the build VM too; workers start it at boot.

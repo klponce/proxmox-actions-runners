@@ -3,16 +3,6 @@
 # GitHub runner come later, from the template build (images/ubuntu-26.04/).
 set -euo pipefail
 
-# write_file MODE PATH writes stdin to PATH with MODE, atomically, so a rerun or an interrupted run never leaves a
-# partial file. (install from /dev/stdin fails depending on how bash implements the heredoc.)
-write_file() {
-  local mode=$1 path=$2 tmp
-  tmp=$(mktemp "$path.XXXXXX")
-  cat >"$tmp"
-  chmod "$mode" "$tmp"
-  mv -f "$tmp" "$path"
-}
-
 main() {
   export DEBIAN_FRONTEND=noninteractive
 
@@ -41,10 +31,11 @@ create_runner_user() {
   if ! id runner >/dev/null 2>&1; then
     useradd --uid 1001 --create-home --shell /bin/bash --groups adm,systemd-journal runner
   fi
-  write_file 0440 /etc/sudoers.d/runner <<'EOF'
+  cat >/etc/sudoers.d/runner <<'EOF'
 runner ALL=(ALL) NOPASSWD:ALL
 Defaults:runner env_keep += "DEBIAN_FRONTEND"
 EOF
+  chmod 0440 /etc/sudoers.d/runner
   visudo -cf /etc/sudoers.d/runner
 }
 
