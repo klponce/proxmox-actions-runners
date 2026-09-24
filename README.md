@@ -206,6 +206,8 @@ only on the `par-runners` pool, the target storage, and the worker network:
   - `VM.PowerMgmt` and `VM.Audit`
   - `VM.GuestAgent.Audit` (ping), `VM.GuestAgent.FileWrite` (JIT config), and `VM.GuestAgent.Unrestricted`
     (run the template build scripts)
+  - `Pool.Audit` (read-only: without it, Proxmox hides which pool each VM is in, and the controller can't find its
+    own VMs)
 - on the target storage: `Datastore.AllocateSpace` and `Datastore.Audit`
 - on the worker VNet (`/sdn/zones/parzone/parnet`): `SDN.Use`
 

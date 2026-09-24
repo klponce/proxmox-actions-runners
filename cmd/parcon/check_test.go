@@ -80,7 +80,7 @@ func allPrivileges() map[string]any {
 	pool := map[string]any{}
 	for _, p := range []string{"VM.Allocate", "VM.Clone", "VM.Config.CPU", "VM.Config.Memory", "VM.Config.Disk",
 		"VM.Config.Network", "VM.Config.Cloudinit", "VM.Config.Options", "VM.PowerMgmt", "VM.Audit",
-		"VM.GuestAgent.Audit", "VM.GuestAgent.FileWrite", "VM.GuestAgent.Unrestricted"} {
+		"VM.GuestAgent.Audit", "VM.GuestAgent.FileWrite", "VM.GuestAgent.Unrestricted", "Pool.Audit"} {
 		pool[p] = 1
 	}
 	return map[string]any{

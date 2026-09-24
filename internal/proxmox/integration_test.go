@@ -83,6 +83,28 @@ func TestIntegrationReadOnly(t *testing.T) {
 	}
 	t.Logf("%d visible VMs on %s", len(vms), c.Node())
 
+	// The controller finds its VMs by pool, which Proxmox reports only to tokens with Pool.Audit.
+	if pool, tpl := os.Getenv("PAR_PVE_POOL"), os.Getenv("PAR_PVE_TEMPLATE_VMID"); pool != "" && tpl != "" {
+		want, err := strconv.Atoi(tpl)
+		if err != nil {
+			t.Fatalf("PAR_PVE_TEMPLATE_VMID: %v", err)
+		}
+		found := false
+		for _, vm := range vms {
+			if vm.VMID != want {
+				continue
+			}
+			found = true
+			if vm.Pool != pool || !vm.Template {
+				t.Errorf("template %d is listed with pool %q and template %v; want pool %q (does the token have "+
+					"Pool.Audit?)", want, vm.Pool, vm.Template, pool)
+			}
+		}
+		if !found {
+			t.Errorf("template %d isn't visible to the token", want)
+		}
+	}
+
 	if storage := os.Getenv("PAR_PVE_STORAGE"); storage != "" {
 		st, err := c.StorageStatus(ctx, storage)
 		if err != nil {
