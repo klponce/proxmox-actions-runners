@@ -12,6 +12,10 @@
     "source=par-devcontainer-go,target=/home/dev/go,type=volume",
     "source=par-devcontainer-cache,target=/home/dev/.cache,type=volume"
   ],
+  // Packer's QEMU builds need KVM. The container's copy of the device node is opened up to the dev user; the
+  // host's is unchanged.
+  "runArgs": ["--device=/dev/kvm"],
+  "postStartCommand": "sudo chmod 0666 /dev/kvm",
   "customizations": {
     "vscode": {
       "extensions": [

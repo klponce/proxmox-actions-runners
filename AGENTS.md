@@ -118,9 +118,10 @@ can use fakes.
 
 ## Development environment
 
-All tools run in the dev container defined in `.devcontainer/`: Go, golangci-lint, Packer, ShellCheck, Bats, and
-Perl's JSON module, at pinned versions. Don't install toolchains on the host. If a tool is missing, add it to
-`.devcontainer/Dockerfile` with a pinned version and checksum.
+All tools run in the dev container defined in `.devcontainer/`: Go, golangci-lint, Packer with QEMU, ShellCheck,
+Bats, and Perl's JSON module, at pinned versions. Don't install toolchains on the host. If a tool is missing, add it
+to `.devcontainer/Dockerfile` with a pinned version and checksum. The container gets the host's `/dev/kvm` so Packer
+can build images at native speed, so the host needs KVM.
 
 VS Code and other editors that support dev containers pick it up directly. From a terminal, use the
 [devcontainer CLI](https://github.com/devcontainers/cli):
@@ -149,14 +150,21 @@ go vet ./...
 gofmt -l .                                # must print nothing
 golangci-lint run
 go test -tags integration ./...           # needs a real Proxmox node; see internal/proxmox/integration_test.go
-packer validate images/controller
-packer validate images/gateway
+packer fmt -check -recursive images
 packer validate images/runner-base
-shellcheck install/install.sh images/ubuntu-26.04/*.sh
+shellcheck images/common/*.sh images/runner-base/scripts/*.sh images/ubuntu-26.04/*.sh images/ubuntu-26.04/tests/*.sh
 bats install/tests
 ```
 
-Run the build, test, vet, and format checks before you consider a change done.
+Run the build, test, vet, and format checks before you consider a change done. When you change an image or the
+template scripts, also build them. The local template test boots the base image in QEMU, runs the template scripts
+twice (they must be idempotent), checks the result, and runs the one-job flow with a stand-in runner:
+
+```bash
+packer init images/runner-base && packer build -var version=dev images/runner-base
+packer init images/ubuntu-26.04
+packer build -var base_image=output-runner-base/par-runner-base-dev.qcow2 images/ubuntu-26.04
+```
 
 ## Go conventions
 
@@ -215,11 +223,16 @@ See [docs/install.md](docs/install.md) for the full design.
   `freeDiskGiB`, and the root filesystem must grow to fill the disk at first boot.
 - `qemu-guest-agent` comes from the runner base image (`images/runner-base/`). Pin the `actions/runner` version and
   disable runner auto-update. The controller rebuilds the template on each runner release instead.
-- The runner service waits for the JIT config file the controller writes through the guest agent to
-  `/run/par-runner/jitconfig` (`controller.JITConfigPath`), for example with a systemd path unit. It restricts the
-  file to the `runner` user, runs one job with `run.sh --jitconfig`, deletes the file, and powers the VM off, which
-  signals completion. The template must create `/run/par-runner` at boot (for example with a `tmpfiles.d` entry):
-  the guest agent's file-write can't create directories, so without it every worker fails at the JIT step.
+- Scripts are numbered and run in order: `10-runner.sh` (the pinned runner in `/opt/actions-runner`, its job
+  environment in `.env`, and `/home/runner/work`), `20-par-runner.sh` (the one-job units), `30-minimal-tools.sh`,
+  then `images/common/cleanup.sh`, which every image build shares.
+- `par-runner.path` waits for the JIT config the controller writes through the guest agent to
+  `/run/par-runner/jitconfig` (`controller.JITConfigPath`). `par-runner.service` hands the file to the `runner`
+  user, passes the config to `run.sh` in `ACTIONS_RUNNER_INPUT_JITCONFIG` (never on a command line), deletes the
+  file, runs one job, and powers the VM off when the runner exits for any reason, which signals completion.
+- The template must create `/run/par-runner` at boot, root-only (`20-par-runner.sh` uses a `tmpfiles.d` entry): the
+  guest agent's file-write can't create directories, so without it every worker fails at the JIT step.
+- Runners work in `/home/runner/work` (`github.WorkFolder`), as on GitHub-hosted runners.
 - The controller relies on the template having its root disk on `scsi0`, a cloud-init drive (for `ipconfig0`), and
   the guest agent enabled in its VM config. The template builder tags each template `par-managed`, `par-template`,
   and `par-tv-<build time in Unix seconds>`; the controller clones the newest one.
