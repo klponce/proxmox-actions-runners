@@ -72,8 +72,9 @@ Keep these true. If a change needs to break one, discuss it first.
 5. **Only touch what we own.** Every managed VM is tagged, for example with `par-managed` and a scale set tag, and
    lives in the runner pool. The controller must never modify or delete an untagged VM. It must never modify an
    existing template: the template builder creates a new version instead, and an old version is deleted only once
-   no worker uses it. The Proxmox token's ACLs enforce the same limit, and the controller and gateway VMs sit in
-   `par-system`, outside the token's reach.
+   no worker uses it. Build VMs and smoke-test clones belong to the template builder or installer that creates
+   them, which destroys them, including ones a failed run left. The Proxmox token's ACLs enforce the same limit,
+   and the controller and gateway VMs sit in `par-system`, outside the token's reach.
 6. **GitHub-matching defaults.** Default worker hardware is 2 vCPU, 8 GiB RAM, and 14 GiB of free disk space,
    matching `ubuntu-latest` for private repositories. The free space is added on top of the template's disk size,
    because a clone's disk can grow but never shrink below its template's. The defaults are defined in exactly one

@@ -21,7 +21,8 @@ const (
 	TagReady = "par-ready"
 	// TagTemplate marks a runner template.
 	TagTemplate = "par-template"
-	// TagBuild marks a template build VM, which the template builder owns.
+	// TagBuild marks a VM that the template builder or the installer creates, such as a build VM or a smoke-test
+	// clone. Its creator destroys it; the controller leaves it alone.
 	TagBuild = "par-build"
 
 	// tagScaleSetPrefix is followed by the worker's scale set name.

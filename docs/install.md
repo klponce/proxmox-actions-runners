@@ -185,9 +185,10 @@ include the agent avoids both changes to the host.
 12. **Build the runner template.** The installer runs `parcon template build` in the controller VM and streams its
     progress. This is the long step: installing the full toolset takes roughly an hour depending on bandwidth.
     `--template minimal` skips the full toolset for a fast first install.
-13. **Smoke test.** The controller clones one worker, confirms the guest agent responds, and confirms through
-    `guest-exec` that the worker got a DHCP lease, reaches GitHub, and can't reach the Proxmox API or the controller
-    VM. It then destroys the clone, registers the scale set with GitHub, and confirms the listener session.
+13. **Smoke test.** The controller clones one worker into a reserved VMID, tagged `par-managed,par-build` so the
+    reconcile loop leaves it alone, confirms the guest agent responds, and confirms through `guest-exec` that the worker got a DHCP lease,
+    reaches GitHub, and can't reach the Proxmox API or the controller VM. It then destroys the clone, registers the
+    scale set with GitHub, and confirms the listener session. A re-run first destroys a clone a failed run left.
 14. **Summary.** Print the `runs-on:` label, the controller and gateway VMs' IDs and IPs, the metrics URL and its
     certificate's SHA-256 fingerprint, and the upgrade and uninstall commands.
 
@@ -264,7 +265,12 @@ main, so `unattended-upgrades` patches it) runs in the controller VM and serves 
 3. Clean up inside the guest: reset the machine-id, SSH host keys, and cloud-init state, and clear logs.
 4. Shut down, convert to a template named with its version, and tag it `par-managed,par-template,<version>`. The
    template's disk size is the baseline that each worker's `freeDiskGiB` is added to, so keep it tight.
-5. Smoke-test one clone, then point new workers at the new template.
+5. Smoke-test one clone, tagged `par-managed,par-build` like the build VM, then destroy it and point new workers at
+   the new template.
+
+Build VMs and smoke-test clones take reserved VMIDs. The builder destroys every `par-build` VM it creates,
+including ones a failed earlier build left, and `uninstall` removes any that remain. The controller never touches
+them.
 
 Templates are immutable. Linked clones depend on their template, so an old template is deleted only once no worker
 uses it. The controller repeats this build weekly and whenever a new `actions/runner` version is released.
