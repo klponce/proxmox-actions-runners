@@ -53,6 +53,12 @@ func runCheck(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// Only check github talks to GitHub as the App; the other checks run before the installer creates it.
+	if target == "github" {
+		if err := cfg.RequireGitHubApp(); err != nil {
+			return err
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
 	defer cancel()
 	return checks[target](ctx, cfg, *path, stdout)

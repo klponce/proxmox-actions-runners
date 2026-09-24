@@ -109,7 +109,8 @@ func (g GitHub) IsRepository() bool {
 	return strings.Count(strings.Trim(u.Path, "/"), "/") == 1
 }
 
-// GitHubApp holds the GitHub App credentials. The installer's App setup writes them.
+// GitHubApp holds the GitHub App credentials. The installer writes them once it has created the App; until then
+// they are empty (see RequireGitHubApp).
 type GitHubApp struct {
 	ClientID       string `yaml:"clientId"`
 	InstallationID int64  `yaml:"installationId"`
