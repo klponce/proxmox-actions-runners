@@ -8,7 +8,6 @@ package controller
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -53,7 +52,6 @@ const (
 	defaultRunnerCheckEvery = 5 * time.Minute
 	defaultParallelism      = 3
 	defaultRetryBackoff     = 10 * time.Second
-	defaultShutdownTimeout  = 2 * time.Minute
 
 	// rootDisk is the template's root disk, which each worker grows by its free disk space.
 	rootDisk = "scsi0"
@@ -179,8 +177,8 @@ func (c *Controller) trigger() {
 // the way out it waits for VM operations in flight to finish, but leaves running workers alone: a restarted
 // controller adopts them, so a controller upgrade doesn't cancel jobs.
 func (c *Controller) Run(ctx context.Context) error {
-	if err := c.registerScaleSets(ctx); err != nil {
-		return err
+	if !c.registerScaleSets(ctx) {
+		return nil
 	}
 
 	var listeners sync.WaitGroup
@@ -207,7 +205,8 @@ func (c *Controller) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			c.logger.InfoContext(ctx, "stopping; running workers are left for the next start")
 			listeners.Wait()
-			c.waitForOps(defaultShutdownTimeout)
+			// Creations stop with ctx, but a retirement runs to the end so it doesn't leave a VM half-destroyed.
+			c.waitForOps(retireTimeout)
 			return nil
 		case <-ticker.C:
 		case <-c.wake:
@@ -216,8 +215,8 @@ func (c *Controller) Run(ctx context.Context) error {
 }
 
 // registerScaleSets makes sure each scale set exists in GitHub and learns its ID, retrying until ctx ends, because
-// GitHub may be unreachable while the controller VM boots.
-func (c *Controller) registerScaleSets(ctx context.Context) error {
+// GitHub may be unreachable while the controller VM boots. It reports false if ctx ended first.
+func (c *Controller) registerScaleSets(ctx context.Context) bool {
 	for _, s := range c.scaleSets {
 		backoff := time.Second
 		for {
@@ -232,12 +231,12 @@ func (c *Controller) registerScaleSets(ctx context.Context) error {
 			c.logger.WarnContext(ctx, "registering scale set failed; retrying", slog.String("scaleSet", s.cfg.Name),
 				slog.Duration("backoff", backoff), slog.String("error", err.Error()))
 			if !sleep(ctx, backoff) {
-				return fmt.Errorf("register scale set %s: %w", s.cfg.Name, ctx.Err())
+				return false
 			}
 			backoff = min(backoff*2, time.Minute)
 		}
 	}
-	return nil
+	return true
 }
 
 // waitForOps waits up to timeout for VM operations in flight.

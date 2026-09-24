@@ -607,8 +607,8 @@ func TestRunStopsWhileRegistering(t *testing.T) {
 	h.gh.ensureErr = []error{errors.New("down"), errors.New("down"), errors.New("down")}
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	if err := h.c.Run(ctx); err == nil || !strings.Contains(err.Error(), "register scale set") {
-		t.Fatalf("Run error = %v, want a registration error", err)
+	if err := h.c.Run(ctx); err != nil {
+		t.Fatalf("Run = %v, want a clean stop", err)
 	}
 }
 
