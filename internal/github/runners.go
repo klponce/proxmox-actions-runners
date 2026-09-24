@@ -16,6 +16,10 @@ var (
 	ErrJobStillRunning = errors.New("runner is still running a job")
 )
 
+// WorkFolder is where runners check out and build, the same path as on GitHub-hosted runners. The runner template
+// creates it (images/ubuntu-26.04/10-runner.sh).
+const WorkFolder = "/home/runner/work"
+
 // redacted replaces a JIT config wherever it could be printed.
 const redacted = "[REDACTED]"
 
@@ -53,8 +57,8 @@ func (j JITConfig) LogValue() slog.Value {
 // GenerateJITConfig registers a runner named runnerName in a scale set and returns its JIT config. The name must be
 // unique; reusing one returns an error wrapping ErrRunnerExists.
 func (c *Client) GenerateJITConfig(ctx context.Context, scaleSetID int, runnerName string) (JITConfig, error) {
-	cfg, err := c.ss.GenerateJitRunnerConfig(ctx, &scaleset.RunnerScaleSetJitRunnerSetting{Name: runnerName},
-		scaleSetID)
+	cfg, err := c.ss.GenerateJitRunnerConfig(ctx,
+		&scaleset.RunnerScaleSetJitRunnerSetting{Name: runnerName, WorkFolder: WorkFolder}, scaleSetID)
 	if err != nil {
 		return JITConfig{}, fmt.Errorf("generate JIT config for runner %q: %w", runnerName, translate(err))
 	}

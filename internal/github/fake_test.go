@@ -181,6 +181,9 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		var setting map[string]any
 		_ = json.Unmarshal(body, &setting)
 		name := setting["name"].(string)
+		if setting["workFolder"] != WorkFolder {
+			f.t.Errorf("JIT work folder = %v, want %s", setting["workFolder"], WorkFolder)
+		}
 		if _, ok := f.runners[name]; ok {
 			writeJSON(w, http.StatusConflict, map[string]any{"typeName": "GitHub.DistributedTask.WebApi.AgentExistsException",
 				"message": "A runner named " + name + " already exists"})

@@ -60,7 +60,7 @@ func TestScaleUpCreatesReadyWorkers(t *testing.T) {
 			t.Errorf("VM %d = %+v", vmid, vm.vm)
 		}
 		want := map[string]string{"cores": "2", "memory": "8192", "net0": "virtio,bridge=parnet",
-			"ipconfig0": "ip=dhcp", "onboot": "0"}
+			"ipconfig0": "ip=dhcp", "onboot": "0", "agent": "1", "ciupgrade": "0"}
 		for k, v := range want {
 			if vm.config[k] != v {
 				t.Errorf("VM %d %s = %q, want %q", vmid, k, vm.config[k], v)

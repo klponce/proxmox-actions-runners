@@ -210,6 +210,11 @@ func (c *Controller) create(ctx context.Context, s *scaleSetState, template prox
 		"net0":      "virtio,bridge=" + p.VNet,
 		"ipconfig0": "ip=dhcp",
 		"onboot":    "0",
+		// The controller reaches workers only through the guest agent.
+		"agent": "1",
+		// Proxmox's cloud-init upgrades all packages on first boot by default, which would delay every job.
+		// Templates are rebuilt to pick up updates instead.
+		"ciupgrade": "0",
 	}
 	if err := c.pve.SetConfig(ctx, vmid, settings); err != nil {
 		return fmt.Errorf("configure: %w", err)
