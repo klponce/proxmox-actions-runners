@@ -3,6 +3,7 @@
 // Usage:
 //
 //	parcon version
+//	parcon run [-config path] [-log-level level]
 //	parcon check config [-config path]
 //	parcon check proxmox [-config path]
 //	parcon check github [-config path]
@@ -21,6 +22,8 @@ var version = ""
 
 const usage = `usage:
   parcon version
+  parcon run [-config path] [-log-level level]
+                                        run the controller until SIGINT or SIGTERM
   parcon check config [-config path]    validate the config file
   parcon check proxmox [-config path]   check the Proxmox VE API, token privileges, and storage
   parcon check github [-config path]    check the GitHub App credentials and scale set registration
@@ -48,6 +51,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	case "version":
 		fmt.Fprintln(stdout, buildVersion())
 		return nil
+	case "run":
+		return runController(args[1:], stderr)
 	case "check":
 		return runCheck(args[1:], stdout, stderr)
 	case "help", "-h", "-help", "--help":

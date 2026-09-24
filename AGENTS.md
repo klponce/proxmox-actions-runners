@@ -215,8 +215,13 @@ See [docs/install.md](docs/install.md) for the full design.
   `freeDiskGiB`, and the root filesystem must grow to fill the disk at first boot.
 - `qemu-guest-agent` comes from the runner base image (`images/runner-base/`). Pin the `actions/runner` version and
   disable runner auto-update. The controller rebuilds the template on each runner release instead.
-- The runner service waits for the JIT config file that the controller writes through the guest agent (for example,
-  with a systemd path unit). It runs one job, deletes the file, and powers the VM off, which signals completion.
+- The runner service waits for the JIT config file the controller writes through the guest agent to
+  `/run/par-runner/jitconfig` (`controller.JITConfigPath`), for example with a systemd path unit. It restricts the
+  file to the `runner` user, runs one job with `run.sh --jitconfig`, deletes the file, and powers the VM off, which
+  signals completion.
+- The controller relies on the template having its root disk on `scsi0`, a cloud-init drive (for `ipconfig0`), and
+  the guest agent enabled in its VM config. The template builder tags each template `par-managed`, `par-template`,
+  and `par-tv-<build time in Unix seconds>`; the controller clones the newest one.
 
 ## Change hygiene
 
