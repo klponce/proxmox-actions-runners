@@ -258,10 +258,10 @@ func checkTemplate(ctx context.Context, cfg *config.Config, _ string, out io.Wri
 	}
 	age := now.Sub(latest.PublishedAt)
 	deadline := latest.PublishedAt.Add(github.RunnerUpdateDeadline).UTC().Format(time.DateOnly)
-	switch {
-	case !latest.NewerThan(have):
+	switch latest.Staleness(have, now) {
+	case github.Current:
 		c.ok("actions/runner %s is the latest release", latest.Version)
-	case age >= github.RunnerUpdateErrorAfter:
+	case github.BehindError:
 		c.fail("actions/runner %s was released %s ago; GitHub stops accepting older runners after %s: install a "+
 			"newer runner image", latest.Version, formatDays(age), deadline)
 	default:

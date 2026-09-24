@@ -73,13 +73,12 @@ func (c *Controller) compareRunner(ctx context.Context, template proxmox.VM, now
 // runnerFreshness says whether a template with runner version have is behind latest, and how loudly to say so: a
 // warning from github.RunnerUpdateWarnAfter after the release, an error from github.RunnerUpdateErrorAfter.
 func runnerFreshness(have string, latest github.RunnerRelease, now time.Time) (slog.Level, bool) {
-	if !latest.NewerThan(have) {
+	switch latest.Staleness(have, now) {
+	case github.Current:
 		return 0, false
-	}
-	switch age := now.Sub(latest.PublishedAt); {
-	case age >= github.RunnerUpdateErrorAfter:
+	case github.BehindError:
 		return slog.LevelError, true
-	case age >= github.RunnerUpdateWarnAfter:
+	case github.BehindWarn:
 		return slog.LevelWarn, true
 	default:
 		return slog.LevelInfo, true

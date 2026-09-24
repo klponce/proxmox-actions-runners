@@ -59,7 +59,28 @@ func TestRunnerReleaseNewerThan(t *testing.T) {
 			t.Errorf("%s.NewerThan(%q) = %v, want %v", r.Version, tt.have, got, tt.want)
 		}
 	}
-	if (RunnerRelease{Version: "garbage"}).NewerThan("2.338.0") {
-		t.Error("an unparsable release counts as newer")
+}
+
+func TestRunnerReleaseStaleness(t *testing.T) {
+	released := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	r := RunnerRelease{Version: "2.338.0", PublishedAt: released}
+	day := 24 * time.Hour
+	tests := []struct {
+		have string
+		age  time.Duration
+		want Staleness
+	}{
+		{"2.338.0", 40 * day, Current},
+		{"2.339.0", 40 * day, Current},
+		{"2.337.0", 7*day - time.Second, Behind},
+		{"2.337.0", 7 * day, BehindWarn},
+		{"2.337.0", 21*day - time.Second, BehindWarn},
+		{"2.337.0", 21 * day, BehindError},
+		{"", time.Hour, Behind},
+	}
+	for _, tt := range tests {
+		if got := r.Staleness(tt.have, released.Add(tt.age)); got != tt.want {
+			t.Errorf("Staleness(%q) after %s = %v, want %v", tt.have, tt.age, got, tt.want)
+		}
 	}
 }

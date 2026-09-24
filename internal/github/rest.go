@@ -76,17 +76,45 @@ func latestRunnerRelease(ctx context.Context, client *http.Client, apiBase strin
 	return RunnerRelease{Version: version, PublishedAt: out.PublishedAt}, nil
 }
 
-// NewerThan reports whether the release is newer than version, such as the runner version a template contains. A
-// version that can't be parsed counts as older, so it gets reported rather than silently accepted.
+// Staleness is how far a runner is behind the latest release.
+type Staleness int
+
+const (
+	// Current means the runner is the latest release or newer.
+	Current Staleness = iota
+	// Behind means a newer release came out less than RunnerUpdateWarnAfter ago.
+	Behind
+	// BehindWarn means a newer release came out at least RunnerUpdateWarnAfter ago.
+	BehindWarn
+	// BehindError means a newer release came out at least RunnerUpdateErrorAfter ago: install a new runner image
+	// before RunnerUpdateDeadline.
+	BehindError
+)
+
+// Staleness says how far a runner of version have, such as the one a template contains, is behind the release at
+// now. The controller and parcon check template both judge by it.
+func (r RunnerRelease) Staleness(have string, now time.Time) Staleness {
+	if !r.NewerThan(have) {
+		return Current
+	}
+	switch age := now.Sub(r.PublishedAt); {
+	case age >= RunnerUpdateErrorAfter:
+		return BehindError
+	case age >= RunnerUpdateWarnAfter:
+		return BehindWarn
+	default:
+		return Behind
+	}
+}
+
+// NewerThan reports whether the release is newer than version. A version that can't be parsed counts as older, so it
+// gets reported rather than silently accepted. The release's own version is valid: LatestRunnerRelease checks it.
 func (r RunnerRelease) NewerThan(version string) bool {
 	have, ok := parseVersion(version)
 	if !ok {
 		return true
 	}
-	latest, ok := parseVersion(r.Version)
-	if !ok {
-		return false
-	}
+	latest, _ := parseVersion(r.Version)
 	for i := range latest {
 		if latest[i] != have[i] {
 			return latest[i] > have[i]
