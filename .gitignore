@@ -1,0 +1,45 @@
+# Private agent/local data (never committed, see AGENTS.md)
+.agents/
+.claude/settings.local.json
+.env
+.env.*
+!.env.example
+
+# Secrets and credentials
+*.pem
+*.key
+*.p12
+*.token
+secrets/
+
+# Local controller configs (commit examples under deploy/ as *.example.yaml)
+/config.yaml
+/config.yml
+*.local.yaml
+*.local.yml
+
+# Go build output
+/bin/
+/dist/
+/controller
+*.exe
+*.test
+*.out
+coverage.*
+go.work
+go.work.sum
+
+# Packer
+packer_cache/
+output-*/
+crash.log
+*.auto.pkrvars.hcl
+*.pkrvars.hcl
+!*.example.pkrvars.hcl
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
