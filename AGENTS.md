@@ -173,7 +173,10 @@ Run the build, test, vet, and format checks before you consider a change done.
   race. `/cluster/nextid` can hand the same ID to two clones started at once.
 - Find the current template by its tags (`par-template` and the newest version tag), never by a fixed VMID.
 - Keep dependencies few and well-maintained. Pin `actions/scaleset` and keep `internal/github` thin, because its
-  interfaces may still change during the preview.
+  interfaces may still change during the preview. Only `internal/github` imports it; everything else uses that
+  package's types.
+- A JIT config is a credential: keep it in `github.JITConfig`, whose `String`, `GoString`, and `LogValue` redact
+  it, and read it with `Encoded()` only to hand it to the guest agent.
 - Expose Prometheus metrics for queue depth, desired vs. actual workers, clone and boot latency, VM count by state,
   reaped VMs, and API failures. A job that stays queued is the main signal operators need. `parcon` serves
   `/metrics`, `/healthz`, and `/readyz` over plain HTTP on `127.0.0.1:9465` only. nginx in the controller VM serves
