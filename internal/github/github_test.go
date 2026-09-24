@@ -83,7 +83,8 @@ func TestNewRejectsBadOptions(t *testing.T) {
 func TestEnsureScaleSetCreates(t *testing.T) {
 	f := newFakeGitHub(t)
 	c := f.client()
-	got, err := c.EnsureScaleSet(context.Background(), ScaleSetSpec{Name: "proxmox-ubuntu-26.04"})
+	got, err := c.EnsureScaleSet(context.Background(), ScaleSetSpec{Name: "proxmox-ubuntu-26.04", Labels: []string{"proxmox-ubuntu-26.04"},
+		RunnerGroup: "default"})
 	if err != nil {
 		t.Fatalf("EnsureScaleSet: %v", err)
 	}
@@ -110,7 +111,7 @@ func TestEnsureScaleSetUpdatesOnlyWhenNeeded(t *testing.T) {
 	f := newFakeGitHub(t)
 	c := f.client()
 	ctx := context.Background()
-	spec := ScaleSetSpec{Name: "proxmox", Labels: []string{"proxmox", "x64"}}
+	spec := ScaleSetSpec{Name: "proxmox", Labels: []string{"proxmox", "x64"}, RunnerGroup: "default"}
 	if _, err := c.EnsureScaleSet(ctx, spec); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -126,14 +127,14 @@ func TestEnsureScaleSetUpdatesOnlyWhenNeeded(t *testing.T) {
 	}
 
 	// Same labels in another order and case: nothing to do.
-	if _, err := c.EnsureScaleSet(ctx, ScaleSetSpec{Name: "proxmox", Labels: []string{"X64", "proxmox"}}); err != nil {
+	if _, err := c.EnsureScaleSet(ctx, ScaleSetSpec{Name: "proxmox", Labels: []string{"X64", "proxmox"}, RunnerGroup: "default"}); err != nil {
 		t.Fatalf("ensure unchanged: %v", err)
 	}
 	if n := countPatches(); n != 0 {
 		t.Errorf("unchanged scale set was patched %d times", n)
 	}
 
-	got, err := c.EnsureScaleSet(ctx, ScaleSetSpec{Name: "proxmox", Labels: []string{"proxmox", "arm64"}})
+	got, err := c.EnsureScaleSet(ctx, ScaleSetSpec{Name: "proxmox", Labels: []string{"proxmox", "arm64"}, RunnerGroup: "default"})
 	if err != nil {
 		t.Fatalf("ensure changed: %v", err)
 	}
@@ -150,7 +151,7 @@ func TestRunnerGroups(t *testing.T) {
 	c := f.client()
 	ctx := context.Background()
 
-	s, err := c.EnsureScaleSet(ctx, ScaleSetSpec{Name: "trusted", RunnerGroup: "builds"})
+	s, err := c.EnsureScaleSet(ctx, ScaleSetSpec{Name: "trusted", Labels: []string{"trusted"}, RunnerGroup: "builds"})
 	if err != nil {
 		t.Fatalf("EnsureScaleSet: %v", err)
 	}
@@ -161,7 +162,7 @@ func TestRunnerGroups(t *testing.T) {
 	if err != nil || found == nil || found.ID != testScaleSetID {
 		t.Errorf("FindScaleSet = %+v, %v", found, err)
 	}
-	missing, err := c.FindScaleSet(ctx, ScaleSetSpec{Name: "trusted"})
+	missing, err := c.FindScaleSet(ctx, ScaleSetSpec{Name: "trusted", RunnerGroup: "default"})
 	if err != nil || missing != nil {
 		t.Errorf("FindScaleSet in the default group = %+v, %v; want nil, nil", missing, err)
 	}
@@ -181,7 +182,7 @@ func TestDeleteScaleSet(t *testing.T) {
 func TestBadAppCredentials(t *testing.T) {
 	f := newFakeGitHub(t)
 	f.failAccessToken = true
-	_, err := f.client().FindScaleSet(context.Background(), ScaleSetSpec{Name: "proxmox"})
+	_, err := f.client().FindScaleSet(context.Background(), ScaleSetSpec{Name: "proxmox", RunnerGroup: "default"})
 	if err == nil || !strings.Contains(err.Error(), "access token") {
 		t.Fatalf("FindScaleSet error = %v, want an access token failure", err)
 	}
