@@ -21,7 +21,7 @@ secrets/
 # Go build output
 /bin/
 /dist/
-/controller
+/parcon
 *.exe
 *.test
 *.out
