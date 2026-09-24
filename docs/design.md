@@ -109,16 +109,49 @@ disk outside the VM. The guest agent writes directly into the running guest, and
 
 Cloud-init is still used for non-secret per-VM settings such as the hostname.
 
+### Worker state in tags
+
+The controller keeps no state it can't rebuild. Everything durable is in each worker's Proxmox tags:
+
+| Tag | Meaning |
+| --- | ------- |
+| `par-managed` | Owned by this project. VMs without it are never touched |
+| `par-worker` | A worker VM |
+| `par-ss-<name>` | The worker's scale set |
+| `par-created-<unix>` | Creation time, for `maxLifetime` and the boot timeout |
+| `par-ready` | The runner has its JIT config. Added only as the last step of creation |
+
+A worker's VM name and runner name are both `par-<vmid>-<creation time in base 36>`, so the two can be matched even
+though GitHub can't list runners, and a reused VMID never reuses a runner name. What GitHub wants (the desired count
+and which runners are running jobs) is held in memory only; a new message session reports it again after a restart,
+and until then the controller neither adds nor retires workers.
+
+Creating a worker takes these steps: clone the newest template, set the worker's tags, cores, memory, network, and
+DHCP, grow the root disk by `freeDiskGiB`, register the runner, start the VM, wait for the guest agent, write the JIT
+config, and finally tag the worker `par-ready`.
+
 ### Failure handling
 
-Orphaned VMs are the main way VM autoscalers fail. The controller guards against them in several ways:
+Orphaned VMs are the main way VM autoscalers fail. Every pass of the reconcile loop looks for them, and each rule is
+safe to apply again after a crash:
 
-- **Startup reconciliation.** On start, rebuild state from Proxmox tags and GitHub runners, then clean up.
-- **Reaper.** Destroy managed VMs that have no matching GitHub runner past a grace period, and remove GitHub runners
-  that have no VM.
-- **Maximum lifetime.** Destroy any worker older than `maxLifetime`, 6 hours by default to match the hosted job
-  limit.
-- **Retries.** Retry clone, start, and destroy with backoff. A half-created clone is destroyed, not repaired.
+- **Half-created workers.** A worker without `par-ready` that no operation is working on was left by a crash, and is
+  destroyed rather than repaired. So is a clone that never got worker tags: it still carries the template's tags but
+  isn't a template. A failed creation cleans up after itself right away, and the scale set backs off before trying
+  again.
+- **Finished workers.** A ready worker that powered itself off has run its job, and is destroyed.
+- **Maximum lifetime.** A worker older than `maxLifetime` (6 hours by default, the hosted job limit) is destroyed even
+  if its runner is still in a job.
+- **Missing runners.** A ready, running worker whose runner is no longer registered in GitHub is destroyed. The check
+  starts 10 minutes after creation and repeats every 5 minutes, with a bounded number of lookups per pass.
+- **Removed scale sets.** Workers of a scale set that is no longer in the config are retired once they're idle.
+- **Scaling down.** Surplus idle workers are retired oldest first. GitHub refuses to remove a runner that is running a
+  job, and the controller then leaves that worker alone.
+
+Retiring a worker unregisters its runner, stops the VM, and destroys it; each step accepts that its target may already
+be gone. VMIDs come from the configured range, lowest free first. An ID Proxmox reports as taken by a VM the token
+can't see is skipped from then on. On shutdown the controller finishes the operations in flight but leaves running
+workers alone, so restarting or upgrading it doesn't cancel jobs.
 
 ## Proxmox building blocks
 

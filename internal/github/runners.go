@@ -28,6 +28,12 @@ type JITConfig struct {
 	encoded    string
 }
 
+// NewJITConfig returns a JITConfig holding encoded. It is for fakes of this package's Client; real configs come
+// from GenerateJITConfig.
+func NewJITConfig(runnerID int64, runnerName, encoded string) JITConfig {
+	return JITConfig{RunnerID: runnerID, RunnerName: runnerName, encoded: encoded}
+}
+
 // Encoded returns the config the runner reads, which run.sh takes with --jitconfig. Never log it.
 func (j JITConfig) Encoded() string { return j.encoded }
 
