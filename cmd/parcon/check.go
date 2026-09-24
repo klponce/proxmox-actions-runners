@@ -217,14 +217,9 @@ func checkGitHub(ctx context.Context, cfg *config.Config, _ string, out io.Write
 	return c.err()
 }
 
-// latestRunnerRelease looks up the latest actions/runner release. Tests replace it.
-var latestRunnerRelease = func(ctx context.Context, cfg *config.Config) (github.RunnerRelease, error) {
-	client, err := newGitHubClient(cfg)
-	if err != nil {
-		return github.RunnerRelease{}, err
-	}
-	return client.LatestRunnerRelease(ctx)
-}
+// latestRunnerRelease looks up the latest actions/runner release. It needs no GitHub App credentials, so the check
+// works before the App is set up. Tests replace it.
+var latestRunnerRelease = github.LatestRunnerRelease
 
 // checkTemplate shows the runner template workers are cloned from and whether its actions/runner is recent enough:
 // GitHub stops accepting a runner that doesn't update itself 30 days after a newer release. It fails if there is no
@@ -256,7 +251,7 @@ func checkTemplate(ctx context.Context, cfg *config.Config, _ string, out io.Wri
 	c.ok("runner template %d, created %s ago, actions/runner %s", tpl.VMID, formatDays(now.Sub(time.Unix(created, 0))),
 		have)
 
-	latest, err := latestRunnerRelease(ctx, cfg)
+	latest, err := latestRunnerRelease(ctx)
 	if err != nil {
 		c.fail("latest actions/runner release: %v", err)
 		return c.err()

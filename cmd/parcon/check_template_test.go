@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/klponce/proxmox-actions-runners/internal/config"
 	"github.com/klponce/proxmox-actions-runners/internal/github"
 )
 
@@ -65,7 +64,7 @@ func TestCheckTemplate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			old := latestRunnerRelease
 			t.Cleanup(func() { latestRunnerRelease = old })
-			latestRunnerRelease = func(context.Context, *config.Config) (github.RunnerRelease, error) {
+			latestRunnerRelease = func(context.Context) (github.RunnerRelease, error) {
 				return github.RunnerRelease{Version: "2.337.0", PublishedAt: now.Add(-tt.released)}, tt.lookup
 			}
 			srv := fakeProxmox(t, map[string]any{"/cluster/resources": tt.vms})
