@@ -27,7 +27,7 @@ control.
 *Planned.* On a Proxmox VE 9 node, as root:
 
 ```bash
-curl -fsSLO https://github.com/<owner>/proxmox-actions-runners/releases/latest/download/install.sh
+curl -fsSLO https://github.com/klponce/proxmox-actions-runners/releases/latest/download/install.sh
 bash install.sh
 ```
 

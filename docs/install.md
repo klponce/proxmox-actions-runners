@@ -20,7 +20,7 @@ only through Proxmox's own tools, and it can remove everything it created.
 Download, read, then run:
 
 ```bash
-curl -fsSLO https://github.com/<owner>/proxmox-actions-runners/releases/latest/download/install.sh
+curl -fsSLO https://github.com/klponce/proxmox-actions-runners/releases/latest/download/install.sh
 less install.sh
 bash install.sh
 ```
@@ -28,7 +28,7 @@ bash install.sh
 Or run it in one line:
 
 ```bash
-bash -c "$(curl -fsSL https://github.com/<owner>/proxmox-actions-runners/releases/latest/download/install.sh)"
+bash -c "$(curl -fsSL https://github.com/klponce/proxmox-actions-runners/releases/latest/download/install.sh)"
 ```
 
 Without flags, the script prompts for each setting. For unattended installs, pass an answers file:
