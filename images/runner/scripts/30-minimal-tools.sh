@@ -26,6 +26,7 @@ main() {
     zip \
     zstd
 
+  # Jobs use Docker without sudo.
   usermod -aG docker runner
   systemctl enable docker.service containerd.service
 }
