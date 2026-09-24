@@ -143,6 +143,16 @@ func TestNewestTemplateIsUsed(t *testing.T) {
 	}
 }
 
+func TestNegativeTemplateVersion(t *testing.T) {
+	h := newHarness(t, testConfig())
+	h.pve.addTemplate(testTemplateID, -1)
+	h.want(1)
+	h.pass()
+	if len(h.pve.calls) == 0 || h.pve.calls[0] != "clone 9000->10000 full=false" {
+		t.Errorf("first call = %v, want a linked clone of template 9000", h.pve.calls)
+	}
+}
+
 func TestFullClones(t *testing.T) {
 	cfg := testConfig()
 	full := false

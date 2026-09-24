@@ -42,7 +42,7 @@ func (c *Controller) observe(vms []proxmox.VM) view {
 			if !vm.HasTag(TagTemplate) {
 				continue
 			}
-			if version, ok := templateVersion(vm); ok && (version > newest ||
+			if version, ok := templateVersion(vm); ok && (v.template == nil || version > newest ||
 				(version == newest && vm.VMID > v.template.VMID)) {
 				newest, v.template = version, &vms[i]
 			}
