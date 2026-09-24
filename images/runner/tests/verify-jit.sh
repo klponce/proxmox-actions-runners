@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Exercises the one-job flow of 20-par-runner.sh without GitHub: a stand-in run.sh records what it received, and
-# power-off is replaced by a no-op. Everything is restored afterwards. Run as root by the local test build.
+# power-off is replaced by a no-op. Everything is restored afterwards. Run as root by the image build (runner.pkr.hcl).
 set -euo pipefail
 
 RUNNER_DIR=/opt/actions-runner

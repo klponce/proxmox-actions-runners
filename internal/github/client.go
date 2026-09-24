@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 
 	"github.com/actions/scaleset"
@@ -37,12 +38,18 @@ type Options struct {
 
 	// httpOptions lets tests trust a fake server and turn off retries.
 	httpOptions []scaleset.HTTPOption
+	// httpClient and apiBaseURL point LatestRunnerRelease at a fake server.
+	httpClient *http.Client
+	apiBaseURL string
 }
 
 // Client talks to GitHub on behalf of one GitHub App installation.
 type Client struct {
 	ss     *scaleset.Client
 	logger *slog.Logger
+	// http and apiBase are for LatestRunnerRelease, which reads GitHub's public REST API directly.
+	http    *http.Client
+	apiBase string
 }
 
 // New returns a Client for opts. It checks the private key but doesn't contact GitHub.
@@ -76,7 +83,14 @@ func New(opts Options) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("github: %w", err)
 	}
-	return &Client{ss: ss, logger: logger}, nil
+	c := &Client{ss: ss, logger: logger, http: opts.httpClient, apiBase: opts.apiBaseURL}
+	if c.http == nil {
+		c.http = &http.Client{Timeout: restTimeout}
+	}
+	if c.apiBase == "" {
+		c.apiBase = "https://api.github.com"
+	}
+	return c, nil
 }
 
 // checkPrivateKey confirms that key is a PEM-encoded RSA private key, the kind GitHub issues for Apps, so a bad key

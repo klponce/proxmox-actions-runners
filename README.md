@@ -4,9 +4,9 @@ A controller that runs GitHub Actions jobs on ephemeral, full-sized virtual mach
 [Proxmox VE](https://www.proxmox.com/en/proxmox-virtual-environment) cluster.
 
 It works like [Actions Runner Controller (ARC)](https://github.com/actions/actions-runner-controller),
-but each job gets its own VM instead of a Kubernetes pod. Every VM is cloned from an Ubuntu 26.04 template
-that is built to resemble a GitHub-hosted runner as closely as possible, so workflows written for
-`ubuntu-latest` should run unchanged.
+but each job gets its own VM instead of a Kubernetes pod, so jobs can use Docker, `systemd`, and `sudo` as they
+would on a real machine. Every VM is cloned from a lean Ubuntu 26.04 template that, like ARC's runner image, holds
+the runner, Docker, and a few basics; workflows install the rest with `setup-*` actions.
 
 > **Status: early development.** Nothing here is usable yet. This README describes the intended design.
 > Sections marked *planned* describe features that don't exist yet.
@@ -17,7 +17,7 @@ ARC runs jobs in containers. Many workflows assume a real machine, which contain
 
 - a full init system (`systemd`) and services such as a native Docker daemon, without Docker-in-Docker
 - `sudo`, kernel modules, loop devices, KVM, and other privileged operations
-- the same OS image, toolset, and filesystem layout as GitHub-hosted runners
+- the same filesystem layout and environment variables as GitHub-hosted runners, so actions that rely on them work
 
 A fresh VM per job gives you all of this, with hypervisor-level isolation between jobs, on hardware you
 control.
@@ -41,7 +41,7 @@ After that it:
 - creates a small **controller VM** that runs the controller
 - creates the **GitHub App**: it prints a link that you open in a browser on any device, then you paste one code
   back, so the host itself needs no browser
-- builds the **runner template**
+- imports the **runner template** from the runner image published with the release
 - registers the scale set with GitHub
 
 The host itself is barely touched. No packages, services, files, or snippets are added, only Proxmox objects, and
@@ -171,15 +171,21 @@ deployment secrets.
 
 ## Runner template
 
-Workers are cloned from an Ubuntu 26.04 template. The controller builds it on your node: it starts from a small
-base image published with each release, then runs the provisioning scripts in `images/ubuntu-26.04/` through the
-guest agent. The goal is parity with GitHub's own
-[`actions/runner-images`](https://github.com/actions/runner-images) Ubuntu image: the same `runner` user,
-directory layout, preinstalled toolset, and environment variables. It also includes `qemu-guest-agent` and a
-pinned `actions/runner` release with auto-update disabled. The template contains no credentials. Each clone
-receives its JIT runner config through the guest agent after boot. Templates are versioned and immutable. The
-controller rebuilds the template weekly and on each runner release, and deletes old versions once no worker uses
-them.
+Workers are cloned from an Ubuntu 26.04 template that the installer imports from the runner image published with
+each release. CI builds the image with Packer from `images/runner/`, so nothing is built on your node. Like ARC's
+runner image, it is deliberately lean: the `runner` user with passwordless sudo, a pinned `actions/runner` release
+with auto-update disabled, Docker, `git`, `qemu-guest-agent`, and a few basics. Workflows install toolchains with
+`setup-*` actions (`actions/setup-node`, `actions/setup-python`, and so on), as they do on ARC. The directory layout
+and environment variables follow GitHub's [`actions/runner-images`](https://github.com/actions/runner-images) so
+those actions work, but its preinstalled toolset is not included.
+
+The template contains no credentials. Each clone receives its JIT runner config through the guest agent after boot.
+Templates are immutable: `install.sh upgrade` imports a newer runner image as a new template, the controller clones
+the newest one, and it deletes an old template once no worker uses it.
+
+GitHub stops accepting a self-hosted runner that doesn't update itself 30 days after a newer runner release, so
+keep up with releases. The controller checks for new `actions/runner` releases and logs a warning when the template
+has been behind for 7 days and an error after 21. `parcon check template` shows the same.
 
 ## Requirements
 
@@ -201,19 +207,16 @@ The installer creates a privilege-separated API token `par@pve!controller`. Its 
 only on the `par-runners` pool, the target storage, and the worker network:
 
 - on `/pool/par-runners`:
-  - `VM.Allocate` (create, destroy, convert to template) and `VM.Clone`
+  - `VM.Allocate` (create and destroy) and `VM.Clone`
   - `VM.Config.CPU`, `VM.Config.Memory`, `VM.Config.Disk` (grow the clone's disk), `VM.Config.Network`,
     `VM.Config.Cloudinit`, and `VM.Config.Options` (name and tags)
   - `VM.PowerMgmt` and `VM.Audit`
-  - `VM.GuestAgent.Audit` (ping), `VM.GuestAgent.FileWrite` (JIT config), and `VM.GuestAgent.Unrestricted`
-    (run the template build scripts)
+  - `VM.GuestAgent.Audit` (ping) and `VM.GuestAgent.FileWrite` (JIT config). The token can't run commands in
+    VMs.
   - `Pool.Audit` (read-only: without it, Proxmox hides which pool each VM is in, and the controller can't find its
     own VMs)
 - on the target storage: `Datastore.AllocateSpace` and `Datastore.Audit`
 - on the worker VNet (`/sdn/zones/parzone/parnet`): `SDN.Use`
-
-`VM.GuestAgent.Unrestricted` lets the token run commands as root in any VM in `par-runners`. That is accepted: those
-VMs are disposable and already fully under the controller's control, and the token can't reach `par-system`.
 
 `parcon check proxmox` checks the token against this list, which lives in `internal/proxmox/access.go`. Keep the
 two in sync.
@@ -232,6 +235,9 @@ These are deliberate. The project supports exactly the setup the installer creat
 - **One worker network.** Every scale set shares the same worker network and runner pool. Keep jobs with different
   trust levels apart with separate scale sets and GitHub runner groups.
 - **amd64 only**, and workers run **Ubuntu 26.04 only**.
+- **A lean runner image, not GitHub's.** Workers don't have the preinstalled toolset of GitHub-hosted runners, which
+  is tens of GB. Workflows install what they need with `setup-*` actions, or you extend the Packer build in
+  `images/runner/` and import your own image.
 - **GitHub.com only.** GitHub Enterprise Server may work through `actions/scaleset`, but it isn't tested.
 - **Unauthenticated metrics.** The metrics endpoint uses HTTPS with a self-signed certificate and has no
   authentication yet. It exposes no secrets.
@@ -239,17 +245,16 @@ These are deliberate. The project supports exactly the setup the installer creat
 ## Repository layout (planned)
 
 ```
-cmd/parcon/            `parcon` binary: controller service, `template build`, `check`
+cmd/parcon/            `parcon` binary: controller service, `check`
 internal/config/       config loading, defaults, validation
 internal/github/       scale set listener, JIT configs, GitHub App auth
 internal/proxmox/      Proxmox API client (clone, configure, start, destroy, list)
 internal/controller/   reconcile loop and worker lifecycle
-internal/template/     template build through the guest agent
+internal/vmtags/       the Proxmox tags that hold the controller's state
 install/               install.sh and its bats tests
 images/controller/     Packer build of the controller VM base image (CI)
 images/gateway/        Packer build of the gateway VM image (CI)
-images/runner-base/    Packer build of the runner base image (CI)
-images/ubuntu-26.04/   in-guest provisioning scripts for the runner template
+images/runner/         Packer build of the runner template image (CI)
 deploy/                example config, systemd unit for the controller VM
 site/                  GitHub Pages helper page for creating the GitHub App
 docs/                  design notes

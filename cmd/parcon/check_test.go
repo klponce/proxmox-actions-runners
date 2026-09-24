@@ -80,7 +80,7 @@ func allPrivileges() map[string]any {
 	pool := map[string]any{}
 	for _, p := range []string{"VM.Allocate", "VM.Clone", "VM.Config.CPU", "VM.Config.Memory", "VM.Config.Disk",
 		"VM.Config.Network", "VM.Config.Cloudinit", "VM.Config.Options", "VM.PowerMgmt", "VM.Audit",
-		"VM.GuestAgent.Audit", "VM.GuestAgent.FileWrite", "VM.GuestAgent.Unrestricted", "Pool.Audit"} {
+		"VM.GuestAgent.Audit", "VM.GuestAgent.FileWrite", "Pool.Audit"} {
 		pool[p] = 1
 	}
 	return map[string]any{
@@ -163,7 +163,7 @@ func TestCheckProxmox(t *testing.T) {
 			name:       "secret readable by others",
 			secretMode: 0o644,
 			wantFail:   true,
-			want:       []string{"FAIL  token secret: secret file", "must not be accessible to group or others"},
+			want:       []string{"FAIL  proxmox token: secret file", "must not be accessible to group or others"},
 		},
 	}
 	for _, tt := range tests {

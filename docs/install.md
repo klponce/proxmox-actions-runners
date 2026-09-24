@@ -104,11 +104,9 @@ and refuses a file that doesn't match.
 | `install.sh` | The installer | Release workflow |
 | `parcon-<ver>.qcow2` | Ubuntu 26.04 minimal, `qemu-guest-agent`, the controller binary and unit, nginx for the metrics endpoint | Packer `qemu` builder in CI |
 | `par-gateway-<ver>.qcow2` | Ubuntu 26.04 minimal, `qemu-guest-agent`, nftables, dnsmasq, `unattended-upgrades` | Packer `qemu` builder in CI |
-| `par-runner-base-<ver>.qcow2` | Ubuntu 26.04 cloud image, `qemu-guest-agent`, `runner` user, no toolset | Packer `qemu` builder in CI |
+| `par-runner-<ver>.qcow2` | The runner template: Ubuntu 26.04, `qemu-guest-agent`, the `runner` user, a pinned `actions/runner`, Docker, and a few basics | Packer `qemu` builder in CI (`images/runner/`) |
+| `par-runner-<ver>.json` | The runner image's build manifest, including its `actions/runner` version | Packer `qemu` builder in CI |
 | `SHA256SUMS` | Checksums of the above | Release workflow |
-
-The full toolset for parity with GitHub-hosted runners is too large to ship as a download (tens of GB). The
-controller installs it locally on top of the runner base image (see *Template build*).
 
 **Why prebuilt images instead of stock Ubuntu cloud images:** stock images don't include `qemu-guest-agent`, and the
 only way to add it at first boot is custom cloud-init user data. Proxmox stores that as snippet files, which means
@@ -159,9 +157,11 @@ include the agent avoids both changes to the host.
    the SDN config (`pvesh set /cluster/sdn`).
 6. **Download and verify images** into a temporary directory under `/var/tmp`, which is deleted on exit, including
    on failure.
-7. **Create the runner base VM** in `par-runners` from `par-runner-base.qcow2`
-   (`qm create` + `qm set --scsi0 <storage>:0,import-from=<file>`), tag it `par-managed,par-base`, and convert it to
-   a template.
+7. **Import the runner template** in `par-runners` from `par-runner.qcow2` into the first free VMID of the reserved
+   IDs at the end of the range (`qm create` + `qm set --scsi0 <storage>:0,import-from=<file>`), with a cloud-init
+   drive and the guest agent enabled. Tag it `par-managed`, `par-template`, `par-tv-<import time in Unix seconds>`,
+   and `par-rv-<actions/runner version>` (from the image's manifest), and convert it to a template. See
+   *Runner image*.
 8. **Create the gateway VM** in `par-system` from `par-gateway.qcow2`: 1 vCPU, 1 GiB RAM, 8 GiB disk, `net0` on the
    LAN bridge and `net1` on `parnet`. Use the built-in cloud-init drive for hostname and the LAN address only, tag
    it `par-managed,par-gateway`, and start it. Once the guest agent responds, push the worker subnet and the LAN
@@ -180,16 +180,14 @@ include the agent avoids both changes to the host.
     passed to `parcon github app create` in the controller VM, so the App's private key goes straight from GitHub
     into the controller VM and never passes through the host. A re-run skips this step if the controller VM already
     holds working App credentials. The installer then runs `parcon check github` in the VM. This confirms that the
-    App credentials produce an installation token and can reach the org or repo, and it catches bad credentials
-    before the long template build. The service is enabled and started after that.
-12. **Build the runner template.** The installer runs `parcon template build` in the controller VM and streams its
-    progress. This is the long step: installing the full toolset takes roughly an hour depending on bandwidth.
-    `--template minimal` skips the full toolset for a fast first install.
-13. **Smoke test.** The controller clones one worker into a reserved VMID, tagged `par-managed,par-build` so the
-    reconcile loop leaves it alone, confirms the guest agent responds, and confirms through `guest-exec` that the worker got a DHCP lease,
-    reaches GitHub, and can't reach the Proxmox API or the controller VM. It then destroys the clone, registers the
-    scale set with GitHub, and confirms the listener session. A re-run first destroys a clone a failed run left.
-14. **Summary.** Print the `runs-on:` label, the controller and gateway VMs' IDs and IPs, the metrics URL and its
+    App credentials produce an installation token and can reach the org or repo. The service is enabled and started
+    after that.
+12. **Smoke test.** The installer clones one worker from the template into a reserved VMID, tagged
+    `par-managed,par-build` so the reconcile loop leaves it alone, confirms the guest agent responds, and confirms
+    through `qm guest exec` that the worker got a DHCP lease, reaches GitHub, and can't reach the Proxmox API or the
+    controller VM. It then destroys the clone and confirms that the controller registered the scale set and holds a
+    listener session. A re-run first destroys a clone a failed run left.
+13. **Summary.** Print the `runs-on:` label, the controller and gateway VMs' IDs and IPs, the metrics URL and its
     certificate's SHA-256 fingerprint, and the upgrade and uninstall commands.
 
 If any step fails, the installer stops and prints what it already created, so a re-run can continue from there.
@@ -253,27 +251,22 @@ main, so `unattended-upgrades` patches it) runs in the controller VM and serves 
 - `/readyz` fails while the GitHub message session or the Proxmox API is unreachable. `/healthz` only checks that the
   process is running.
 
-## Template build
+## Runner image
 
-`parcon template build` runs inside the controller VM and uses only the Proxmox API:
+The runner template is imported, never built on the node. CI builds `par-runner-<ver>.qcow2` with Packer from
+`images/runner/`: it starts from the pinned Ubuntu 26.04 cloud image, installs the runner and the one-job units,
+runs the checks in `images/runner/tests/`, and cleans up the machine-id, SSH host keys, cloud-init state, and logs.
+The image's disk size is the baseline that each worker's `freeDiskGiB` is added to, so it is kept small.
 
-1. Linked-clone the base template into a build VM on the worker network, tagged `par-managed,par-build`, and grow
-   its disk to fit the toolset plus a small margin.
-2. Boot it, then push the provisioning scripts from `images/ubuntu-26.04/` (shipped in the controller image) through
-   the guest agent and run them with `guest-exec`. This needs no SSH and no network path from the controller to the
-   build VM.
-3. Clean up inside the guest: reset the machine-id, SSH host keys, and cloud-init state, and clear logs.
-4. Shut down, convert to a template named with its version, and tag it `par-managed,par-template,<version>`. The
-   template's disk size is the baseline that each worker's `freeDiskGiB` is added to, so keep it tight.
-5. Smoke-test one clone, tagged `par-managed,par-build` like the build VM, then destroy it and point new workers at
-   the new template.
+Templates are immutable. The installer imports each new runner image as a new template with a newer `par-tv` tag,
+and the controller clones the newest one. Linked clones depend on their template, so the controller deletes an old
+template only once no worker references it (`par-tpl-<VMID>` on each worker). The installer's `par-build`
+smoke-test clones are never counted: the installer destroys them itself, and `uninstall` removes any that remain.
 
-Build VMs and smoke-test clones take reserved VMIDs. The builder destroys every `par-build` VM it creates,
-including ones a failed earlier build left, and `uninstall` removes any that remain. The controller never touches
-them.
-
-Templates are immutable. Linked clones depend on their template, so an old template is deleted only once no worker
-uses it. The controller repeats this build weekly and whenever a new `actions/runner` version is released.
+GitHub stops accepting a runner with auto-update disabled 30 days after a newer `actions/runner` release. Each
+runner release therefore ships as a project release with a new runner image, and `install.sh upgrade` imports it.
+The controller logs a warning when the template has been behind the latest release for 7 days and an error after
+21, and `parcon check template` reports the same.
 
 ## Networking
 
@@ -307,8 +300,8 @@ stay queued and workers that never register, and `install.sh check` tests it. It
 
 - **Upgrade** is in place: the new controller binary is pushed through the guest agent, then the service is
   restarted. Config and secrets stay in the controller VM. The gateway VM holds no state beyond its settings, so it
-  is replaced with a new image and reconfigured. The runner template is rebuilt with the new
-  provisioning scripts. The controller VM's OS updates itself with `unattended-upgrades`.
+  is replaced with a new image and reconfigured. A new runner image is imported as a new template when the release
+  has one, and the controller removes the old template once its workers are gone. The controller VM's OS updates itself with `unattended-upgrades`.
 - **Uninstall** first stops the controller and deletes the scale set in GitHub. It then destroys every VM tagged
   `par-managed`, removes the ACLs, token, user, role, and pools, and removes the `parzone` zone and `parnet` VNet and
   applies the SDN config. It doesn't touch anything it didn't create.

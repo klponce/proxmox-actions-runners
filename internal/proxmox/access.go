@@ -150,7 +150,7 @@ var (
 		"VM.Config.CPU", "VM.Config.Memory", "VM.Config.Disk", "VM.Config.Network", "VM.Config.Cloudinit",
 		"VM.Config.Options",
 		"VM.PowerMgmt", "VM.Audit",
-		"VM.GuestAgent.Audit", "VM.GuestAgent.FileWrite", "VM.GuestAgent.Unrestricted",
+		"VM.GuestAgent.Audit", "VM.GuestAgent.FileWrite",
 		// Without Pool.Audit, /cluster/resources leaves out each VM's pool, and the controller can't tell its own
 		// VMs from others (found on PVE 9.2).
 		"Pool.Audit",

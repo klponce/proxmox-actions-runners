@@ -32,6 +32,33 @@ does the same on Proxmox.
 - Self-hosted runner usage is not billed. Hosted minutes on private repositories are, beyond the plan's included
   allowance.
 
+## The runner template
+
+The project follows ARC's model: a lean runner image, with workflows bringing their own toolchains through
+`setup-*` actions. What it adds over ARC is the VM, so Docker, `systemd`, and `sudo` work without privileged
+containers.
+
+- **A prebuilt image.** CI builds the runner image with Packer (`images/runner/`) and publishes it as a release
+  asset, `par-runner-<version>.qcow2`, well under GitHub's 2 GiB asset limit. The installer imports it as a template.
+  Nothing is built on the node, so an install needs no build VM, no build tooling, and no extra memory or time.
+- **No hosted-runner parity.** An earlier design built GitHub's full `actions/runner-images` toolset on the node:
+  tens of GB, about an hour per build, a build VM, a way to run scripts in it through the guest agent (which needed
+  the `VM.GuestAgent.Unrestricted` privilege), and smoke tests of candidate templates. It was dropped as far more
+  machinery than a runner controller needs. The image keeps the hosted runners' directory layout and environment
+  variables, so `setup-*` actions and the tool cache work. Users who need more extend the Packer build.
+- **Immutable templates.** A new runner image is imported as a new template, tagged `par-tv-<import time>` and
+  `par-rv-<actions/runner version>`. The controller clones the newest, tags each worker with the template it came
+  from (`par-tpl-<VMID>`), and destroys an older template once no worker references it. Linked clones can't outlive
+  their template, and Proxmox refuses to delete a template that clones still use, so pruning is conservative: it
+  waits while any worker is being created, and stops entirely if any worker lacks the reference.
+- **The 30-day rule.** A runner with auto-update disabled must be updated within 30 days of a new `actions/runner`
+  release, or GitHub stops assigning it jobs. Auto-update stays disabled, as in ARC: a one-job runner that updates
+  itself first downloads the runner on every job. Each runner release therefore needs a new runner image. CI opens a
+  version-bump pull request for each release, and the controller checks the latest release every 6 hours and logs a
+  warning once the template has been behind for 7 days and an error after 21. `parcon check template` reports the
+  same. Whether the runner's own update could serve as a safety net for installations that fall behind is left to
+  testing on a live node.
+
 ## Building on `actions/scaleset`
 
 GitHub publishes the scheduling half of this controller as a Go module:
@@ -170,11 +197,11 @@ workers alone, so restarting or upgrading it doesn't cancel jobs.
   touch any other VM on the cluster, including the controller and gateway VMs in `par-system`.
 - **Guest-agent privileges** changed between releases. PVE 9 splits them into `VM.GuestAgent.Audit`, `FileRead`,
   `FileWrite`, `FileSystemMgmt`, and `Unrestricted`. Earlier releases gate the agent behind `VM.Monitor`. The
-  controller needs `Audit` for `agent/ping`, `FileWrite` for `agent/file-write` (JIT delivery), and `Unrestricted`
-  for `agent/exec` and `agent/exec-status` (template build). List each privilege in the role by name rather than
-  writing `VM.Config.*` or `VM.GuestAgent.*`.
+  controller needs only `Audit` for `agent/ping` and `FileWrite` for `agent/file-write` (JIT delivery). Without
+  `Unrestricted` the token can't run commands in a VM. List each privilege in the role by name rather than writing
+  `VM.Config.*` or `VM.GuestAgent.*`.
 - **Clone permissions:** cloning needs `VM.Clone` on the source and `VM.Allocate` on the new VMID or on the target
-  pool. Growing the clone's disk needs `VM.Config.Disk`, and converting a build VM to a template needs `VM.Allocate`.
+  pool. Growing the clone's disk needs `VM.Config.Disk`.
 - **Seeing pools:** `/cluster/resources` reports a VM's `pool` only to callers with `Pool.Audit` on it. Without it
   the controller can't tell its VMs from others, so the token needs it (found on PVE 9.2).
 - **`/cluster/resources` lags.** VM tags there are current, but `status` and `template` come from `pvestatd` and
@@ -183,8 +210,8 @@ workers alone, so restarting or upgrading it doesn't cancel jobs.
   template shows `template: 0` for about 9s. The controller treats `unknown` as "don't know yet" and acts only on
   an explicit `stopped`. A new template with a late flag looks exactly like a half-created worker clone, which also
   carries the template's tags, so they are told apart by VMID: workers take IDs from the start of the range, and
-  the last `ReservedVMIDs` IDs hold templates and build VMs. The controller never treats a VM in the reserved IDs
-  as a worker or a leftover, and uses a template there only once Proxmox reports it as one.
+  the last `ReservedVMIDs` IDs hold templates and the installer's smoke-test clones. The controller never treats a
+  VM in the reserved IDs as a worker or a leftover, and uses a template there only once Proxmox reports it as one.
 
 Check endpoint names and privileges against the installed Proxmox VE version. The API viewer is the authoritative
 reference.

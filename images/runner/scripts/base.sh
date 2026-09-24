@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Runner base image: the QEMU guest agent, the runner user, and settings every worker needs. The toolset and the
-# GitHub runner come later, from the template build (images/ubuntu-26.04/).
+# First step of the runner image: the QEMU guest agent, the runner user, and settings every worker needs. The
+# runner, its one-job units, and the toolset follow in the numbered scripts.
 set -euo pipefail
 
 main() {

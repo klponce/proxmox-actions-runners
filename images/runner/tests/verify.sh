@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks a VM provisioned by the template scripts. Run as root by the local test build (local-test.pkr.hcl).
+# Checks the runner image before cleanup. Run as root by the image build (runner.pkr.hcl).
 set -euo pipefail
 
 failures=0
@@ -32,7 +32,6 @@ main() {
   check "apt background updates are off" grep -q 'Unattended-Upgrade "0"' /etc/apt/apt.conf.d/20auto-upgrades
   check "no systemd ordering cycles at boot" bash -c '! journalctl -b --no-pager | grep -q "Ordering cycle"'
   check "ssh.socket is listening" systemctl is-active ssh.socket
-  check "the image build user is gone" bash -c '! id packer'
 
   if ((failures > 0)); then
     echo "$failures check(s) failed"

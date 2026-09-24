@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Final step of every image build: remove the machine's identity and build leftovers so each VM made from the image
-# gets its own machine ID, SSH host keys, and cloud-init run. Used by the Packer builds (runner base, gateway,
-# controller) and by `parcon template build`. Safe to run more than once.
+# gets its own machine ID, SSH host keys, and cloud-init run. Used by every Packer image build. Safe to run more
+# than once.
 set -euo pipefail
 
 main() {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/klponce/proxmox-actions-runners/internal/config"
 	"github.com/klponce/proxmox-actions-runners/internal/proxmox"
+	"github.com/klponce/proxmox-actions-runners/internal/vmtags"
 )
 
 // maxRunnerChecksPerPass bounds the GitHub lookups one pass makes, so a large pool doesn't slow the loop down.
@@ -20,43 +21,34 @@ type view struct {
 	template *proxmox.VM
 	// workers holds the workers of each scale set, by scale set name, including scale sets no longer configured.
 	workers map[string][]worker
-	// strays are managed VMs in the VMID range that are neither workers, templates, nor build VMs: clones left
-	// half-created by a crash, which still carry the template's tags, or workers with broken tags.
+	// strays are managed VMs in the worker part of the VMID range that aren't workers: clones left half-created by
+	// a crash, which still carry the template's tags, and workers with broken tags.
 	strays []proxmox.VM
 	// used holds every VMID the token can see.
 	used map[int]bool
 }
 
 // observe sorts the VMs Proxmox lists into a view. It considers only VMs in the configured pool that carry
-// TagManaged, and never counts a VM outside the worker part of the VMID range as a worker or stray (AGENTS.md,
+// vmtags.Managed, and never counts a VM outside the worker part of the VMID range as a worker or stray (AGENTS.md,
 // invariant 5).
 func (c *Controller) observe(vms []proxmox.VM) view {
 	v := view{workers: map[string][]worker{}, used: map[int]bool{}}
-	var newest int64 = -1
-	for i := range vms {
-		vm := vms[i]
+	if t, ok := vmtags.NewestTemplate(vms, c.cfg.Proxmox.Pool); ok {
+		v.template = &t
+	}
+	for _, vm := range vms {
 		v.used[vm.VMID] = true
-		if vm.Pool != c.cfg.Proxmox.Pool || !vm.HasTag(TagManaged) {
-			continue
-		}
-		if vm.Template {
-			if !vm.HasTag(TagTemplate) {
-				continue
-			}
-			if version, ok := templateVersion(vm); ok && (v.template == nil || version > newest ||
-				(version == newest && vm.VMID > v.template.VMID)) {
-				newest, v.template = version, &vms[i]
-			}
+		if vm.Template || vm.Pool != c.cfg.Proxmox.Pool || !vm.HasTag(vmtags.Managed) {
 			continue
 		}
 		// Only the worker part of the range holds workers and their half-created leftovers. The reserved part holds
-		// templates and build VMs, and a new template shows template: 0 for about 10s while it already has the
-		// template's tags, the same as a half-created clone; looking only at worker IDs keeps it from being
-		// destroyed as a stray.
-		if !c.cfg.Proxmox.VMIDRange.Workers().Contains(vm.VMID) || vm.HasTag(TagBuild) {
+		// templates and the installer's par-build clones, and a newly imported template shows template: 0 for about
+		// 10s while it already has the template's tags, the same as a half-created clone; looking only at worker IDs
+		// keeps it from being destroyed as a stray.
+		if !c.cfg.Proxmox.VMIDRange.Workers().Contains(vm.VMID) || vm.HasTag(vmtags.Build) {
 			continue
 		}
-		if !vm.HasTag(TagWorker) {
+		if !vm.HasTag(vmtags.Worker) {
 			v.strays = append(v.strays, vm)
 			continue
 		}
@@ -82,6 +74,8 @@ func (c *Controller) reconcile(ctx context.Context) error {
 	}
 	now := c.now()
 	v := c.observe(vms)
+	c.pruneTemplates(ctx, vms, v.template)
+	c.checkRunnerFreshness(ctx, v.template)
 
 	for _, vm := range v.strays {
 		c.startRetire(ctx, nil, vm, "", true, "left half-created")

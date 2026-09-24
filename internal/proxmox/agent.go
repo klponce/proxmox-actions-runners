@@ -44,6 +44,8 @@ type ExecResult struct {
 }
 
 // AgentExec runs a command inside the guest through the guest agent and waits for it to exit. stdin may be nil.
+// The controller doesn't use it, and its token lacks the VM.GuestAgent.Unrestricted privilege it needs; the
+// integration tests use it to look inside workers.
 //
 // Never put secrets in command: Proxmox includes the command line in its error messages and task logs. Pass secrets
 // through stdin instead. A non-zero exit code is not an error; check ExecResult.ExitCode.

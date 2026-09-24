@@ -12,6 +12,7 @@ import (
 
 	"github.com/klponce/proxmox-actions-runners/internal/config"
 	"github.com/klponce/proxmox-actions-runners/internal/proxmox"
+	"github.com/klponce/proxmox-actions-runners/internal/vmtags"
 )
 
 // TestIntegrationWorkerLifecycle runs the real controller against a real Proxmox VE node, with the in-memory GitHub
@@ -62,7 +63,7 @@ func TestIntegrationWorkerLifecycle(t *testing.T) {
 		}
 		var out []proxmox.VM
 		for _, vm := range vms {
-			if vm.HasTag(TagWorker) && cfg.Proxmox.VMIDRange.Contains(vm.VMID) {
+			if vm.HasTag(vmtags.Worker) && cfg.Proxmox.VMIDRange.Contains(vm.VMID) {
 				out = append(out, vm)
 			}
 		}
@@ -189,7 +190,7 @@ func integrationSetup(t *testing.T) (*proxmox.Client, *config.Config) {
 			return
 		}
 		for _, vm := range vms {
-			if !cfg.Proxmox.VMIDRange.Contains(vm.VMID) || !vm.HasTag(TagManaged) || vm.Template {
+			if !cfg.Proxmox.VMIDRange.Contains(vm.VMID) || !vm.HasTag(vmtags.Managed) || vm.Template {
 				continue
 			}
 			t.Logf("cleanup: destroying leftover VM %d (%s, tags %s)", vm.VMID, vm.Name, strings.Join(vm.Tags, ";"))

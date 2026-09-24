@@ -13,6 +13,7 @@ import (
 	"github.com/klponce/proxmox-actions-runners/internal/config"
 	"github.com/klponce/proxmox-actions-runners/internal/github"
 	"github.com/klponce/proxmox-actions-runners/internal/proxmox"
+	"github.com/klponce/proxmox-actions-runners/internal/vmtags"
 )
 
 const (
@@ -82,7 +83,8 @@ func (f *fakeProxmox) add(vm proxmox.VM) {
 
 func (f *fakeProxmox) addTemplate(vmid int, version int64) {
 	f.add(proxmox.VM{VMID: vmid, Name: fmt.Sprintf("par-tpl-%d", version), Pool: testPool, Template: true,
-		Tags: []string{TagManaged, TagTemplate, fmt.Sprintf("%s%d", tagTemplateVersionPrefix, version)}})
+		Tags: []string{vmtags.Managed, vmtags.Template, fmt.Sprintf("%s%d", vmtags.TemplateVersionPrefix, version),
+			vmtags.RunnerVersionPrefix + "2.337.0"}})
 }
 
 func (f *fakeProxmox) record(format string, args ...any) error {
@@ -133,7 +135,7 @@ func (f *fakeProxmox) workers() []proxmox.VM {
 	defer f.mu.Unlock()
 	var out []proxmox.VM
 	for _, vm := range f.vms {
-		if vm.vm.HasTag(TagWorker) {
+		if vm.vm.HasTag(vmtags.Worker) {
 			out = append(out, vm.vm)
 		}
 	}
@@ -308,6 +310,10 @@ type fakeGitHub struct {
 	ensureErr []error
 	handlers  chan github.Handler
 	removed   []string
+	// latest is the latest actions/runner release; releaseErr fails the lookup. releaseCalls counts lookups.
+	latest       github.RunnerRelease
+	releaseErr   error
+	releaseCalls int
 }
 
 func newFakeGitHub() *fakeGitHub {
@@ -457,7 +463,7 @@ func (h *harness) pass() {
 func (h *harness) readyWorkers() []int {
 	var ids []int
 	for _, vm := range h.pve.workers() {
-		if vm.HasTag(TagReady) {
+		if vm.HasTag(vmtags.Ready) {
 			ids = append(ids, vm.VMID)
 		}
 	}
@@ -476,4 +482,14 @@ func (h *harness) nameOf(vmid int) string {
 		h.t.Fatal(err)
 	}
 	return w.name
+}
+
+func (f *fakeGitHub) LatestRunnerRelease(context.Context) (github.RunnerRelease, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.releaseCalls++
+	if f.releaseErr != nil {
+		return github.RunnerRelease{}, f.releaseErr
+	}
+	return f.latest, nil
 }
