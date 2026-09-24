@@ -196,30 +196,24 @@ func checkGitHub(ctx context.Context, cfg *config.Config, _ string, out io.Write
 		return c.err()
 	}
 
-	for i, s := range cfg.ScaleSets {
+	// Each lookup authenticates, so bad App credentials fail every line.
+	for _, s := range cfg.ScaleSets {
 		found, err := client.FindScaleSet(ctx, github.ScaleSetSpec{Name: s.Name, Labels: s.Labels,
 			RunnerGroup: s.RunnerGroup})
-		if err != nil {
-			if i == 0 {
-				// The first request is the one that authenticates, so a failure here is about the App itself.
-				c.fail("GitHub App %s (installation %d) on %s: %v", cfg.GitHub.App.ClientID,
-					cfg.GitHub.App.InstallationID, cfg.GitHub.ConfigURL, err)
-				return c.err()
-			}
-			c.fail("scale set %s: %v", s.Name, err)
-			continue
-		}
-		if i == 0 {
-			c.ok("GitHub App %s (installation %d) can manage runners on %s", cfg.GitHub.App.ClientID,
-				cfg.GitHub.App.InstallationID, cfg.GitHub.ConfigURL)
-		}
-		if found == nil {
+		switch {
+		case err != nil:
+			c.fail("scale set %s in runner group %s: %v", s.Name, s.RunnerGroup, err)
+		case found == nil:
 			c.ok("scale set %s in runner group %s: not registered yet; the controller creates it on start", s.Name,
 				s.RunnerGroup)
-		} else {
+		default:
 			c.ok("scale set %s in runner group %s: registered with ID %d, labels %s", s.Name, s.RunnerGroup, found.ID,
 				strings.Join(found.Labels, ", "))
 		}
+	}
+	if c.failed == 0 {
+		c.ok("GitHub App %s (installation %d) can manage runners on %s", cfg.GitHub.App.ClientID,
+			cfg.GitHub.App.InstallationID, cfg.GitHub.ConfigURL)
 	}
 	return c.err()
 }
