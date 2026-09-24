@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/klponce/proxmox-actions-runners/internal/config"
 	"github.com/klponce/proxmox-actions-runners/internal/proxmox"
 )
 
@@ -88,14 +89,9 @@ func (c *Controller) reconcile(ctx context.Context) error {
 
 	checks := 0
 	for name, workers := range v.workers {
-		s, configured := c.scaleSets[name]
+		s := c.scaleSets[name] // nil for a scale set no longer configured
 		for _, w := range workers {
 			if c.isBusy(w.vm.VMID) {
-				continue
-			}
-			if !configured {
-				// Let a running job finish; the retirement is retried every pass until it can go.
-				c.startRetire(ctx, w.vm, w.name, false, "scale set removed from config")
 				continue
 			}
 			if reason, force := c.retireReason(ctx, s, w, now, &checks); reason != "" {
@@ -111,19 +107,32 @@ func (c *Controller) reconcile(ctx context.Context) error {
 }
 
 // retireReason says whether a worker should be retired, why, and whether to do it even if its runner is in the
-// middle of a job. It returns "" to keep the worker.
+// middle of a job. It returns "" to keep the worker. s is nil for a scale set that is no longer configured.
 func (c *Controller) retireReason(ctx context.Context, s *scaleSetState, w worker, now time.Time,
 	checks *int) (reason string, force bool) {
+	// A removed scale set's lifetime is gone with its config; the default still bounds its workers (invariant 4).
+	maxLifetime := config.DefaultMaxLifetime
+	if s != nil {
+		maxLifetime = s.cfg.MaxLifetime
+	}
 	age := now.Sub(w.created)
 	switch {
-	case s != nil && age > s.cfg.MaxLifetime:
-		return fmt.Sprintf("older than maxLifetime %s", s.cfg.MaxLifetime), true
+	case age > maxLifetime:
+		return fmt.Sprintf("older than maxLifetime %s", maxLifetime), true
 	case w.vm.Status == "stopped" && w.ready:
 		// A powered-off VM can't be running a job, whatever GitHub still thinks.
 		return "powered off after its job", true
-	case !w.ready:
+	case s == nil || !w.ready:
+		// These workers go once their runner isn't in a job. The retirement asks GitHub, so while a job runs it is
+		// retried only as often as the runner check.
+		if !c.runnerCheckDue(w.vm.VMID, now) {
+			return "", false
+		}
+		if s == nil {
+			return "scale set removed from config", false
+		}
 		// Only a crash leaves a worker unready without an operation in flight, and a half-created worker is
-		// destroyed rather than repaired. If its runner already has a job, the retirement waits for it.
+		// destroyed rather than repaired.
 		return "left half-created", false
 	case w.vm.Status != "running":
 		// Proxmox reports status from pvestatd, up to about 10s late: a VM it hasn't sampled yet is "unknown".

@@ -307,9 +307,30 @@ func TestRemovedScaleSet(t *testing.T) {
 		t.Errorf("VMs left = %v, want only the busy worker of the removed scale set", got)
 	}
 	h.gh.setBusy(busyName, false)
+	h.pass() // GitHub is asked again only after RunnerCheckEvery
+	if got := h.pve.ids(); !reflect.DeepEqual(got, []int{10001}) {
+		t.Errorf("VMs left = %v, want the retirement retried only after RunnerCheckEvery", got)
+	}
+	h.clock.Advance(5 * time.Minute)
 	h.pass()
 	if got := h.pve.ids(); len(got) != 0 {
 		t.Errorf("VMs left = %v after its job ended", got)
+	}
+}
+
+func TestRemovedScaleSetKeepsDefaultMaxLifetime(t *testing.T) {
+	h := newHarness(t, testConfig())
+	h.pve.add(proxmox.VM{VMID: 10000, Pool: testPool, Status: "running", Tags: workerTags("old", testStart, true)})
+	name := workerName(10000, testStart)
+	if _, err := h.gh.GenerateJITConfig(context.Background(), testScaleSetID, name); err != nil {
+		t.Fatal(err)
+	}
+	h.gh.setBusy(name, true) // stuck in a job
+
+	h.clock.Advance(config.DefaultMaxLifetime + time.Second)
+	h.pass()
+	if got := h.pve.ids(); len(got) != 0 {
+		t.Errorf("VMs left = %v, want the worker past the default maxLifetime destroyed", got)
 	}
 }
 

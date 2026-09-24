@@ -144,7 +144,10 @@ safe to apply again after a crash:
   if its runner is still in a job.
 - **Missing runners.** A ready, running worker whose runner is no longer registered in GitHub is destroyed. The check
   starts 10 minutes after creation and repeats every 5 minutes, with a bounded number of lookups per pass.
-- **Removed scale sets.** Workers of a scale set that is no longer in the config are retired once they're idle.
+- **Removed scale sets.** Workers of a scale set that is no longer in the config are retired once they're idle, and
+  the default `maxLifetime` still applies to them.
+- **Retrying.** Retiring a half-created worker or one of a removed scale set waits for its runner's job. While the job
+  runs, the controller asks GitHub again only at the missing-runner check interval.
 - **Scaling down.** Surplus idle workers are retired oldest first. GitHub refuses to remove a runner that is running a
   job, and the controller then leaves that worker alone.
 
