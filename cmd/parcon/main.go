@@ -4,17 +4,15 @@
 //
 //	parcon version
 //	parcon check config [-config path]
+//	parcon check proxmox [-config path]
 package main
 
 import (
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
 	"runtime/debug"
-
-	"github.com/klponce/proxmox-actions-runners/internal/config"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -22,7 +20,8 @@ var version = ""
 
 const usage = `usage:
   parcon version
-  parcon check config [-config path]
+  parcon check config [-config path]    validate the config file
+  parcon check proxmox [-config path]   check the Proxmox VE API, token privileges, and storage
 `
 
 // errUsage marks a command-line mistake, which exits with status 2 like the flag package does.
@@ -56,33 +55,6 @@ func run(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stderr, "unknown command %q\n%s", args[0], usage)
 		return errUsage
 	}
-}
-
-func runCheck(args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 || args[0] != "config" {
-		fmt.Fprint(stderr, usage)
-		return errUsage
-	}
-	fs := flag.NewFlagSet("check config", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	path := fs.String("config", config.DefaultPath, "path of the config file")
-	if err := fs.Parse(args[1:]); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
-		return errUsage
-	}
-	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "unexpected arguments: %v\n", fs.Args())
-		return errUsage
-	}
-
-	c, err := config.Load(*path)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(stdout, "%s: OK, %d scale set(s)\n", *path, len(c.ScaleSets))
-	return nil
 }
 
 // buildVersion returns the version set at build time, or the module version and VCS revision Go recorded.

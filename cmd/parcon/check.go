@@ -1,0 +1,172 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"strings"
+	"time"
+
+	"github.com/klponce/proxmox-actions-runners/internal/config"
+	"github.com/klponce/proxmox-actions-runners/internal/proxmox"
+)
+
+// checkTimeout bounds each check command.
+const checkTimeout = 30 * time.Second
+
+// supportedPVEMajor is the only Proxmox VE major version the project supports (README, "Limitations").
+const supportedPVEMajor = 9
+
+var checks = map[string]func(ctx context.Context, cfg *config.Config, path string, out io.Writer) error{
+	"config":  checkConfig,
+	"proxmox": checkProxmox,
+}
+
+// runCheck handles "parcon check <target> [-config path]".
+func runCheck(args []string, stdout, stderr io.Writer) error {
+	if len(args) == 0 || checks[args[0]] == nil {
+		fmt.Fprint(stderr, usage)
+		return errUsage
+	}
+	target := args[0]
+	fs := flag.NewFlagSet("check "+target, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	path := fs.String("config", config.DefaultPath, "path of the config file")
+	if err := fs.Parse(args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return errUsage
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "unexpected arguments: %v\n", fs.Args())
+		return errUsage
+	}
+
+	cfg, err := config.Load(*path)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
+	defer cancel()
+	return checks[target](ctx, cfg, *path, stdout)
+}
+
+func checkConfig(_ context.Context, cfg *config.Config, path string, out io.Writer) error {
+	fmt.Fprintf(out, "%s: OK, %d scale set(s)\n", path, len(cfg.ScaleSets))
+	return nil
+}
+
+// checker prints one line per check and counts failures.
+type checker struct {
+	out    io.Writer
+	failed int
+}
+
+func (c *checker) ok(format string, args ...any) {
+	fmt.Fprintf(c.out, "ok    %s\n", fmt.Sprintf(format, args...))
+}
+
+func (c *checker) fail(format string, args ...any) {
+	c.failed++
+	fmt.Fprintf(c.out, "FAIL  %s\n", fmt.Sprintf(format, args...))
+}
+
+func (c *checker) err() error {
+	if c.failed > 0 {
+		return fmt.Errorf("%d check(s) failed", c.failed)
+	}
+	return nil
+}
+
+// checkProxmox confirms that the controller can use the Proxmox VE API as configured: the token works, the
+// version is supported, the token has exactly the privileges it needs, and the storage can hold VM disks.
+func checkProxmox(ctx context.Context, cfg *config.Config, _ string, out io.Writer) error {
+	p := cfg.Proxmox
+	c := &checker{out: out}
+
+	secret, err := config.ReadSecretFile(p.TokenSecretFile)
+	if err != nil {
+		c.fail("token secret: %v", err)
+		return c.err()
+	}
+	client, err := proxmox.New(proxmox.Options{
+		URL:            p.URL,
+		TokenID:        p.TokenID,
+		TokenSecret:    secret,
+		TLSFingerprint: p.TLSFingerprint,
+		Node:           p.Node,
+		UserAgent:      "parcon/" + buildVersion(),
+	})
+	if err != nil {
+		c.fail("client: %v", err)
+		return c.err()
+	}
+
+	// Nothing else can work if the API can't be reached with this token.
+	v, err := client.Version(ctx)
+	if err != nil {
+		c.fail("reach %s as %s: %v", p.URL, p.TokenID, err)
+		return c.err()
+	}
+	if v.Major() != supportedPVEMajor {
+		c.fail("Proxmox VE %s: only %d.x is supported", v.Version, supportedPVEMajor)
+	} else {
+		c.ok("Proxmox VE %s at %s, token %s", v.Version, p.URL, p.TokenID)
+	}
+
+	perms, err := client.Permissions(ctx)
+	if err != nil {
+		c.fail("read the token's permissions: %v", err)
+	} else {
+		for _, req := range proxmox.RequiredPrivileges(p.Pool, p.Storage) {
+			if missing := perms.Missing(req); len(missing) > 0 {
+				c.fail("privileges on %s: missing %s", req.Path, strings.Join(missing, ", "))
+			} else {
+				c.ok("privileges on %s", req.Path)
+			}
+		}
+		switch path, missing := perms.MissingOnVNet(p.VNet); {
+		case path == "":
+			c.fail("privileges on VNet %s: no ACL on /sdn/zones/<zone>/%s; missing %s", p.VNet, p.VNet,
+				strings.Join(missing, ", "))
+		case len(missing) > 0:
+			c.fail("privileges on %s: missing %s", path, strings.Join(missing, ", "))
+		default:
+			c.ok("privileges on %s", path)
+		}
+	}
+
+	st, err := client.StorageStatus(ctx, p.Storage)
+	switch {
+	case err != nil:
+		c.fail("storage %s on node %s: %v", p.Storage, p.Node, err)
+	case !st.Enabled || !st.Active:
+		c.fail("storage %s on node %s is not enabled and active", p.Storage, p.Node)
+	case !st.Accepts("images"):
+		c.fail("storage %s doesn't accept VM disks (content type \"images\")", p.Storage)
+	default:
+		c.ok("storage %s (%s) on node %s is active and accepts VM disks, %s free", p.Storage, st.Type, p.Node,
+			formatGiB(st.AvailBytes))
+	}
+
+	vms, err := client.ListVMs(ctx)
+	if err != nil {
+		c.fail("list VMs: %v", err)
+	} else {
+		inPool := 0
+		for _, vm := range vms {
+			if vm.Pool == p.Pool {
+				inPool++
+			}
+		}
+		c.ok("list VMs: %d in pool %s on node %s", inPool, p.Pool, p.Node)
+	}
+	return c.err()
+}
+
+func formatGiB(bytes int64) string {
+	return fmt.Sprintf("%.1f GiB", float64(bytes)/(1<<30))
+}
