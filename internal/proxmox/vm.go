@@ -18,12 +18,8 @@ type VM struct {
 	Template bool
 	// Status is "running" or "stopped".
 	Status string
-	// Lock is the config lock, such as "clone" while a clone is in progress. Empty means unlocked.
-	Lock string
 	// MaxDiskBytes is the size of the root disk.
 	MaxDiskBytes int64
-	// UptimeSeconds is zero for a stopped VM.
-	UptimeSeconds int64
 }
 
 // HasTag reports whether the VM has tag.
@@ -45,9 +41,7 @@ type resource struct {
 	Tags     string  `json:"tags"`
 	Template pveBool `json:"template"`
 	Status   string  `json:"status"`
-	Lock     string  `json:"lock"`
 	MaxDisk  pveInt  `json:"maxdisk"`
-	Uptime   pveInt  `json:"uptime"`
 }
 
 // ListVMs returns the QEMU VMs and templates on the client's node that the token can see, sorted by VMID.
@@ -62,15 +56,13 @@ func (c *Client) ListVMs(ctx context.Context) ([]VM, error) {
 			continue
 		}
 		vms = append(vms, VM{
-			VMID:          int(r.VMID),
-			Name:          r.Name,
-			Pool:          r.Pool,
-			Tags:          ParseTags(r.Tags),
-			Template:      bool(r.Template),
-			Status:        r.Status,
-			Lock:          r.Lock,
-			MaxDiskBytes:  int64(r.MaxDisk),
-			UptimeSeconds: int64(r.Uptime),
+			VMID:         int(r.VMID),
+			Name:         r.Name,
+			Pool:         r.Pool,
+			Tags:         ParseTags(r.Tags),
+			Template:     bool(r.Template),
+			Status:       r.Status,
+			MaxDiskBytes: int64(r.MaxDisk),
 		})
 	}
 	sort.Slice(vms, func(i, j int) bool { return vms[i].VMID < vms[j].VMID })

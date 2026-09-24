@@ -191,7 +191,7 @@ func TestFinishedWorkerIsReplaced(t *testing.T) {
 	ctx := context.Background()
 	s := h.c.scaleSets[testScaleSet]
 	_ = s.JobStarted(ctx, github.Job{RunnerName: name, JobID: "job-1"})
-	_ = s.JobCompleted(ctx, github.Job{RunnerName: name, JobID: "job-1", Result: "succeeded"})
+	_ = s.JobCompleted(ctx, github.Job{RunnerName: name, JobID: "job-1"})
 	// GitHub hasn't caught up yet and still reports the runner busy; the VM is off, so it goes anyway.
 	h.gh.setBusy(name, true)
 	h.pve.setStatus(first, "stopped")

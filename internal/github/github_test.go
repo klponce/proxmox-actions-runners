@@ -237,7 +237,7 @@ func TestRunners(t *testing.T) {
 	}
 
 	r, err := c.RunnerByName(ctx, "par-w-1")
-	if err != nil || r == nil || *r != (Runner{ID: 100, Name: "par-w-1", ScaleSetID: testScaleSetID}) {
+	if err != nil || r == nil || *r != (Runner{ID: 100, Name: "par-w-1"}) {
 		t.Errorf("RunnerByName = %+v, %v", r, err)
 	}
 	if r, err := c.RunnerByName(ctx, "par-w-2"); err != nil || r != nil {
@@ -347,13 +347,10 @@ func TestListen(t *testing.T) {
 	if !reflect.DeepEqual(h.desired[:3], []int{2, 1, 1}) {
 		t.Errorf("desired = %v, want [2 1 1 ...]", h.desired)
 	}
-	wantJob := Job{RunnerRequestID: 9001, JobID: "job-1", RunnerName: "par-w-1", RunnerID: 100, Owner: "my-org",
-		Repository: "my-repo", WorkflowRef: "my-org/my-repo/.github/workflows/ci.yml@refs/heads/main",
-		DisplayName: "build"}
+	wantJob := Job{JobID: "job-1", RunnerName: "par-w-1", RunnerID: 100}
 	if len(h.started) != 1 || h.started[0] != wantJob {
 		t.Errorf("started = %+v, want [%+v]", h.started, wantJob)
 	}
-	wantJob.Result = "succeeded"
 	if len(h.completed) != 1 || h.completed[0] != wantJob {
 		t.Errorf("completed = %+v, want [%+v]", h.completed, wantJob)
 	}

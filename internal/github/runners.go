@@ -66,9 +66,8 @@ func (c *Client) GenerateJITConfig(ctx context.Context, scaleSetID int, runnerNa
 
 // Runner is a runner registered with GitHub.
 type Runner struct {
-	ID         int64
-	Name       string
-	ScaleSetID int
+	ID   int64
+	Name string
 }
 
 // RunnerByName returns the registered runner with that name, or nil if there is none.
@@ -80,7 +79,7 @@ func (c *Client) RunnerByName(ctx context.Context, name string) (*Runner, error)
 	if ref == nil {
 		return nil, nil
 	}
-	return &Runner{ID: int64(ref.ID), Name: ref.Name, ScaleSetID: ref.RunnerScaleSetID}, nil
+	return &Runner{ID: int64(ref.ID), Name: ref.Name}, nil
 }
 
 // RemoveRunner unregisters a runner. Removing a runner that is already gone succeeds, so it is safe to retry. A

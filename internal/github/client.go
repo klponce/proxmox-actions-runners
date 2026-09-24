@@ -41,9 +41,8 @@ type Options struct {
 
 // Client talks to GitHub on behalf of one GitHub App installation.
 type Client struct {
-	ss      *scaleset.Client
-	logger  *slog.Logger
-	version string
+	ss     *scaleset.Client
+	logger *slog.Logger
 }
 
 // New returns a Client for opts. It checks the private key but doesn't contact GitHub.
@@ -77,7 +76,7 @@ func New(opts Options) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("github: %w", err)
 	}
-	return &Client{ss: ss, logger: logger, version: opts.Version}, nil
+	return &Client{ss: ss, logger: logger}, nil
 }
 
 // checkPrivateKey confirms that key is a PEM-encoded RSA private key, the kind GitHub issues for Apps, so a bad key

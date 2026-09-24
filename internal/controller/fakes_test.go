@@ -344,7 +344,7 @@ func (f *fakeGitHub) RunnerByName(_ context.Context, name string) (*github.Runne
 	if !ok {
 		return nil, nil
 	}
-	return &github.Runner{ID: id, Name: name, ScaleSetID: testScaleSetID}, nil
+	return &github.Runner{ID: id, Name: name}, nil
 }
 
 func (f *fakeGitHub) RemoveRunner(_ context.Context, id int64) error {

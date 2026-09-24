@@ -250,9 +250,9 @@ func TestListVMs(t *testing.T) {
 	want := []VM{
 		{VMID: 10000, Name: "par-tpl", Pool: "par-runners", Tags: []string{"par-managed", "par-template", "v1"},
 			Template: true, Status: "stopped"},
-		{VMID: 10001, Name: "string-vmid", Template: true, Lock: "clone"},
+		{VMID: 10001, Name: "string-vmid", Template: true},
 		{VMID: 10002, Name: "par-w-2", Pool: "par-runners", Tags: []string{"par-managed", "par-worker"},
-			Status: "running", UptimeSeconds: 30, MaxDiskBytes: 10},
+			Status: "running", MaxDiskBytes: 10},
 	}
 	if !reflect.DeepEqual(vms, want) {
 		t.Errorf("ListVMs =\n%+v\nwant\n%+v", vms, want)

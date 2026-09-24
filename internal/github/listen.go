@@ -14,18 +14,10 @@ import (
 
 // Job describes a job in a scale set message.
 type Job struct {
-	// RunnerRequestID identifies the job's request for a runner.
-	RunnerRequestID int64
-	JobID           string
+	JobID string
 	// RunnerName and RunnerID are set once a runner has picked the job up.
-	RunnerName  string
-	RunnerID    int
-	Owner       string
-	Repository  string
-	WorkflowRef string
-	DisplayName string
-	// Result is set for completed jobs, such as "succeeded", "failed", or "canceled".
-	Result string
+	RunnerName string
+	RunnerID   int
 }
 
 // Stats are GitHub's counts for a scale set, reported with every message.
@@ -157,26 +149,11 @@ func (a *adapter) HandleDesiredRunnerCount(ctx context.Context, count int) (int,
 }
 
 func (a *adapter) HandleJobStarted(ctx context.Context, m *scaleset.JobStarted) error {
-	job := jobFrom(m.JobMessageBase)
-	job.RunnerName, job.RunnerID = m.RunnerName, m.RunnerID
-	return a.h.JobStarted(ctx, job)
+	return a.h.JobStarted(ctx, Job{JobID: m.JobID, RunnerName: m.RunnerName, RunnerID: m.RunnerID})
 }
 
 func (a *adapter) HandleJobCompleted(ctx context.Context, m *scaleset.JobCompleted) error {
-	job := jobFrom(m.JobMessageBase)
-	job.RunnerName, job.RunnerID, job.Result = m.RunnerName, m.RunnerID, m.Result
-	return a.h.JobCompleted(ctx, job)
-}
-
-func jobFrom(m scaleset.JobMessageBase) Job {
-	return Job{
-		RunnerRequestID: m.RunnerRequestID,
-		JobID:           m.JobID,
-		Owner:           m.OwnerName,
-		Repository:      m.RepositoryName,
-		WorkflowRef:     m.JobWorkflowRef,
-		DisplayName:     m.JobDisplayName,
-	}
+	return a.h.JobCompleted(ctx, Job{JobID: m.JobID, RunnerName: m.RunnerName, RunnerID: m.RunnerID})
 }
 
 // statsAdapter passes GitHub's statistics to a StatsRecorder.
