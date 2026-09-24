@@ -424,6 +424,23 @@ func TestFailedCreationIsCleanedUp(t *testing.T) {
 	}
 }
 
+func TestBootTimeoutStartsAtVMStart(t *testing.T) {
+	cfg := testConfig()
+	full := false
+	cfg.Proxmox.LinkedClone = &full
+	h := newHarness(t, cfg)
+	h.pve.addTemplate(testTemplateID, 1)
+	// A full clone that takes longer than the boot timeout, followed by a quick boot.
+	h.pve.onClone = func() { h.clock.Advance(15 * time.Minute) }
+	h.pve.agentReadyAfter = 2
+	h.pve.onPing = func() { h.clock.Advance(time.Second) }
+	h.want(1)
+	h.pass()
+	if n := len(h.readyWorkers()); n != 1 {
+		t.Errorf("%d ready workers, want 1: clone time counted against the boot timeout", n)
+	}
+}
+
 func TestForeignVMIDIsSkipped(t *testing.T) {
 	h := newHarness(t, testConfig())
 	h.pve.addTemplate(testTemplateID, 1)

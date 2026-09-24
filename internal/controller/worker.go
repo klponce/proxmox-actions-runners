@@ -240,7 +240,8 @@ func (c *Controller) create(ctx context.Context, s *scaleSetState, template prox
 	if err := c.pve.Start(ctx, vmid); err != nil {
 		return fmt.Errorf("start: %w", err)
 	}
-	if err := c.waitForAgent(ctx, vmid, created.Add(c.bootTimeout)); err != nil {
+	// The boot timeout starts now: a full clone can take minutes, and that isn't a slow boot.
+	if err := c.waitForAgent(ctx, vmid, c.now().Add(c.bootTimeout)); err != nil {
 		return err
 	}
 	if err := c.pve.AgentWriteFile(ctx, vmid, JITConfigPath, []byte(jit.Encoded())); err != nil {

@@ -59,8 +59,9 @@ type fakeProxmox struct {
 	vms map[int]*fakeVM
 	// agentReadyAfter is how many pings a started VM's agent ignores. Negative means it never answers.
 	agentReadyAfter int
-	// onPing runs on every ping, for example to advance a clock.
-	onPing func()
+	// onClone and onPing run on every clone and ping, for example to advance a clock.
+	onClone func()
+	onPing  func()
 	// fail maps an operation name ("clone", "configure", "grow", "start", "write", "destroy") to an error for it.
 	fail  map[string]error
 	calls []string
@@ -168,6 +169,9 @@ func (f *fakeProxmox) Clone(_ context.Context, opts proxmox.CloneOptions) error 
 	if _, exists := f.vms[opts.NewVMID]; exists {
 		return &proxmox.APIError{StatusCode: http.StatusInternalServerError,
 			Message: fmt.Sprintf("VM %d already exists on node 'pve1'", opts.NewVMID)}
+	}
+	if f.onClone != nil {
+		f.onClone()
 	}
 	f.vms[opts.NewVMID] = &fakeVM{
 		vm: proxmox.VM{VMID: opts.NewVMID, Name: opts.Name, Pool: opts.Pool, Status: "stopped",

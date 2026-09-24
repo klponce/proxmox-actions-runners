@@ -70,7 +70,8 @@ type Options struct {
 
 	// ResyncInterval is how often the loop runs without being woken. Zero means 15s.
 	ResyncInterval time.Duration
-	// BootTimeout is how long a new worker may take to get its JIT config before it is destroyed. Zero means 10m.
+	// BootTimeout is how long a started worker's guest agent may take to answer before the worker is destroyed. Zero
+	// means 10m.
 	BootTimeout time.Duration
 	// RunnerCheckAfter and RunnerCheckEvery control the check that a ready worker's runner still exists in GitHub:
 	// it starts this long after the worker was created and repeats at this interval. Zero means 10m and 5m.
