@@ -1,0 +1,239 @@
+<!doctype html>
+<!--
+  GitHub App helper for the proxmox-actions-runners installer (docs/install.md, "GitHub App setup").
+
+  The installer links here with the target and a random state:
+    ?org=<org>&state=<state>                  organization runners
+    ?org=<org>&repo=<repo>&state=<state>      repository runners, repository owned by an organization
+    ?user=<user>&repo=<repo>&state=<state>    repository runners, repository owned by a personal account
+  The page posts an App manifest to GitHub. GitHub redirects back with ?code=<code>&state=<state>, and the page shows
+  "<state>.<code>" for the user to paste into the installer.
+
+  The path is versioned: a change to the manifest or the query parameters goes in a new /app/vN/ so that older
+  installers keep working. No third-party scripts, and the Content-Security-Policy lets the page send nothing except
+  the form POST to GitHub.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; form-action https://github.com; base-uri 'none'">
+<title>Create the GitHub App</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1f2328;
+    --muted: #59636e;
+    --border: #d1d9e0;
+    --code-bg: #f6f8fa;
+    --accent: #1f883d;
+    --accent-fg: #ffffff;
+    --warn-bg: #fff8c5;
+    --warn-border: #d4a72c;
+    --error-bg: #ffebe9;
+    --error-border: #ff8182;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --fg: #e6edf3;
+      --muted: #9198a1;
+      --border: #3d444d;
+      --code-bg: #151b23;
+      --accent: #238636;
+      --accent-fg: #ffffff;
+      --warn-bg: #272115;
+      --warn-border: #9e6a03;
+      --error-bg: #25171c;
+      --error-border: #da3633;
+    }
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  main { max-width: 42rem; margin: 0 auto; padding: 2rem 1rem; }
+  h1 { font-size: 1.5rem; margin: 0 0 1rem; }
+  code, pre { font: 0.875rem/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); padding: 0.1em 0.3em; border-radius: 4px; overflow-wrap: anywhere; }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.75rem;
+    overflow-x: auto;
+  }
+  #copy-string { white-space: pre-wrap; word-break: break-all; user-select: all; font-size: 1rem; }
+  button {
+    font: inherit;
+    font-weight: 600;
+    color: var(--accent-fg);
+    background: var(--accent);
+    border: 0;
+    border-radius: 6px;
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+  }
+  .note { border-left: 4px solid; border-radius: 6px; padding: 0.5rem 0.75rem; }
+  .warning { background: var(--warn-bg); border-color: var(--warn-border); }
+  .error { background: var(--error-bg); border-color: var(--error-border); }
+  .muted { color: var(--muted); font-size: 0.875rem; }
+  details { margin-top: 2rem; }
+  summary { cursor: pointer; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Create the GitHub App for proxmox-actions-runners</h1>
+  <noscript><p class="note error">This page needs JavaScript to build the App manifest.</p></noscript>
+
+  <p id="error" class="note error" hidden></p>
+
+  <section id="create" hidden>
+    <p>
+      This creates a private GitHub App named <code id="app-name"></code>, owned by <strong id="owner"></strong>, for
+      the controller that runs your self-hosted runners on <strong id="target"></strong>. It asks for one permission,
+      <strong id="permission"></strong>, and has no webhook and no events.
+    </p>
+    <p id="user-note" hidden>Sign in to GitHub as <strong id="user"></strong> before you continue.</p>
+    <form id="form" method="post">
+      <input type="hidden" name="manifest" id="manifest-input">
+      <button type="submit">Create the App on GitHub</button>
+    </form>
+    <p class="muted">
+      GitHub shows the App before it creates it. After you click <em>Create GitHub App</em> there, GitHub sends you back
+      to this page with a code for the installer.
+    </p>
+    <details>
+      <summary>What is sent to GitHub</summary>
+      <p>A form <code>POST</code> to <code id="action"></code> with this manifest:</p>
+      <pre id="manifest"></pre>
+    </details>
+  </section>
+
+  <section id="done" hidden>
+    <p>The App was created. Copy this line and paste it into the installer:</p>
+    <pre id="copy-string"></pre>
+    <p><button id="copy" type="button">Copy</button></p>
+    <p class="note warning">
+      Keep it private. Until the installer uses it, and for up to an hour, anyone who has this line can get the App's
+      private key. Close this page once you have pasted it.
+    </p>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+const project = "https://github.com/klponce/proxmox-actions-runners";
+const ownerPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const repoPattern = /^[A-Za-z0-9._-]{1,100}$/;
+// The state and the code are joined with a ".", so neither may contain one.
+const tokenPattern = /^[A-Za-z0-9_-]{1,128}$/;
+// GitHub limits App names to 34 characters: "par-" + owner + "-" + 6 random hex digits.
+const maxOwnerInName = 34 - "par-".length - "-".length - 6;
+
+const $ = (id) => document.getElementById(id);
+
+function fail(message) {
+  $("error").textContent = message;
+  $("error").hidden = false;
+}
+
+function randomHex(bytes) {
+  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// showCode shows the string the user copies into the installer, and removes the code from the address bar and
+// history.
+function showCode(state, code) {
+  if (!tokenPattern.test(code)) {
+    fail("GitHub sent back a code this page doesn't recognize. Run the installer's App step again.");
+    return;
+  }
+  history.replaceState(null, "", location.pathname);
+  const text = state + "." + code;
+  $("copy-string").textContent = text;
+  $("copy").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      $("copy").textContent = "Copied";
+    } catch {
+      $("copy").textContent = "Select the line and copy it";
+    }
+  });
+  $("done").hidden = false;
+}
+
+// showCreate builds the manifest for the target in the query string and the form that posts it to GitHub.
+function showCreate(params, state) {
+  const org = params.get("org");
+  const user = params.get("user");
+  const repo = params.get("repo");
+  let owner;
+  if (org !== null && user === null) {
+    owner = org;
+  } else if (user !== null && org === null && repo !== null) {
+    owner = user;
+  } else {
+    fail("The link has no valid target. It needs org=<org>, org=<org>&repo=<repo>, or user=<user>&repo=<repo>. " +
+      "Open the link the installer printed.");
+    return;
+  }
+  if (!ownerPattern.test(owner) || (repo !== null && !repoPattern.test(repo))) {
+    fail("The link has an invalid organization, user, or repository name. Open the link the installer printed.");
+    return;
+  }
+
+  const manifest = {
+    name: "par-" + owner.toLowerCase().slice(0, maxOwnerInName) + "-" + randomHex(3),
+    url: project,
+    hook_attributes: { url: project, active: false },
+    redirect_url: location.origin + location.pathname,
+    public: false,
+    default_permissions: repo === null
+      ? { organization_self_hosted_runners: "write" }
+      : { administration: "write" },
+    default_events: [],
+  };
+  const action = (org !== null
+    ? "https://github.com/organizations/" + encodeURIComponent(org) + "/settings/apps/new"
+    : "https://github.com/settings/apps/new") + "?state=" + encodeURIComponent(state);
+
+  $("app-name").textContent = manifest.name;
+  $("owner").textContent = org !== null ? "the organization " + org : "the account " + user;
+  $("target").textContent = "github.com/" + owner + (repo !== null ? "/" + repo : "");
+  $("permission").textContent = repo === null ? "Self-hosted runners: write" : "Administration: write";
+  if (user !== null) {
+    $("user").textContent = user;
+    $("user-note").hidden = false;
+  }
+  $("form").action = action;
+  $("manifest-input").value = JSON.stringify(manifest);
+  $("action").textContent = action;
+  $("manifest").textContent = JSON.stringify(manifest, null, 2);
+  $("create").hidden = false;
+}
+
+function main() {
+  const params = new URLSearchParams(location.search);
+  const state = params.get("state");
+  if (state === null || !tokenPattern.test(state)) {
+    fail("The link has no valid state. Open the link the installer printed.");
+    return;
+  }
+  if (params.has("code")) {
+    showCode(state, params.get("code"));
+  } else {
+    showCreate(params, state);
+  }
+}
+
+main();
+</script>
+</body>
+</html>
