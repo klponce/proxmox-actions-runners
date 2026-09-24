@@ -50,7 +50,19 @@ person, carry broader scopes, and break when that person leaves.
 
 `internal/github` wraps this module rather than reimplementing the protocol. The controller writes only the Proxmox
 half: clone, configure, start, deliver the JIT config, destroy. The module's README says the API is stable but the
-interfaces and examples may change, so pin its version and keep the wrapper thin.
+interfaces and examples may change, so pin its version and keep the wrapper thin. The rest of the controller uses
+only `internal/github`'s own types, so a change in the module touches one package.
+
+Two properties of the module shape the controller:
+
+- **Message handling blocks polling.** The listener calls the controller for each message and doesn't fetch the next
+  one until the call returns. The controller's handler therefore only records the desired runner count and job
+  events; the reconciler does the slow work of cloning and destroying VMs. The listener also returns on the first
+  error of any kind, so `internal/github` re-creates the session with exponential backoff, which also covers a
+  stale session left behind by a crash.
+- **Runners can't be listed.** The module can look a runner up by name or ID, but it can't list a scale set's
+  runners. Each worker VM is therefore named after its runner, so the reconciler can match VMs and runners by name,
+  and a runner whose VM is gone is found through the VM's absence rather than by listing GitHub.
 
 Long-polling also avoids the webhook approach. GitHub's docs warn that autoscaling from `workflow_job` webhooks
 depends on webhooks arriving on time, and it needs an inbound endpoint.

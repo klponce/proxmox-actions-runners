@@ -27,7 +27,7 @@ func TestRun(t *testing.T) {
 		{"help", []string{"help"}, succeeded, "usage:", ""},
 		{"version", []string{"version"}, succeeded, "", ""},
 		{"check without target", []string{"check"}, usageError, "", "usage:"},
-		{"check unknown target", []string{"check", "github"}, usageError, "", "usage:"},
+		{"check unknown target", []string{"check", "frobnicate"}, usageError, "", "usage:"},
 		{"check config extra argument", []string{"check", "config", "extra"}, usageError, "", "unexpected arguments"},
 		{"check config bad flag", []string{"check", "config", "-nope"}, usageError, "", "flag provided but not defined"},
 		{"check example config", []string{"check", "config", "-config", "../../deploy/config.example.yaml"}, succeeded,

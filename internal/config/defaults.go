@@ -20,6 +20,9 @@ const (
 	DefaultMetricsListen = "127.0.0.1:9465"
 	DefaultLinkedClone   = true
 
+	// DefaultRunnerGroup is GitHub's default runner group, the only one repository scale sets can use.
+	DefaultRunnerGroup = "default"
+
 	// ReservedVMIDs is how many IDs in the VMID range are kept for things other than workers: the current and
 	// previous template, a template build VM, and a smoke-test clone.
 	ReservedVMIDs = 4
@@ -71,6 +74,9 @@ func (c *Config) applyDefaults() {
 		s := &c.ScaleSets[i]
 		if len(s.Labels) == 0 && s.Name != "" {
 			s.Labels = []string{s.Name}
+		}
+		if s.RunnerGroup == "" {
+			s.RunnerGroup = DefaultRunnerGroup
 		}
 		if s.MaxLifetime == 0 {
 			s.MaxLifetime = DefaultMaxLifetime

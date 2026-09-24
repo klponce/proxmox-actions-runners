@@ -194,3 +194,56 @@ func TestCheckProxmox(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckGitHubCredentialFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		mode os.FileMode
+		want string
+	}{
+		{"key readable by others", "-----BEGIN RSA PRIVATE KEY-----\n", 0o644,
+			"must not be accessible to group or others"},
+		{"key not PEM", "not a key", 0o600, "not PEM-encoded"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			key := filepath.Join(dir, "github-app.pem")
+			if err := os.WriteFile(key, []byte(tt.key), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(key, tt.mode); err != nil {
+				t.Fatal(err)
+			}
+			cfg := filepath.Join(dir, "config.yaml")
+			data := fmt.Sprintf(`proxmox:
+  url: https://pve.example.com:8006/api2/json
+  tokenId: par@pve!controller
+  tokenSecretFile: /etc/pve-token
+  node: pve1
+  pool: par-runners
+  storage: local-lvm
+  vnet: parnet
+  vmidRange: {start: 10000, end: 10999}
+github:
+  configUrl: https://github.com/my-org
+  app: {clientId: Iv23liEXAMPLE0000000, installationId: 1, privateKeyFile: %s}
+scaleSets:
+  - {name: proxmox-ubuntu-26.04, maxRunners: 2}
+`, key)
+			if err := os.WriteFile(cfg, []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			var stdout, stderr bytes.Buffer
+			err := run([]string{"check", "github", "-config", cfg}, &stdout, &stderr)
+			if outcomeOf(err) != failed {
+				t.Fatalf("run error = %v, want a failure\n%s", err, stdout.String())
+			}
+			if !strings.Contains(stdout.String(), "FAIL  GitHub App: ") || !strings.Contains(stdout.String(), tt.want) {
+				t.Errorf("output doesn't mention %q:\n%s", tt.want, stdout.String())
+			}
+		})
+	}
+}

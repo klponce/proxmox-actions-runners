@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"go.yaml.in/yaml/v3"
@@ -88,6 +90,15 @@ type GitHub struct {
 	App       GitHubApp `yaml:"app"`
 }
 
+// IsRepository reports whether ConfigURL names a repository rather than an organization.
+func (g GitHub) IsRepository() bool {
+	u, err := url.Parse(g.ConfigURL)
+	if err != nil {
+		return false
+	}
+	return strings.Count(strings.Trim(u.Path, "/"), "/") == 1
+}
+
 // GitHubApp holds the GitHub App credentials. The installer's App setup writes them.
 type GitHubApp struct {
 	ClientID       string `yaml:"clientId"`
@@ -114,7 +125,10 @@ type Worker struct {
 type ScaleSet struct {
 	Name string `yaml:"name"`
 	// Labels are what workflows put in runs-on. Empty means just the name.
-	Labels      []string      `yaml:"labels"`
+	Labels []string `yaml:"labels"`
+	// RunnerGroup is the GitHub runner group the scale set belongs to, which controls which repositories and
+	// workflows may use it. Empty means DefaultRunnerGroup. Repository scale sets must use the default group.
+	RunnerGroup string        `yaml:"runnerGroup"`
 	MinRunners  int           `yaml:"minRunners"`
 	MaxRunners  int           `yaml:"maxRunners"`
 	MaxLifetime time.Duration `yaml:"maxLifetime"`

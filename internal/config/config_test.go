@@ -130,6 +130,12 @@ func TestParseDefaults(t *testing.T) {
 	if s.MinRunners != 0 {
 		t.Errorf("minRunners = %d, want 0", s.MinRunners)
 	}
+	if s.RunnerGroup != DefaultRunnerGroup {
+		t.Errorf("runnerGroup = %q, want %q", s.RunnerGroup, DefaultRunnerGroup)
+	}
+	if c.GitHub.IsRepository() {
+		t.Error("an organization URL is reported as a repository")
+	}
 	if c.Metrics.Listen != DefaultMetricsListen {
 		t.Errorf("metrics.listen = %q, want %q", c.Metrics.Listen, DefaultMetricsListen)
 	}
@@ -226,6 +232,7 @@ func TestParseValid(t *testing.T) {
 		{"several labels", "scaleSets.0.labels", []any{"proxmox", "ubuntu-26.04", "x64"}},
 		{"longest lifetime", "scaleSets.0.maxLifetime", "120h"},
 		{"exactly enough VMIDs", "proxmox.vmidRange", map[string]any{"start": 100, "end": 106}},
+		{"organization runner group", "scaleSets.0.runnerGroup", "Trusted builds"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -288,6 +295,8 @@ func TestParseInvalid(t *testing.T) {
 		{"minRunners above maxRunners", "scaleSets.0.minRunners", 4, "is more than maxRunners"},
 		{"lifetime too short", "scaleSets.0.maxLifetime", "1m", "scaleSets[0].maxLifetime"},
 		{"lifetime too long", "scaleSets.0.maxLifetime", "121h", "scaleSets[0].maxLifetime"},
+		{"runner group with a slash", "scaleSets.0.runnerGroup", "a/b", "scaleSets[0].runnerGroup"},
+		{"runner group with padding", "scaleSets.0.runnerGroup", " builds", "scaleSets[0].runnerGroup"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -302,6 +311,25 @@ func TestParseInvalid(t *testing.T) {
 				t.Errorf("error does not mention %q:\n%v", tt.want, err)
 			}
 		})
+	}
+}
+
+func TestParseRepositoryRunnerGroup(t *testing.T) {
+	doc := validDoc()
+	set(t, doc, "github.configUrl", "https://github.com/my-org/my-repo")
+	c, err := parseDoc(t, doc)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !c.GitHub.IsRepository() {
+		t.Error("a repository URL isn't reported as a repository")
+	}
+
+	set(t, doc, "scaleSets.0.runnerGroup", "builds")
+	_, err = parseDoc(t, doc)
+	want := `scaleSets[0].runnerGroup: repository scale sets must use the "default" runner group`
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Parse error = %v, want it to mention %q", err, want)
 	}
 }
 

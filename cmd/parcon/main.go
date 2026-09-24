@@ -5,6 +5,7 @@
 //	parcon version
 //	parcon check config [-config path]
 //	parcon check proxmox [-config path]
+//	parcon check github [-config path]
 package main
 
 import (
@@ -22,6 +23,7 @@ const usage = `usage:
   parcon version
   parcon check config [-config path]    validate the config file
   parcon check proxmox [-config path]   check the Proxmox VE API, token privileges, and storage
+  parcon check github [-config path]    check the GitHub App credentials and scale set registration
 `
 
 // errUsage marks a command-line mistake, which exits with status 2 like the flag package does.
