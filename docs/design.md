@@ -106,6 +106,8 @@ A JIT config is a credential: it can register a runner until it is used. It goes
 agent** (`agent/file-write`) after boot, not through cloud-init. Proxmox stores custom cloud-init user data as
 snippet files on node storage and references them from the VM config, so a JIT config passed that way would stay on
 disk outside the VM. The guest agent writes directly into the running guest, and the controller keeps nothing.
+The guest agent creates a file before it writes the content, so the controller then writes an empty marker file, and
+the runner service waits for the marker rather than the config.
 
 Cloud-init is still used for non-secret per-VM settings such as the hostname.
 

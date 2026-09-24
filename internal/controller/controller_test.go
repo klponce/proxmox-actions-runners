@@ -73,12 +73,25 @@ func TestScaleUpCreatesReadyWorkers(t *testing.T) {
 		if got := vm.files[JITConfigPath]; got != "jit-for-"+name {
 			t.Errorf("VM %d JIT config = %q, want the one for %s", vmid, got, name)
 		}
+		if _, ok := vm.files[JITReadyPath]; !ok {
+			t.Errorf("VM %d didn't get the JIT ready marker", vmid)
+		}
 		if !h.gh.hasRunner(name) {
 			t.Errorf("runner %s isn't registered", name)
 		}
 		if strings.Contains(vm.config["description"], "jit-for") {
 			t.Errorf("VM %d description leaks the JIT config", vmid)
 		}
+	}
+
+	var writes []string
+	for _, call := range h.pve.calls {
+		if strings.HasPrefix(call, "write 10000 ") {
+			writes = append(writes, call)
+		}
+	}
+	if want := []string{"write 10000 " + JITConfigPath, "write 10000 " + JITReadyPath}; !reflect.DeepEqual(writes, want) {
+		t.Errorf("writes = %v, want the config and then the ready marker", writes)
 	}
 
 	// Already at the target: another pass changes nothing.

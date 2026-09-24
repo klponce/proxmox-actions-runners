@@ -247,6 +247,9 @@ func (c *Controller) create(ctx context.Context, s *scaleSetState, template prox
 	if err := c.pve.AgentWriteFile(ctx, vmid, JITConfigPath, []byte(jit.Encoded())); err != nil {
 		return fmt.Errorf("deliver JIT config: %w", err)
 	}
+	if err := c.pve.AgentWriteFile(ctx, vmid, JITReadyPath, nil); err != nil {
+		return fmt.Errorf("signal JIT config: %w", err)
+	}
 	if err := c.pve.SetConfig(ctx, vmid, map[string]string{
 		"tags": proxmox.FormatTags(workerTags(s.cfg.Name, created, true)),
 	}); err != nil {

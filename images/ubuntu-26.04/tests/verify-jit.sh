@@ -15,6 +15,7 @@ write_file() {
 
 RUNNER_DIR=/opt/actions-runner
 CONFIG=/run/par-runner/jitconfig
+READY=/run/par-runner/ready
 RESULT=/tmp/par-jit-test
 
 main() {
@@ -24,7 +25,7 @@ main() {
 {
   echo "user=\$(id -un)"
   echo "config=\$ACTIONS_RUNNER_INPUT_JITCONFIG"
-  if [ -e $CONFIG ]; then echo "file=present"; else echo "file=deleted"; fi
+  if [ -e $CONFIG ] || [ -e $READY ]; then echo "file=present"; else echo "file=deleted"; fi
 } >$RESULT
 EOF
   chown runner:runner "$RUNNER_DIR/run.sh"
@@ -40,6 +41,7 @@ EOF
   rm -f "$RESULT"
   # What the controller does through the guest agent: write the file as root.
   printf 'test-jit-config' >"$CONFIG"
+  touch "$READY"
 
   for _ in $(seq 60); do
     [[ -s $RESULT ]] && break
@@ -49,12 +51,12 @@ EOF
   grep -qx 'user=runner' "$RESULT"
   grep -qx 'config=test-jit-config' "$RESULT"
   grep -qx 'file=deleted' "$RESULT"
-  echo "ok    the JIT config reached the runner as the runner user, and the file was deleted first"
+  echo "ok    the JIT config reached the runner as the runner user, and the files were deleted first"
 }
 
 restore() {
   mv -f "$RUNNER_DIR/run.sh.real" "$RUNNER_DIR/run.sh"
-  rm -rf /etc/systemd/system/par-runner.service.d "$RESULT" "$CONFIG"
+  rm -rf /etc/systemd/system/par-runner.service.d "$RESULT" "$CONFIG" "$READY"
   systemctl daemon-reload
   systemctl reset-failed par-runner.service 2>/dev/null || true
   # Leave the path unit freshly started and waiting, as it is on a worker's first boot.

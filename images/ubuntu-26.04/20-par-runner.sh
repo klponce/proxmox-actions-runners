@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs the units that make a worker run exactly one job: wait for the JIT config the controller writes through
 # the guest agent, run the runner with it, and power the VM off when the runner exits, which tells the controller
-# the worker is done. The path must match controller.JITConfigPath.
+# the worker is done. The paths must match controller.JITConfigPath and controller.JITReadyPath.
 set -euo pipefail
 
 # write_file MODE PATH writes stdin to PATH with MODE, atomically, so a rerun or an interrupted run never leaves a
@@ -31,7 +31,7 @@ set -eu
 config=/run/par-runner/jitconfig
 ACTIONS_RUNNER_INPUT_JITCONFIG=$(cat "$config")
 export ACTIONS_RUNNER_INPUT_JITCONFIG
-rm -f "$config"
+rm -f "$config" /run/par-runner/ready
 cd /opt/actions-runner
 exec ./run.sh
 EOF
@@ -41,7 +41,9 @@ EOF
 Description=Wait for the JIT runner config from proxmox-actions-runners
 
 [Path]
-PathExists=/run/par-runner/jitconfig
+# The controller writes this empty file once the config is complete: the guest agent creates a file before it writes
+# the content, so waiting for the config itself could read it half-written.
+PathExists=/run/par-runner/ready
 Unit=par-runner.service
 
 [Install]
