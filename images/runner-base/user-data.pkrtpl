@@ -1,0 +1,12 @@
+#cloud-config
+# Build-time only. Creates the user Packer connects as; images/common/cleanup.sh locks it and removes it on the
+# image's first real boot.
+ssh_pwauth: true
+users:
+  - name: ${user}
+    lock_passwd: false
+    plain_text_passwd: ${password}
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+package_update: false
+package_upgrade: false
