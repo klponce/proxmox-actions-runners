@@ -108,6 +108,7 @@ images/gateway/        Packer (qemu builder, CI only): gateway VM image (nftable
 images/runner-base/    Packer (qemu builder, CI only): runner base image with qemu-guest-agent, shipped as a release asset
 images/ubuntu-26.04/   in-guest provisioning scripts for the runner template, run by `parcon template build`
 deploy/                example config, systemd unit for the controller VM, nginx config for the metrics endpoint
+.devcontainer/         development container with every tool below, at pinned versions
 site/                  GitHub Pages helper page for the GitHub App manifest flow (static, no third-party scripts)
 docs/                  design notes
 ```
@@ -115,7 +116,31 @@ docs/                  design notes
 `internal/controller` depends on small interfaces, not on the concrete Proxmox or GitHub clients, so that tests
 can use fakes.
 
+## Development environment
+
+All tools run in the dev container defined in `.devcontainer/`: Go, golangci-lint, Packer, ShellCheck, Bats, and
+Perl's JSON module, at pinned versions. Don't install toolchains on the host. If a tool is missing, add it to
+`.devcontainer/Dockerfile` with a pinned version and checksum.
+
+VS Code and other editors that support dev containers pick it up directly. From a terminal, use the
+[devcontainer CLI](https://github.com/devcontainers/cli):
+
+```bash
+devcontainer up --workspace-folder .
+devcontainer exec --workspace-folder . go test ./...
+```
+
+The workspace is mounted at its host path. In a git worktree, also mount the main repository's `.git` directory at
+its host path, because the worktree's `.git` file points there. Without it, git and Go's VCS stamping fail:
+
+```bash
+devcontainer up --workspace-folder . \
+  --mount "type=bind,source=$(git rev-parse --git-common-dir),target=$(git rev-parse --git-common-dir)"
+```
+
 ## Development commands
+
+Run these inside the dev container.
 
 ```bash
 go build ./...

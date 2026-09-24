@@ -1,0 +1,28 @@
+{
+  "name": "proxmox-actions-runners",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "remoteUser": "dev",
+  "updateRemoteUserUID": true,
+  // Mount the workspace at its host path so git works in worktrees, whose .git file points to an absolute host path.
+  "workspaceMount": "source=${localWorkspaceFolder},target=${localWorkspaceFolder},type=bind",
+  "workspaceFolder": "${localWorkspaceFolder}",
+  "mounts": [
+    "source=par-devcontainer-go,target=/home/dev/go,type=volume",
+    "source=par-devcontainer-cache,target=/home/dev/.cache,type=volume"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "timonwong.shellcheck",
+        "hashicorp.hcl"
+      ],
+      "settings": {
+        "go.lintTool": "golangci-lint",
+        "go.toolsManagement.autoUpdate": false
+      }
+    }
+  }
+}
