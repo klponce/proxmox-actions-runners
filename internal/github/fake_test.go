@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -73,6 +74,8 @@ type fakeGitHub struct {
 	sessionsClosed   int
 	// failAccessToken makes GitHub reject the App's JWT.
 	failAccessToken bool
+	// runnerRelease is the latest actions/runner release; nil means none is published.
+	runnerRelease map[string]any
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
@@ -99,6 +102,10 @@ func (f *fakeGitHub) client() *Client {
 			scaleset.WithRetryMax(0),
 			scaleset.WithTimeout(10 * time.Second),
 		},
+		httpClient: &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: f.certPool(), MinVersion: tls.VersionTLS12},
+		}},
+		apiBaseURL: f.srv.URL,
 	})
 	if err != nil {
 		f.t.Fatalf("New: %v", err)
@@ -135,6 +142,12 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusCreated, map[string]any{"token": testInstallToken,
 			"expires_at": time.Now().Add(time.Hour)})
+	case route == "GET /repos/actions/runner/releases/latest":
+		if f.runnerRelease == nil {
+			writeJSON(w, http.StatusNotFound, map[string]any{"message": "Not Found"})
+			return
+		}
+		writeJSON(w, http.StatusOK, f.runnerRelease)
 	case route == "POST /api/v3/orgs/my-org/actions/runners/registration-token":
 		if auth != "Bearer "+testInstallToken {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "Bad credentials"})

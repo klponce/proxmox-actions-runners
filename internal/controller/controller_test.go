@@ -13,11 +13,12 @@ import (
 	"github.com/klponce/proxmox-actions-runners/internal/config"
 	"github.com/klponce/proxmox-actions-runners/internal/github"
 	"github.com/klponce/proxmox-actions-runners/internal/proxmox"
+	"github.com/klponce/proxmox-actions-runners/internal/vmtags"
 )
 
 func TestWorkerNamingRoundTrip(t *testing.T) {
 	created := testStart
-	vm := proxmox.VM{VMID: 10003, Tags: workerTags("proxmox-ubuntu-26.04", created, true)}
+	vm := proxmox.VM{VMID: 10003, Tags: workerTags("proxmox-ubuntu-26.04", created, testTemplateID, true)}
 	w, err := parseWorker(vm)
 	if err != nil {
 		t.Fatalf("parseWorker: %v", err)
@@ -33,9 +34,9 @@ func TestWorkerNamingRoundTrip(t *testing.T) {
 	}
 
 	for _, tags := range [][]string{
-		{TagManaged, TagWorker},
-		{TagManaged, TagWorker, "par-ss-x"},
-		{TagManaged, TagWorker, "par-ss-x", "par-created-soon"},
+		{vmtags.Managed, vmtags.Worker},
+		{vmtags.Managed, vmtags.Worker, "par-ss-x"},
+		{vmtags.Managed, vmtags.Worker, "par-ss-x", "par-created-soon"},
 	} {
 		if _, err := parseWorker(proxmox.VM{VMID: 1, Tags: tags}); err == nil {
 			t.Errorf("parseWorker(%v) succeeded", tags)
@@ -146,13 +147,14 @@ func TestNewestTemplateIsUsed(t *testing.T) {
 	h.pve.addTemplate(9001, 300)
 	h.pve.addTemplate(9002, 200)
 	// Not ours: no managed tag, or another pool.
-	h.pve.add(proxmox.VM{VMID: 9003, Pool: testPool, Template: true, Tags: []string{TagTemplate, "par-tv-999"}})
+	h.pve.add(proxmox.VM{VMID: 9003, Pool: testPool, Template: true, Tags: []string{vmtags.Template, "par-tv-999"}})
 	h.pve.add(proxmox.VM{VMID: 9004, Pool: "other", Template: true,
-		Tags: []string{TagManaged, TagTemplate, "par-tv-999"}})
+		Tags: []string{vmtags.Managed, vmtags.Template, "par-tv-999"}})
 	h.want(1)
 	h.pass()
-	if len(h.pve.calls) == 0 || h.pve.calls[0] != "clone 9001->10000 full=false" {
-		t.Errorf("first call = %v, want a linked clone of template 9001", h.pve.calls)
+	// The older templates are pruned in the same pass; the clone must still come from the newest.
+	if !slices.Contains(h.pve.calls, "clone 9001->10000 full=false") {
+		t.Errorf("calls = %v, want a linked clone of template 9001", h.pve.calls)
 	}
 }
 
@@ -278,8 +280,8 @@ func TestHalfCreatedWorkersAreDestroyed(t *testing.T) {
 	created := testStart.Add(-time.Minute)
 
 	// A worker left unready by a crash, and one whose runner already took a job before the crash.
-	idle := proxmox.VM{VMID: 10000, Pool: testPool, Status: "running", Tags: workerTags(testScaleSet, created, false)}
-	working := proxmox.VM{VMID: 10001, Pool: testPool, Status: "running", Tags: workerTags(testScaleSet, created, false)}
+	idle := proxmox.VM{VMID: 10000, Pool: testPool, Status: "running", Tags: workerTags(testScaleSet, created, testTemplateID, false)}
+	working := proxmox.VM{VMID: 10001, Pool: testPool, Status: "running", Tags: workerTags(testScaleSet, created, testTemplateID, false)}
 	h.pve.add(idle)
 	h.pve.add(working)
 	workingName := workerName(10001, created)
@@ -288,9 +290,9 @@ func TestHalfCreatedWorkersAreDestroyed(t *testing.T) {
 	}
 	h.gh.setBusy(workingName, true)
 	// A clone that never got worker tags still carries the template's.
-	h.pve.add(proxmox.VM{VMID: 10002, Pool: testPool, Tags: []string{TagManaged, TagTemplate, "par-tv-1"}})
+	h.pve.add(proxmox.VM{VMID: 10002, Pool: testPool, Tags: []string{vmtags.Managed, vmtags.Template, "par-tv-1"}})
 	// A worker with broken tags.
-	h.pve.add(proxmox.VM{VMID: 10003, Pool: testPool, Tags: []string{TagManaged, TagWorker}})
+	h.pve.add(proxmox.VM{VMID: 10003, Pool: testPool, Tags: []string{vmtags.Managed, vmtags.Worker}})
 
 	h.pass()
 	if got := h.pve.ids(); !reflect.DeepEqual(got, []int{testTemplateID, 10001}) {
@@ -302,15 +304,15 @@ func TestOnlyOwnedVMsAreTouched(t *testing.T) {
 	h := newHarness(t, testConfig())
 	vms := []proxmox.VM{
 		// Unmanaged VM in the pool and range.
-		{VMID: 10000, Pool: testPool, Tags: []string{TagTemplate}},
+		{VMID: 10000, Pool: testPool, Tags: []string{vmtags.Template}},
 		// Managed stray outside the VMID range.
-		{VMID: 500, Pool: testPool, Tags: []string{TagManaged}},
+		{VMID: 500, Pool: testPool, Tags: []string{vmtags.Managed}},
 		// Managed stray in another pool.
-		{VMID: 10001, Pool: "other", Tags: []string{TagManaged}},
-		// A template build VM.
-		{VMID: 10002, Pool: testPool, Status: "running", Tags: []string{TagManaged, TagBuild}},
+		{VMID: 10001, Pool: "other", Tags: []string{vmtags.Managed}},
+		// The installer's smoke-test clone.
+		{VMID: 10002, Pool: testPool, Status: "running", Tags: []string{vmtags.Managed, vmtags.Build}},
 		// A stopped worker of another pool.
-		{VMID: 10003, Pool: "other", Tags: workerTags(testScaleSet, testStart, true)},
+		{VMID: 10003, Pool: "other", Tags: workerTags(testScaleSet, testStart, testTemplateID, true)},
 	}
 	for _, vm := range vms {
 		h.pve.add(vm)
@@ -326,8 +328,8 @@ func TestOnlyOwnedVMsAreTouched(t *testing.T) {
 
 func TestRemovedScaleSet(t *testing.T) {
 	h := newHarness(t, testConfig())
-	gone := proxmox.VM{VMID: 10000, Pool: testPool, Status: "running", Tags: workerTags("old", testStart, true)}
-	busy := proxmox.VM{VMID: 10001, Pool: testPool, Status: "running", Tags: workerTags("old", testStart, true)}
+	gone := proxmox.VM{VMID: 10000, Pool: testPool, Status: "running", Tags: workerTags("old", testStart, testTemplateID, true)}
+	busy := proxmox.VM{VMID: 10001, Pool: testPool, Status: "running", Tags: workerTags("old", testStart, testTemplateID, true)}
 	h.pve.add(gone)
 	h.pve.add(busy)
 	busyName := workerName(10001, testStart)
@@ -354,7 +356,7 @@ func TestRemovedScaleSet(t *testing.T) {
 
 func TestRemovedScaleSetKeepsDefaultMaxLifetime(t *testing.T) {
 	h := newHarness(t, testConfig())
-	h.pve.add(proxmox.VM{VMID: 10000, Pool: testPool, Status: "running", Tags: workerTags("old", testStart, true)})
+	h.pve.add(proxmox.VM{VMID: 10000, Pool: testPool, Status: "running", Tags: workerTags("old", testStart, testTemplateID, true)})
 	name := workerName(10000, testStart)
 	if _, err := h.gh.GenerateJITConfig(context.Background(), testScaleSetID, name); err != nil {
 		t.Fatal(err)
@@ -522,10 +524,10 @@ func TestUnknownStatusKeepsWorker(t *testing.T) {
 func TestTemplateInReservedIDsIsNeverAStray(t *testing.T) {
 	h := newHarness(t, testConfig()) // VMID range 10000-10009; 10006-10009 are reserved
 	h.pve.addTemplate(testTemplateID, 1)
-	newTemplate := proxmox.VM{VMID: 10009, Pool: testPool, Tags: []string{TagManaged, TagTemplate, "par-tv-2"}}
+	newTemplate := proxmox.VM{VMID: 10009, Pool: testPool, Tags: []string{vmtags.Managed, vmtags.Template, "par-tv-2"}}
 	h.pve.add(newTemplate)
 	// Something else the template builder owns in the reserved IDs, such as a smoke-test clone.
-	h.pve.add(proxmox.VM{VMID: 10008, Pool: testPool, Status: "running", Tags: []string{TagManaged}})
+	h.pve.add(proxmox.VM{VMID: 10008, Pool: testPool, Status: "running", Tags: []string{vmtags.Managed}})
 
 	h.want(1)
 	h.pass()

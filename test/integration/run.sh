@@ -82,7 +82,10 @@ node_script() {
 	node "env ${env[*]} bash -s" <"$HERE/node/$script"
 }
 
-privileges() { (cd "$ROOT" && go run ./test/integration/privileges) | paste -sd' ' -; }
+# The controller's privileges, plus VM.GuestAgent.Unrestricted so the Go tests can look inside workers
+# (proxmox.AgentExec). The controller itself never runs commands in a guest.
+privileges() { (cd "$ROOT" && go run ./test/integration/privileges && echo VM.GuestAgent.Unrestricted) |
+	paste -sd' ' -; }
 
 preflight() {
 	log "preflight on $HOST"

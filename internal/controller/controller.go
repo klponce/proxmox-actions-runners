@@ -37,6 +37,7 @@ type GitHub interface {
 	RunnerByName(ctx context.Context, name string) (*github.Runner, error)
 	RemoveRunner(ctx context.Context, id int64) error
 	Listen(ctx context.Context, opts github.ListenOptions, h github.Handler)
+	LatestRunnerRelease(ctx context.Context) (github.RunnerRelease, error)
 }
 
 var (
@@ -115,6 +116,10 @@ type Controller struct {
 	foreign map[int]bool
 	// lastRunnerCheck is when each worker's runner was last looked up, by VMID.
 	lastRunnerCheck map[int]time.Time
+
+	// nextRunnerCheck is when the template's runner is next compared with the latest release. Only the reconcile
+	// loop uses it.
+	nextRunnerCheck time.Time
 }
 
 // New returns a Controller. It doesn't contact Proxmox or GitHub.

@@ -213,7 +213,7 @@ func (c *Controller) create(ctx context.Context, s *scaleSetState, template prox
 
 	w := s.cfg.Worker
 	settings := map[string]string{
-		"tags":      proxmox.FormatTags(workerTags(s.cfg.Name, created, false)),
+		"tags":      proxmox.FormatTags(workerTags(s.cfg.Name, created, template.VMID, false)),
 		"cores":     strconv.Itoa(w.Cores),
 		"memory":    strconv.Itoa(w.MemoryMiB),
 		"net0":      "virtio,bridge=" + p.VNet,
@@ -252,7 +252,7 @@ func (c *Controller) create(ctx context.Context, s *scaleSetState, template prox
 		return fmt.Errorf("signal JIT config: %w", err)
 	}
 	if err := c.pve.SetConfig(ctx, vmid, map[string]string{
-		"tags": proxmox.FormatTags(workerTags(s.cfg.Name, created, true)),
+		"tags": proxmox.FormatTags(workerTags(s.cfg.Name, created, template.VMID, true)),
 	}); err != nil {
 		return fmt.Errorf("mark ready: %w", err)
 	}
