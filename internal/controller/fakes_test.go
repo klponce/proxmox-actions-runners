@@ -362,10 +362,9 @@ func (f *fakeGitHub) RemoveRunner(_ context.Context, id int64) error {
 	return nil
 }
 
-func (f *fakeGitHub) Listen(ctx context.Context, _ github.ListenOptions, h github.Handler) error {
+func (f *fakeGitHub) Listen(ctx context.Context, _ github.ListenOptions, h github.Handler) {
 	f.handlers <- h
 	<-ctx.Done()
-	return nil
 }
 
 func (f *fakeGitHub) hasRunner(name string) bool {

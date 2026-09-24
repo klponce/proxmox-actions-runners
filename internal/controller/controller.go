@@ -36,7 +36,7 @@ type GitHub interface {
 	GenerateJITConfig(ctx context.Context, scaleSetID int, runnerName string) (github.JITConfig, error)
 	RunnerByName(ctx context.Context, name string) (*github.Runner, error)
 	RemoveRunner(ctx context.Context, id int64) error
-	Listen(ctx context.Context, opts github.ListenOptions, h github.Handler) error
+	Listen(ctx context.Context, opts github.ListenOptions, h github.Handler)
 }
 
 var (
@@ -186,12 +186,7 @@ func (c *Controller) Run(ctx context.Context) error {
 		listeners.Add(1)
 		go func() {
 			defer listeners.Done()
-			err := c.gh.Listen(ctx, github.ListenOptions{ScaleSetID: s.id, MaxRunners: s.cfg.MaxRunners,
-				Owner: c.owner}, s)
-			if err != nil {
-				c.logger.ErrorContext(ctx, "listener stopped", slog.String("scaleSet", s.cfg.Name),
-					slog.String("error", err.Error()))
-			}
+			c.gh.Listen(ctx, github.ListenOptions{ScaleSetID: s.id, MaxRunners: s.cfg.MaxRunners, Owner: c.owner}, s)
 		}()
 	}
 

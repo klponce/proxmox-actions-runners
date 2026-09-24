@@ -1,6 +1,7 @@
 package github
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -79,28 +80,20 @@ const (
 
 // Listen runs the scale set's message session until ctx ends, passing messages to h. When the session fails, for
 // example because GitHub is unreachable or a previous session still exists after a crash, Listen logs the error
-// and opens a new session after an exponential backoff. It returns nil when ctx is canceled.
-func (c *Client) Listen(ctx context.Context, opts ListenOptions, h Handler) error {
-	if opts.ScaleSetID <= 0 {
-		return errors.New("listen: scale set ID is required")
-	}
-	minBackoff, maxBackoff := opts.MinBackoff, opts.MaxBackoff
-	if minBackoff <= 0 {
-		minBackoff = defaultMinBackoff
-	}
-	if maxBackoff < minBackoff {
-		maxBackoff = max(defaultMaxBackoff, minBackoff)
-	}
+// and opens a new session after an exponential backoff. It returns when ctx is canceled.
+func (c *Client) Listen(ctx context.Context, opts ListenOptions, h Handler) {
+	minBackoff := cmp.Or(opts.MinBackoff, defaultMinBackoff)
+	maxBackoff := max(cmp.Or(opts.MaxBackoff, defaultMaxBackoff), minBackoff)
 
 	backoff := minBackoff
 	for {
 		started := time.Now()
 		err := c.listenOnce(ctx, opts, h)
 		if ctx.Err() != nil {
-			return nil
+			return
 		}
 		if err == nil {
-			// actions/scaleset's listener only returns on failure, but don't rely on it.
+			// actions/scaleset's listener only returns on failure; this keeps err.Error() below safe regardless.
 			err = errors.New("session ended without an error")
 		}
 		if time.Since(started) >= healthySession {
@@ -113,7 +106,7 @@ func (c *Client) Listen(ctx context.Context, opts ListenOptions, h Handler) erro
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil
+			return
 		case <-timer.C:
 		}
 		backoff = min(backoff*2, maxBackoff)

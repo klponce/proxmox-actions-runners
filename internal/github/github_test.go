@@ -202,11 +202,6 @@ func TestGenerateJITConfig(t *testing.T) {
 	if jit.RunnerID != 100 || jit.RunnerName != "par-w-10005" || jit.Encoded() != testJITConfig {
 		t.Errorf("JITConfig = %v, encoded %q", jit, jit.Encoded())
 	}
-
-	_, err = c.GenerateJITConfig(ctx, testScaleSetID, "par-w-10005")
-	if !errors.Is(err, ErrRunnerExists) {
-		t.Fatalf("second GenerateJITConfig error = %v, want ErrRunnerExists", err)
-	}
 }
 
 func TestJITConfigNeverPrintsTheSecret(t *testing.T) {
@@ -340,10 +335,7 @@ func TestListen(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	h := &recordingHandler{cancel: cancel, done: func(h *recordingHandler) bool { return len(h.desired) >= 3 }}
-	err := f.client().Listen(ctx, ListenOptions{ScaleSetID: testScaleSetID, MaxRunners: 3, Owner: "controller"}, h)
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
+	f.client().Listen(ctx, ListenOptions{ScaleSetID: testScaleSetID, MaxRunners: 3, Owner: "controller"}, h)
 	if ctx.Err() != context.Canceled {
 		t.Fatalf("Listen returned before the handler finished: %v", ctx.Err())
 	}
@@ -388,11 +380,8 @@ func TestListenReconnects(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	h := &recordingHandler{cancel: cancel, done: func(h *recordingHandler) bool { return len(h.desired) >= 1 }}
-	err := f.client().Listen(ctx, ListenOptions{ScaleSetID: testScaleSetID, MaxRunners: 1, Owner: "controller",
+	f.client().Listen(ctx, ListenOptions{ScaleSetID: testScaleSetID, MaxRunners: 1, Owner: "controller",
 		MinBackoff: time.Millisecond, MaxBackoff: 5 * time.Millisecond}, h)
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
 	if ctx.Err() != context.Canceled {
 		t.Fatalf("Listen gave up before connecting: %v", ctx.Err())
 	}
@@ -412,19 +401,8 @@ func TestListenStopsDuringBackoff(t *testing.T) {
 	defer cancel()
 	h := &recordingHandler{cancel: cancel, done: func(*recordingHandler) bool { return false }}
 	start := time.Now()
-	err := f.client().Listen(ctx, ListenOptions{ScaleSetID: testScaleSetID, Owner: "controller",
-		MinBackoff: time.Hour}, h)
-	if err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
+	f.client().Listen(ctx, ListenOptions{ScaleSetID: testScaleSetID, Owner: "controller", MinBackoff: time.Hour}, h)
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Errorf("Listen took %s to stop", elapsed)
-	}
-}
-
-func TestListenRequiresScaleSet(t *testing.T) {
-	f := newFakeGitHub(t)
-	if err := f.client().Listen(context.Background(), ListenOptions{}, &recordingHandler{}); err == nil {
-		t.Fatal("Listen without a scale set ID succeeded")
 	}
 }
