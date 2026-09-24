@@ -22,6 +22,27 @@ ARC runs jobs in containers. Many workflows assume a real machine, which contain
 A fresh VM per job gives you all of this, with hypervisor-level isolation between jobs, on hardware you
 control.
 
+## Install
+
+*Planned.* On a Proxmox VE 9 node, as root:
+
+```bash
+curl -fsSLO https://github.com/klponce/proxmox-actions-runners/releases/latest/download/install.sh
+bash install.sh
+```
+
+The installer first runs preflight checks: it must be root on a PVE 9.x node with KVM, a synchronized clock,
+enough storage, and outbound HTTPS, among other checks. It then shows the full plan and asks for confirmation.
+After that it:
+
+- creates the Proxmox pools, role, user, API token, and ACLs
+- creates a small **controller VM** that runs the controller
+- builds the **runner template**
+- registers the scale set with GitHub
+
+The host itself is barely touched. No packages, services, files, or snippets are added, only Proxmox objects, and
+`bash install.sh uninstall` removes all of them. See [docs/install.md](docs/install.md) for the full design.
+
 ## How it works
 
 ```
@@ -37,15 +58,18 @@ control.
 ```
 
 1. The controller registers a **runner scale set** with GitHub. Workflows target it with `runs-on: <scale-set-name>`.
-2. It long-polls the scale set's message queue for job assignments (the same API ARC uses, so no inbound webhook
-   endpoint is needed).
-3. For each job, it clones a worker VM from the template, applies the configured hardware spec, and passes a
-   just-in-time (JIT) runner config to the VM through cloud-init.
-4. The VM boots, the runner registers as an ephemeral runner, runs exactly one job, and exits.
-5. The controller sees the job finish and destroys the VM. VMs are never reused.
+2. It long-polls the scale set's message queue for job assignments. This uses GitHub's
+   [`actions/scaleset`](https://github.com/actions/scaleset) client, which talks to the same API as ARC, so no
+   inbound webhook endpoint is needed.
+3. For each job, it clones a worker VM from the template and applies the configured hardware spec. After the VM
+   boots, the controller writes a just-in-time (JIT) runner config into it through the QEMU guest agent.
+4. The runner registers as an ephemeral runner, runs exactly one job, and the VM powers off.
+5. The controller sees the VM stop and destroys it. VMs are never reused. A reaper also destroys VMs that outlive
+   `maxLifetime` or have no matching runner in GitHub.
 
 The number of workers stays within the configured `minRunners`/`maxRunners`. A warm pool of pre-booted
-VMs to cut job start time is *planned*.
+VMs to cut job start time is *planned*. See [docs/design.md](docs/design.md) for the reasoning and the alternatives
+that were considered.
 
 ### Compared with ARC
 
@@ -68,15 +92,17 @@ The default spec matches the standard GitHub-hosted `ubuntu-latest` runner for p
 | Memory   | 8 GiB   |
 | Disk     | 14 GiB  |
 
-You can override any of these in the controller config. *Planned* example:
+You can override any of these in the controller config, which the installer writes to
+`/etc/proxmox-actions-runners/config.yaml` in the controller VM. *Planned* example:
 
 ```yaml
 proxmox:
   url: https://pve.example.com:8006/api2/json
   tokenId: github-runners@pve!controller
   tokenSecretFile: /etc/proxmox-actions-runners/pve-token
+  tlsFingerprint: "AA:BB:...:FF"   # the host's certificate, pinned by the installer
   node: pve1
-  pool: github-runners
+  pool: par-runners
   templateVmid: 9000
   storage: local-lvm
   bridge: vmbr0
@@ -91,42 +117,85 @@ github:
 
 scaleSets:
   - name: proxmox-ubuntu-26.04
+    labels: [proxmox-ubuntu-26.04]
     minRunners: 0
-    maxRunners: 10
+    maxRunners: 3    # start low and raise after measuring host contention
+    maxLifetime: 6h  # hard limit per worker VM, matching the hosted job limit
     worker:          # omit to use the GitHub-matching defaults
       cores: 4
       memoryMiB: 16384
       diskGiB: 64
 ```
 
+## Using it from workflows
+
+Target the scale set by name:
+
+```yaml
+jobs:
+  build:
+    runs-on: proxmox-ubuntu-26.04
+```
+
+GitHub has no automatic "hosted, else self-hosted" fallback, because `runs-on` is resolved before the job is
+queued. To switch between hosted and self-hosted runners without editing workflows, read the label from a repository
+or organization variable:
+
+```yaml
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+```
+
+Leave `CI_RUNNER` unset to use hosted runners. Set it to the scale set name to use Proxmox. Use separate variables and
+scale sets for jobs with different trust levels. For example, keep jobs that build code apart from jobs that hold
+deployment secrets.
+
 ## Runner template
 
-Workers are cloned from an Ubuntu 26.04 template built with [Packer](https://www.packer.io/) from
-`images/ubuntu-26.04/`. The goal is parity with GitHub's own
+Workers are cloned from an Ubuntu 26.04 template. The controller builds it on your node: it starts from a small
+base image published with each release, then runs the provisioning scripts in `images/ubuntu-26.04/` through the
+guest agent. The goal is parity with GitHub's own
 [`actions/runner-images`](https://github.com/actions/runner-images) Ubuntu image: the same `runner` user,
-directory layout, preinstalled toolset, and environment variables. The template contains no credentials.
-Each clone gets its JIT runner config at first boot via cloud-init.
+directory layout, preinstalled toolset, and environment variables. It also includes `qemu-guest-agent` and a
+pinned `actions/runner` release with auto-update disabled. The template contains no credentials. Each clone
+receives its JIT runner config through the guest agent after boot. Templates are versioned and immutable. The
+controller rebuilds the template weekly and on each runner release, and deletes old versions once no worker uses
+them.
 
 ## Requirements
 
-- **Proxmox VE** with an API token for a user or role limited to the runner pool and target storage. The token
-  needs `VM.Allocate`, `VM.Clone`, `VM.Config.*`, `VM.PowerMgmt`, `VM.Audit`, `Datastore.AllocateSpace`,
-  `Datastore.Audit`, and `SDN.Use` on the bridge.
+- **Proxmox VE 9.x** on amd64 with KVM, and root access to one node to run the installer.
+- **Clone storage** that supports linked clones: LVM-thin, ZFS, RBD, or qcow2/raw files. Plain LVM and iSCSI need
+  `linkedClone: false`.
+- **A runner network:** a bridge, or a VLAN on an existing bridge, that is separate from the management network and
+  has internet egress. The installer can create an isolated SDN zone instead if you opt in.
 - **A GitHub App** installed on the target organization or repository:
   - organization runners need **Self-hosted runners: read & write**
   - repository runners need **Administration: read & write**
-- **Go** (see `go.mod`) to build the controller, and **Packer** to build the template.
+
+The installer creates a privilege-separated API token `par@pve!controller`. Its role, `PARController`, is granted
+only on the `par-runners` pool, the target storage, and the runner network:
+
+- on `/pool/par-runners`: `VM.Allocate`, `VM.Clone`, `VM.Config.*`, `VM.PowerMgmt`, `VM.Audit`, and
+  `VM.GuestAgent.*`
+- on the target storage: `Datastore.AllocateSpace` and `Datastore.Audit`
+- on the runner bridge or zone: `SDN.Use`
+
+To build from source, you need **Go** (see `go.mod`) and **Packer**, which CI uses to build the base images.
 
 ## Repository layout (planned)
 
 ```
-cmd/controller/        controller entrypoint
+cmd/parcon/            `parcon` binary: controller service, `template build`, `check`
 internal/config/       config loading, defaults, validation
 internal/github/       scale set listener, JIT configs, GitHub App auth
 internal/proxmox/      Proxmox API client (clone, configure, start, destroy, list)
 internal/controller/   reconcile loop and worker lifecycle
-images/ubuntu-26.04/   Packer template, cloud-init, provisioning scripts
-deploy/                example config, systemd unit
+internal/template/     template build through the guest agent
+install/               install.sh and its bats tests
+images/controller/     Packer build of the controller VM base image (CI)
+images/runner-base/    Packer build of the runner base image (CI)
+images/ubuntu-26.04/   in-guest provisioning scripts for the runner template
+deploy/                example config, systemd unit for the controller VM
 docs/                  design notes
 ```
 
@@ -134,9 +203,13 @@ docs/                  design notes
 
 - Every job runs in a fresh VM that is destroyed afterward, so no state carries over between jobs.
 - Self-hosted runners run untrusted code. Be very careful before using them with **public** repositories,
-  where anyone who opens a pull request can run code on your infrastructure. Put workers on an isolated network.
+  where anyone who opens a pull request can run code on your infrastructure.
+- Put workers on a dedicated bridge or VLAN with internet egress. Firewall off the management network, the Proxmox
+  API, and the controller host. Don't bake reusable credentials into the template.
+- The Proxmox token is scoped to the runner pool, so the controller can't modify other VMs.
 - The GitHub App private key and the Proxmox token are read from files and never logged. JIT configs are
-  single-use and are only passed to the VM that uses them.
+  single-use. They are written straight into the VM that uses them through the guest agent, and are never
+  stored in cloud-init snippets or VM config.
 
 ## Contributing
 
