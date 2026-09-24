@@ -26,8 +26,8 @@ const (
 	// DefaultRunnerGroup is GitHub's default runner group, the only one repository scale sets can use.
 	DefaultRunnerGroup = "default"
 
-	// ReservedVMIDs is how many IDs at the end of the VMID range are kept for things other than workers: the current
-	// and previous template, a template build VM, and a smoke-test clone. See VMIDRange.Reserved.
+	// ReservedVMIDs is how many IDs at the end of the VMID range are kept for things other than workers: runner
+	// templates, while old ones wait for their last linked clones, and the installer's smoke-test clone.
 	ReservedVMIDs = 4
 
 	proxmoxAPIPath = "/api2/json"
