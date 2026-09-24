@@ -6,9 +6,10 @@ Guidance for coding agents (and humans) working in this repository.
 
 `proxmox-actions-runners` is a Go controller that serves GitHub Actions jobs with ephemeral VMs on Proxmox VE.
 It is modeled on Actions Runner Controller (ARC): it registers a GitHub **runner scale set**, long-polls it for the
-number of runners GitHub wants, and keeps that many **worker VMs** running, each cloned from an Ubuntu 26.04
-**template** that mirrors GitHub-hosted runners. Each worker runs exactly one job with a JIT runner config and is then
-destroyed.
+number of runners GitHub wants, and keeps that many **worker VMs** running, each cloned from a lean Ubuntu 26.04
+**template**. Each worker runs exactly one job with a JIT runner config and is then destroyed. Like ARC's runner
+image, the template carries the runner, Docker, and a few basics; workflows bring their own toolchains with `setup-*`
+actions. Matching the preinstalled toolset of GitHub-hosted runners is out of scope.
 
 The project supports exactly one setup: a single standalone Proxmox VE 9 node, installed by `install/install.sh`.
 Don't add support for clusters, containers or Kubernetes, other hypervisors, or per-scale-set networks. The README's
@@ -26,8 +27,8 @@ behind the invariants and the alternatives that were rejected.
   runner. Treat it as a credential until it is used.
 - **`actions/scaleset`**: GitHub's Go client for the scale set APIs (the non-Kubernetes counterpart to ARC). The
   controller uses it for scale set registration, the message session, and JIT configs.
-- **Template**: a versioned, immutable Proxmox VM template. The controller builds it from the runner base image by
-  running the `images/ubuntu-26.04/` scripts through the guest agent.
+- **Template**: a versioned, immutable Proxmox VM template imported from the runner image (`images/runner/`), which
+  CI builds with Packer and publishes with each release. Nothing is built on the node.
 - **Controller VM**: the VM the installer creates to run the `parcon` controller. It lives in the `par-system` pool,
   outside the token's reach.
 - **Worker network**: the isolated Proxmox SDN VNet (`parnet` in the simple zone `parzone`) that workers attach to.
@@ -71,10 +72,10 @@ Keep these true. If a change needs to break one, discuss it first.
    VM past that limit, or with no matching GitHub runner past a grace period, whatever state it is in.
 5. **Only touch what we own.** Every managed VM is tagged, for example with `par-managed` and a scale set tag, and
    lives in the runner pool. The controller must never modify or delete an untagged VM. It must never modify an
-   existing template: the template builder creates a new version instead, and an old version is deleted only once
-   no worker uses it. Build VMs and smoke-test clones belong to the template builder or installer that creates
-   them, which destroys them, including ones a failed run left. The Proxmox token's ACLs enforce the same limit,
-   and the controller and gateway VMs sit in `par-system`, outside the token's reach.
+   existing template: a new runner image is imported as a new template instead, and the controller deletes an old
+   one only once no worker uses it. The installer's smoke-test clones (`par-build`, in the reserved VMIDs) belong to
+   the installer, which destroys them, including ones a failed run left. The Proxmox token's ACLs enforce the same
+   limit, and the controller and gateway VMs sit in `par-system`, outside the token's reach.
 6. **GitHub-matching defaults.** Default worker hardware is 2 vCPU, 8 GiB RAM, and 14 GiB of free disk space,
    matching `ubuntu-latest` for private repositories. The free space is added on top of the template's disk size,
    because a clone's disk can grow but never shrink below its template's. The defaults are defined in exactly one
@@ -96,18 +97,17 @@ Keep these true. If a change needs to break one, discuss it first.
 ## Repository layout (planned)
 
 ```
-cmd/parcon/            `parcon` binary: `run`, `template build`, `check`, `github app create`; flags, wiring, signals
+cmd/parcon/            `parcon` binary: `run`, `check`, `github app create`; flags, wiring, signals
 internal/config/       config schema, defaults, validation
 internal/github/       thin wrapper over actions/scaleset: GitHub App auth, scale set, message session, JIT configs
 internal/proxmox/      Proxmox API client wrapper: clone, configure, start, stop, destroy, list by tag, guest-agent writes
 internal/controller/   reconcile loop, worker lifecycle state machine, reaper
 internal/metrics/      Prometheus metrics
-internal/template/     template build: clone base, run provisioning through guest-exec, clean up, convert, smoke test
+internal/vmtags/       the Proxmox tags that hold the controller's state, shared by the controller and `parcon check`
 install/               install.sh (the only thing that runs on the Proxmox host) and its bats tests
 images/controller/     Packer (qemu builder, CI only): controller VM base image, shipped as a release asset
 images/gateway/        Packer (qemu builder, CI only): gateway VM image (nftables, dnsmasq), shipped as a release asset
-images/runner-base/    Packer (qemu builder, CI only): runner base image with qemu-guest-agent, shipped as a release asset
-images/ubuntu-26.04/   in-guest provisioning scripts for the runner template, run by `parcon template build`
+images/runner/         Packer (qemu builder): the runner template image, shipped as a release asset
 deploy/                example config, systemd unit for the controller VM, nginx config for the metrics endpoint
 .devcontainer/         development container with every tool below, at pinned versions
 site/                  GitHub Pages helper page for the GitHub App manifest flow (static, no third-party scripts)
@@ -152,20 +152,20 @@ gofmt -l .                                # must print nothing
 golangci-lint run
 test/integration/run.sh                   # needs SSH to a throwaway Proxmox node; see test/integration/README.md
 packer fmt -check -recursive images
-packer validate images/runner-base
-shellcheck images/common/*.sh images/runner-base/scripts/*.sh images/ubuntu-26.04/*.sh images/ubuntu-26.04/tests/*.sh \
+packer validate images/runner
+shellcheck images/common/*.sh images/runner/scripts/*.sh images/runner/tests/*.sh \
   test/integration/*.sh test/integration/node/*.sh
 bats install/tests
 ```
 
-Run the build, test, vet, and format checks before you consider a change done. When you change an image or the
-template scripts, also build them. The local template test boots the base image in QEMU, runs the template scripts
-twice (they must be idempotent), checks the result, and runs the one-job flow with a stand-in runner:
+Run the build, test, vet, and format checks before you consider a change done. When you change the runner image,
+also build it. The build runs the scripts twice (they must be idempotent), checks the result, and runs the one-job
+flow with a stand-in runner. The boot test then boots the finished image the way a worker boots and checks the
+console for failed units and ordering cycles. The build needs `/dev/kvm` and about 4 GiB of free memory:
 
 ```bash
-packer init images/runner-base && packer build -var version=dev images/runner-base
-packer init images/ubuntu-26.04
-packer build -var base_image=output-runner-base/par-runner-base-dev.qcow2 images/ubuntu-26.04
+packer init images/runner && packer build -var version=dev images/runner
+images/runner/tests/boot-test.sh output-runner/par-runner-dev.qcow2
 ```
 
 Run the integration suite when you change how the controller talks to Proxmox: the fakes only check what the code
@@ -216,21 +216,26 @@ See [docs/install.md](docs/install.md) for the full design.
 - Download only release assets whose SHA-256 is embedded in the script, into a temp directory removed by an `EXIT`
   trap.
 
-## Template guidelines (`images/ubuntu-26.04/`)
+## Runner image guidelines (`images/runner/`)
 
-- Aim for parity with the Ubuntu image in [`actions/runner-images`](https://github.com/actions/runner-images):
-  the `runner` user with passwordless sudo, the same directory layout, toolset, and environment variables.
+- Keep it lean, like ARC's runner image: the `runner` user with passwordless sudo, the runner, Docker, `git`, and a
+  few basics that `actions/checkout` and the `setup-*` actions need. Keep the directory layout and environment
+  variables of the Ubuntu image in [`actions/runner-images`](https://github.com/actions/runner-images), so actions
+  that look for them work, but don't add its toolset. Users who need more extend the Packer build.
 - The template must contain no credentials, runner registration, or machine-specific identity. Reset the
   machine-id and SSH host keys, and clean cloud-init state before converting to a template.
-- Scripts run as root inside the build VM through `guest-exec`. There is no SSH and no network path from the
-  controller. They must be idempotent and exit non-zero on failure.
-- Keep the template's disk as small as the toolset allows. Every worker's disk is the template's size plus
-  `freeDiskGiB`, and the root filesystem must grow to fill the disk at first boot.
-- `qemu-guest-agent` comes from the runner base image (`images/runner-base/`). Pin the `actions/runner` version and
-  disable runner auto-update. The controller rebuilds the template on each runner release instead.
-- Scripts are numbered and run in order: `10-runner.sh` (the pinned runner in `/opt/actions-runner`, its job
-  environment in `.env`, and `/home/runner/work`), `20-par-runner.sh` (the one-job units), `30-minimal-tools.sh`,
-  then `images/common/cleanup.sh`, which every image build shares.
+- Scripts run as root in the Packer build VM. They must be idempotent and exit non-zero on failure.
+- Keep the image's disk small. Every worker's disk is the template's size plus `freeDiskGiB`, and the root
+  filesystem must grow to fill the disk at first boot. The compressed image must stay well under GitHub's 2 GiB
+  release-asset limit.
+- Pin the `actions/runner` version and its SHA-256 (`runner_version` and `runner_sha256` in `runner.pkr.hcl`) and
+  disable runner auto-update. GitHub stops accepting a runner that doesn't update itself 30 days after a newer
+  release, so each runner release needs a new runner image, imported by `install.sh upgrade`. The controller logs a
+  warning 7 days after a release its template lacks and an error after 21 (`parcon check template` shows the same).
+- Scripts run in order: `scripts/base.sh` (the `runner` user, `qemu-guest-agent`, cloud-init settings),
+  `scripts/10-runner.sh` (the pinned runner in `/opt/actions-runner`, its job environment in `.env`, and
+  `/home/runner/work`), `scripts/20-par-runner.sh` (the one-job units), `scripts/30-minimal-tools.sh`, the checks in
+  `tests/`, then `images/common/cleanup.sh`, which every image build shares.
 - The controller writes the JIT config through the guest agent to `/run/par-runner/jitconfig`
   (`controller.JITConfigPath`), then writes the empty marker `/run/par-runner/ready` (`controller.JITReadyPath`).
   `par-runner.path` waits for the marker, not the config, because the guest agent creates a file before it writes
@@ -240,12 +245,14 @@ See [docs/install.md](docs/install.md) for the full design.
 - The template must create `/run/par-runner` at boot, root-only (`20-par-runner.sh` uses a `tmpfiles.d` entry): the
   guest agent's file-write can't create directories, so without it every worker fails at the JIT step.
 - Runners work in `/home/runner/work` (`github.WorkFolder`), as on GitHub-hosted runners.
-- The controller relies on the template having its root disk on `scsi0`, a cloud-init drive (for `ipconfig0`), and
-  the guest agent enabled in its VM config. The template builder tags each template `par-managed`, `par-template`,
-  and `par-tv-<build time in Unix seconds>`; the controller clones the newest one.
-- The template builder puts templates, build VMs, and smoke-test clones in the reserved VMIDs at the end of the
-  range (`config.VMIDRange.Reserved`), never in the worker IDs. A new template reports `template: 0` for about 10s,
-  and in the worker IDs it would look like a half-created worker clone and be destroyed.
+- The template contract, which the installer follows when it imports the image and the controller relies on: the
+  root disk on `scsi0`, a cloud-init drive (for `ipconfig0`), the guest agent enabled, the VM in the runner pool,
+  and the tags `par-managed`, `par-template`, `par-tv-<import time in Unix seconds>`, and
+  `par-rv-<actions/runner version>` (`internal/vmtags`). The controller clones the newest `par-tv`, tags each worker
+  `par-tpl-<template VMID>`, and destroys older templates that no worker references.
+- Templates go in the reserved VMIDs at the end of the range (`config.VMIDRange.Reserved`), never in the worker
+  IDs. A new template reports `template: 0` for about 10s, and in the worker IDs it would look like a half-created
+  worker clone and be destroyed.
 
 ## Change hygiene
 
