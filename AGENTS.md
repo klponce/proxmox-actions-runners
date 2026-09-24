@@ -148,7 +148,7 @@ go test ./...
 go vet ./...
 gofmt -l .                                # must print nothing
 golangci-lint run
-go test -tags integration ./...           # needs real Proxmox + GitHub credentials
+go test -tags integration ./...           # needs a real Proxmox node; see internal/proxmox/integration_test.go
 packer validate images/controller
 packer validate images/gateway
 packer validate images/runner-base
