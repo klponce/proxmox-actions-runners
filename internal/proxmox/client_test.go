@@ -181,6 +181,10 @@ func TestErrorClassifiers(t *testing.T) {
 		{"not found: missing config", IsNotFound,
 			apiErr(500, "Configuration file 'nodes/pve1/qemu-server/101.conf' does not exist"), true},
 		{"not found: other", IsNotFound, apiErr(500, "timeout"), false},
+		{"not found: not a 403", IsNotFound, apiErr(403, "Permission check failed (/vms/101, VM.Allocate)"), false},
+		{"forbidden: 403", IsForbidden, apiErr(403, "Permission check failed (/vms/101, VM.Allocate)"), true},
+		{"forbidden: other", IsForbidden, apiErr(500, "timeout"), false},
+		{"forbidden: plain error", IsForbidden, errors.New("403 Permission check failed"), false},
 		{"agent: VM stopped", IsAgentNotReady, apiErr(500, "VM 101 is not running"), true},
 		{"agent: not configured", IsAgentNotReady, apiErr(500, "No QEMU guest agent configured"), false},
 	}

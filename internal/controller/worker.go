@@ -122,14 +122,46 @@ func (c *Controller) retire(ctx context.Context, vmid int, running bool, runnerN
 				slog.String("error", err.Error()))
 		}
 	}
-	if err := c.pve.Destroy(ctx, vmid); err != nil && !proxmox.IsNotFound(err) {
-		return fmt.Errorf("destroy: %w", err)
+	if err := c.destroy(ctx, vmid); err != nil {
+		return err
 	}
 	c.mu.Lock()
 	delete(c.lastRunnerCheck, vmid)
 	c.mu.Unlock()
 	c.logger.InfoContext(ctx, "worker destroyed", slog.Int("vmid", vmid), slog.String("runnerName", runnerName))
 	return nil
+}
+
+// destroy destroys a VM, counting one that is already gone as destroyed, so a retirement or prune that races with
+// another, or repeats after a crash, doesn't fail. The controller's token gets its rights from the pool's ACL, so
+// Proxmox answers a VM that no longer exists with 403 (see proxmox.IsForbidden); a 403 therefore counts as gone when
+// the VM isn't listed anymore. A VM the token can't list is outside the pool, and not the controller's to touch.
+func (c *Controller) destroy(ctx context.Context, vmid int) error {
+	err := c.pve.Destroy(ctx, vmid)
+	if err == nil || proxmox.IsNotFound(err) {
+		return nil
+	}
+	if proxmox.IsForbidden(err) {
+		listed, listErr := c.listed(ctx, vmid)
+		if listErr == nil && !listed {
+			return nil
+		}
+	}
+	return fmt.Errorf("destroy: %w", err)
+}
+
+// listed reports whether Proxmox lists a VM to the controller's token.
+func (c *Controller) listed(ctx context.Context, vmid int) (bool, error) {
+	vms, err := c.pve.ListVMs(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, vm := range vms {
+		if vm.VMID == vmid {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // removeRunner unregisters a runner by name. It returns errRunnerBusy if the runner is running a job.

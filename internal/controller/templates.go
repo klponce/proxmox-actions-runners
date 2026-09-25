@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"strings"
 
@@ -37,8 +36,8 @@ func (c *Controller) pruneTemplates(ctx context.Context, vms []proxmox.VM, newes
 			continue
 		}
 		c.startOp(ctx, vm.VMID, opPruneTemplate, func(ctx context.Context) error {
-			if err := c.pve.Destroy(ctx, vm.VMID); err != nil && !proxmox.IsNotFound(err) {
-				return fmt.Errorf("destroy: %w", err)
+			if err := c.destroy(ctx, vm.VMID); err != nil {
+				return err
 			}
 			c.logger.InfoContext(ctx, "removed an old runner template", slog.Int("vmid", vm.VMID),
 				slog.Int("newestVmid", newest.VMID))

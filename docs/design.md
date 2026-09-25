@@ -204,6 +204,10 @@ workers alone, so restarting or upgrading it doesn't cancel jobs.
   pool. Growing the clone's disk needs `VM.Config.Disk`.
 - **Seeing pools:** `/cluster/resources` reports a VM's `pool` only to callers with `Pool.Audit` on it. Without it
   the controller can't tell its VMs from others, so the token needs it (found on PVE 9.2).
+- **Missing VMs look forbidden.** The token's rights come from the pool's ACL, and a VM that no longer exists isn't
+  in the pool, so Proxmox answers requests for it with `403 Permission check failed`, not "does not exist" (found on
+  PVE 9.2). When destroying a VM fails with 403, the controller checks the VM list and counts a VM that isn't
+  listed as already destroyed.
 - **`/cluster/resources` lags.** VM tags there are current, but `status` and `template` come from `pvestatd` and
   trail reality by up to about 10 seconds (measured on PVE 9.2): a fresh clone is `unknown` with the template's
   tags, a started VM stays `unknown` for about 4s, a stopped VM still shows `running` for about 9s, and a new

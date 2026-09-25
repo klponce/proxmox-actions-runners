@@ -93,11 +93,13 @@ func (f *fakeProxmox) record(format string, args ...any) error {
 	return f.fail[strings.SplitN(call, " ", 2)[0]]
 }
 
+// get returns a VM. For a VM that doesn't exist it fails the way Proxmox fails for the controller's pool-scoped
+// token: with the permission check, not "does not exist" (see proxmox.IsForbidden).
 func (f *fakeProxmox) get(vmid int) (*fakeVM, error) {
 	vm, ok := f.vms[vmid]
 	if !ok {
-		return nil, &proxmox.APIError{StatusCode: http.StatusInternalServerError,
-			Message: fmt.Sprintf("Configuration file 'nodes/pve1/qemu-server/%d.conf' does not exist", vmid)}
+		return nil, &proxmox.APIError{StatusCode: http.StatusForbidden,
+			Message: fmt.Sprintf("Permission check failed (/vms/%d, VM.Allocate)", vmid)}
 	}
 	return vm, nil
 }
