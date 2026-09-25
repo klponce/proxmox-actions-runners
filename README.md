@@ -129,7 +129,7 @@ github:
     privateKeyFile: /etc/proxmox-actions-runners/github-app.pem
 
 metrics:
-  listen: 127.0.0.1:9465  # nginx serves it on the LAN at https://<controller-ip>:9464/
+  listen: 127.0.0.1:9465  # loopback only; metrics and their HTTPS endpoint are deferred past v0.1
 
 worker:            # controller-wide; omit to use the GitHub-matching defaults (2 cores, 8 GiB, 14 GiB free)
   cores: 2
@@ -187,6 +187,20 @@ GitHub stops accepting a self-hosted runner that doesn't update itself 30 days a
 keep up with releases. The controller checks for new `actions/runner` releases and logs a warning when the template
 has been behind for 7 days and an error after 21. `parcon check template` shows the same.
 
+## Gateway and controller VMs
+
+The installer creates both VMs from images published with each release, built with Packer from `images/gateway/`
+and `images/controller/` on the same Ubuntu 26.04 base as the runner image. Unlike workers, they are long-lived and
+install security updates with `unattended-upgrades`.
+
+- The **gateway** image has dnsmasq, nftables, and `par-gateway-configure`, which the installer runs through the
+  guest agent to set the worker subnet and the addresses to block.
+- The **controller** image has the `parcon` binary in `/usr/local/bin`, the `parcon` system user it runs as, and
+  its unit, [`deploy/parcon.service`](deploy/parcon.service). Only `parcon` can read its config and secrets in
+  `/etc/proxmox-actions-runners`. The installer enables the unit once the GitHub App exists.
+
+See [docs/install.md](docs/install.md#gateway-and-controller-images) for the details.
+
 ## Requirements
 
 - **Proxmox VE 9.x** on a single standalone amd64 node with KVM, and root access to run the installer. See
@@ -239,8 +253,8 @@ These are deliberate. The project supports exactly the setup the installer creat
   is tens of GB. Workflows install what they need with `setup-*` actions, or you extend the Packer build in
   `images/runner/` and import your own image.
 - **GitHub.com only.** GitHub Enterprise Server may work through `actions/scaleset`, but it isn't tested.
-- **Unauthenticated metrics.** The metrics endpoint uses HTTPS with a self-signed certificate and has no
-  authentication yet. It exposes no secrets.
+- **No metrics endpoint yet.** Metrics are deferred past v0.1. The planned endpoint uses HTTPS with a self-signed
+  certificate and no authentication, and exposes no secrets.
 
 ## Repository layout (planned)
 
@@ -252,8 +266,9 @@ internal/proxmox/      Proxmox API client (clone, configure, start, destroy, lis
 internal/controller/   reconcile loop and worker lifecycle
 internal/vmtags/       the Proxmox tags that hold the controller's state
 install/               install.sh and its bats tests
-images/controller/     Packer build of the controller VM base image (CI)
-images/gateway/        Packer build of the gateway VM image (CI)
+images/common/         what the image builds share: Ubuntu pin, base and cleanup steps, boot test
+images/controller/     Packer build of the controller VM image with parcon (CI)
+images/gateway/        Packer build of the gateway VM image: DHCP, DNS, NAT, firewall (CI)
 images/runner/         Packer build of the runner template image (CI)
 deploy/                example config, systemd unit for the controller VM
 site/                  GitHub Pages helper page for creating the GitHub App
@@ -270,7 +285,8 @@ docs/                  design notes
   traffic. Don't bake reusable credentials into the template.
 - The Proxmox token is scoped to the runner pool, so the controller can't modify other VMs.
 - The GitHub App's private key goes straight from GitHub into the controller VM and never touches the Proxmox host.
-- Metrics are served over HTTPS on the LAN without authentication. Don't expose the controller VM beyond your LAN.
+- Metrics, once added (deferred past v0.1), will be served over HTTPS on the LAN without authentication. Don't expose
+  the controller VM beyond your LAN.
 - The GitHub App private key and the Proxmox token are read from files and never logged. JIT configs are
   single-use. They are written straight into the VM that uses them through the guest agent, and are never
   stored in cloud-init snippets or VM config.

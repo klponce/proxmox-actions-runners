@@ -105,10 +105,11 @@ internal/controller/   reconcile loop, worker lifecycle state machine, reaper
 internal/metrics/      Prometheus metrics
 internal/vmtags/       the Proxmox tags that hold the controller's state, shared by the controller and `parcon check`
 install/               install.sh (the only thing that runs on the Proxmox host) and its bats tests
-images/controller/     Packer (qemu builder, CI only): controller VM base image, shipped as a release asset
-images/gateway/        Packer (qemu builder, CI only): gateway VM image (nftables, dnsmasq), shipped as a release asset
+images/common/         what every image build shares: the Ubuntu and plugin pins, base and cleanup steps, boot test
+images/controller/     Packer (qemu builder): the controller VM image with parcon, shipped as a release asset
+images/gateway/        Packer (qemu builder): the gateway VM image (nftables, dnsmasq), shipped as a release asset
 images/runner/         Packer (qemu builder): the runner template image, shipped as a release asset
-deploy/                example config, systemd unit for the controller VM, nginx config for the metrics endpoint
+deploy/                example config, systemd unit for the controller VM
 .devcontainer/         development container with every tool below, at pinned versions
 site/                  GitHub Pages helper page for the GitHub App manifest flow (static, no third-party scripts)
 docs/                  design notes
@@ -153,19 +154,29 @@ golangci-lint run
 test/integration/run.sh                   # needs SSH to a throwaway Proxmox node; see test/integration/README.md
 packer fmt -check -recursive images
 packer validate images/runner
-shellcheck images/common/*.sh images/runner/scripts/*.sh images/runner/tests/*.sh \
+packer validate images/gateway
+CGO_ENABLED=0 go build -o bin/parcon ./cmd/parcon && packer validate -var parcon_binary=bin/parcon images/controller
+shellcheck images/common/*.sh images/*/scripts/*.sh images/*/tests/*.sh images/gateway/par-gateway-configure \
   test/integration/*.sh test/integration/node/*.sh
 bats install/tests
 ```
 
-Run the build, test, vet, and format checks before you consider a change done. When you change the runner image,
-also build it. The build runs the scripts twice (they must be idempotent), checks the result, and runs the one-job
-flow with a stand-in runner. The boot test then boots the finished image the way a worker boots and checks the
-console for failed units and ordering cycles. The build needs `/dev/kvm` and about 4 GiB of free memory:
+Run the build, test, vet, and format checks before you consider a change done. When you change an image, also
+build it. Each build runs its scripts twice (they must be idempotent) and checks the result; the runner build also
+runs the one-job flow with a stand-in runner. The boot test then boots the finished image the way Proxmox first
+boots a VM made from it and checks the console for failed units, ordering cycles, and each image's own lines. A
+build needs `/dev/kvm` and 2 to 4 GiB of free memory. Run one build at a time:
 
 ```bash
 packer init images/runner && packer build -var version=dev images/runner
-images/runner/tests/boot-test.sh output-runner/par-runner-dev.qcow2
+images/common/boot-test.sh output-runner/par-runner-dev.qcow2 'Started.*par-runner.path'
+
+packer init images/gateway && packer build -var version=dev images/gateway
+images/common/boot-test.sh output-gateway/par-gateway-dev.qcow2 'Finished.*nftables.service' 'Started.*dnsmasq.service'
+
+CGO_ENABLED=0 go build -ldflags "-X main.version=dev" -o bin/parcon ./cmd/parcon
+packer init images/controller && packer build -var version=dev -var parcon_binary=bin/parcon images/controller
+images/common/boot-test.sh output-controller/parcon-dev.qcow2
 ```
 
 Run the integration suite when you change how the controller talks to Proxmox: the fakes only check what the code
@@ -191,9 +202,10 @@ expects, and the suite has already caught a missing privilege (`Pool.Audit`) tha
 - A JIT config is a credential: keep it in `github.JITConfig`, whose `String`, `GoString`, and `LogValue` redact
   it, and read it with `Encoded()` only to hand it to the guest agent.
 - Expose Prometheus metrics for queue depth, desired vs. actual workers, clone and boot latency, VM count by state,
-  reaped VMs, and API failures. A job that stays queued is the main signal operators need. `parcon` serves
-  `/metrics`, `/healthz`, and `/readyz` over plain HTTP on `127.0.0.1:9465` only. nginx in the controller VM serves
-  them over HTTPS on port 9464. Don't make `parcon` listen on the LAN or handle TLS itself.
+  reaped VMs, and API failures. A job that stays queued is the main signal operators need. *Deferred past v0.1:*
+  `parcon` will serve `/metrics`, `/healthz`, and `/readyz` over plain HTTP on `127.0.0.1:9465` only, and nginx in
+  the controller VM will serve them over HTTPS on port 9464. Don't make `parcon` listen on the LAN or handle TLS
+  itself.
 - Authenticate to GitHub only as a GitHub App (Client ID, installation ID, private key). Don't add PAT support.
 - Never log the manifest-flow code. It can be exchanged for the App's private key until it is used or expires.
   `parcon github app` commands read the code and keys from stdin, never from arguments.
@@ -258,6 +270,22 @@ See [docs/install.md](docs/install.md) for the full design.
 - Templates go in the reserved VMIDs, the last `config.ReservedVMIDs` IDs of the range, never in the worker IDs
   (`config.VMIDRange.Workers`). A new template reports `template: 0` for about 10s, and in the worker IDs it would
   look like a half-created worker clone and be destroyed.
+
+## Gateway and controller image guidelines (`images/gateway/`, `images/controller/`)
+
+- Both start from the same pinned Ubuntu 26.04 cloud image as the runner (`images/common/ubuntu.pkr.hcl`, linked
+  into each image directory) and run `images/common/base.sh` first: the guest agent and `unattended-upgrades`.
+  Unlike workers, these VMs are long-lived and patch themselves. They hold no machine identity either:
+  `images/common/cleanup.sh` runs last.
+- Keep their disks small: 8 GiB, the gateway VM's disk size. The installer grows the controller's to its VM size in
+  [docs/install.md](docs/install.md).
+- The gateway holds no secrets and no state beyond `/etc/par-gateway/config`. `par-gateway-configure` renders
+  everything else from it, and running it again with the same input changes nothing. The worker NIC is always
+  `net1` (Proxmox's `net1`, named by its PCI slot), so the rules never depend on MACs.
+- The controller image, the installer, and `parcon` all follow the *Controller VM contract* in
+  [docs/install.md](docs/install.md): the `parcon` user, `/usr/local/bin/parcon`, `parcon.service`
+  ([deploy/parcon.service](deploy/parcon.service), installed but not enabled by the image), and the modes of
+  `/etc/proxmox-actions-runners` and its files. Change it there, not here.
 
 ## Change hygiene
 
