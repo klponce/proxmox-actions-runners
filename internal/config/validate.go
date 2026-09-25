@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"net"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -69,7 +68,6 @@ func (c *Config) validate() error {
 	v := &validator{}
 	c.Proxmox.validate(v)
 	c.GitHub.validate(v)
-	c.Metrics.validate(v)
 	c.Worker.validate(v, "worker")
 	c.validateScaleSets(v)
 	if len(v.problems) > 0 {
@@ -151,20 +149,6 @@ func validateGitHubConfigURL(v *validator, raw string) {
 	if err != nil || u.Scheme != "https" || u.Host != "github.com" || u.RawQuery != "" || u.Fragment != "" ||
 		u.User != nil || len(parts) > 2 || slices.Contains(parts, "") {
 		v.addf("github.configUrl", "%q must be https://github.com/<org> or https://github.com/<owner>/<repo>", raw)
-	}
-}
-
-// validate requires a loopback address: parcon never listens on the LAN, and the metrics endpoint is deferred past
-// v0.1.
-func (m Metrics) validate(v *validator) {
-	const field = "metrics.listen"
-	host, _, err := net.SplitHostPort(m.Listen)
-	if err != nil {
-		v.addf(field, "%q must be host:port", m.Listen)
-		return
-	}
-	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-		v.addf(field, "%q must be a loopback address; the metrics endpoint is deferred past v0.1", m.Listen)
 	}
 }
 

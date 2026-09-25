@@ -24,7 +24,6 @@ const DefaultPath = "/etc/proxmox-actions-runners/config.yaml"
 type Config struct {
 	Proxmox Proxmox `yaml:"proxmox"`
 	GitHub  GitHub  `yaml:"github"`
-	Metrics Metrics `yaml:"metrics"`
 	// Worker is the controller-wide worker hardware. Fields left unset use the GitHub-matching defaults.
 	Worker    Worker     `yaml:"worker"`
 	ScaleSets []ScaleSet `yaml:"scaleSets"`
@@ -116,12 +115,6 @@ type GitHubApp struct {
 	InstallationID int64  `yaml:"installationId"`
 	// PrivateKeyFile is the absolute path of the App's PEM private key.
 	PrivateKeyFile string `yaml:"privateKeyFile"`
-}
-
-// Metrics configures the metrics and health endpoint.
-type Metrics struct {
-	// Listen is the address to serve on: loopback only; the metrics endpoint is deferred past v0.1.
-	Listen string `yaml:"listen"`
 }
 
 // Worker is a worker VM's hardware. A zero field means "not set" and is filled from the level above.

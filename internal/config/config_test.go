@@ -139,9 +139,6 @@ func TestParseDefaults(t *testing.T) {
 	if c.Proxmox.Zone != DefaultZone {
 		t.Errorf("proxmox.zone = %q, want %q", c.Proxmox.Zone, DefaultZone)
 	}
-	if c.Metrics.Listen != DefaultMetricsListen {
-		t.Errorf("metrics.listen = %q, want %q", c.Metrics.Listen, DefaultMetricsListen)
-	}
 	if !c.Proxmox.UseLinkedClone() {
 		t.Error("linked clones are off by default")
 	}
@@ -229,8 +226,6 @@ func TestParseValid(t *testing.T) {
 	}{
 		{"repository scope", "github.configUrl", "https://github.com/my-org/my.repo_1"},
 		{"no TLS fingerprint", "proxmox.tlsFingerprint", nil},
-		{"localhost metrics", "metrics.listen", "localhost:9465"},
-		{"IPv6 loopback metrics", "metrics.listen", "[::1]:9465"},
 		{"warm pool", "scaleSets.0.minRunners", 3},
 		{"several labels", "scaleSets.0.labels", []any{"proxmox", "ubuntu-26.04", "x64"}},
 		{"longest lifetime", "scaleSets.0.maxLifetime", "120h"},
@@ -273,9 +268,6 @@ func TestParseInvalid(t *testing.T) {
 		{"GitHub URL without owner", "github.configUrl", "https://github.com/", "https://github.com/<org>"},
 		{"negative installation ID", "github.app.installationId", -1, "github.app.installationId: must be positive"},
 		{"relative private key", "github.app.privateKeyFile", "key.pem", "must be an absolute path"},
-
-		{"metrics on the LAN", "metrics.listen", "0.0.0.0:9465", "must be a loopback address"},
-		{"metrics without port", "metrics.listen", "127.0.0.1", "must be host:port"},
 
 		{"controller memory in GiB by mistake", "worker.memoryMiB", 8, "worker.memoryMiB"},
 		{"negative cores", "worker.cores", -1, "worker.cores"},
@@ -423,7 +415,7 @@ func TestParseDecodeErrors(t *testing.T) {
 	}{
 		{"empty", "", "config is empty"},
 		{"unknown field", "proxmox:\n  nodes: pve1\n", "field nodes not found"},
-		{"two documents", "metrics: {}\n---\nmetrics: {}\n", "exactly one YAML document"},
+		{"two documents", "worker: {}\n---\nworker: {}\n", "exactly one YAML document"},
 		{"duration without unit", "scaleSets:\n  - maxLifetime: 60\n", "decode"},
 		{"wrong type", "scaleSets: yes\n", "decode"},
 	}
