@@ -37,13 +37,13 @@ Or run it in one line:
 bash -c "$(curl -fsSL https://github.com/klponce/proxmox-actions-runners/releases/latest/download/install.sh)"
 ```
 
-Without flags, the script prompts for the settings that have no default. For unattended installs, pass an answers
+Every setting has a default, so the script asks only for confirmation and for the GitHub App step (see
+*GitHub App setup*), where you choose the organization or repository on GitHub. To change settings, pass an answers
 file of `KEY=value` lines; `bash install.sh --help` lists the keys and their defaults. Values are read literally,
 never evaluated.
 
 ```bash
 cat >par.env <<'EOF'
-PAR_GITHUB_URL=https://github.com/my-org
 PAR_MAX_RUNNERS=4
 PAR_STORAGE=local-zfs
 EOF
@@ -181,8 +181,7 @@ The controller image and the installer agree on this layout:
 ## Install flow
 
 1. **Preflight.** Run the checks above.
-2. **Collect settings** from flags, the answers file, or prompts: the GitHub organization or repository, scale set
-   name and limits, storage, the LAN bridge and VLAN, the controller and gateway LAN IPs (DHCP or static), the
+2. **Collect settings** from the answers file, or take the defaults: scale set name and limits, storage, the LAN bridge and VLAN, the controller and gateway LAN IPs (DHCP or static), the
    worker subnet (default `10.251.0.0/22`, changeable if it clashes), and the VMID range.
 3. **Show the plan.** List every object to be created or changed on the host, then ask for confirmation.
 4. **Proxmox access objects** (`pveum`):
@@ -226,9 +225,9 @@ The controller image and the installer agree on this layout:
 11. **Create the GitHub App** with the manifest flow described under *GitHub App setup*. The code the user pastes is
     passed to `parcon github app create` in the controller VM, so the App's private key goes straight from GitHub
     into the controller VM and never passes through the host. The installer then waits for the user to install the
-    App (`parcon github app wait-installation`) and writes the App's installation ID into `config.yaml`. It writes
-    the Client ID there as soon as the key is in the VM, so a re-run after a failure keeps waiting for the same App
-    rather than creating another. The installer then runs `parcon check github` in the VM. This confirms that the App
+    App (`parcon github app wait-installation`), learns from the installation which organization or repository the
+    runners serve, and writes it and the installation ID into `config.yaml`. It writes the Client ID there as soon as
+    the key is in the VM, so a re-run after a failure keeps waiting for the same App rather than creating another. The installer then runs `parcon check github` in the VM. This confirms that the App
     credentials produce an installation token and can reach the org or repo. It then enables and starts
     `parcon.service`.
 12. **Smoke test.** The installer clones one worker from the template into a reserved VMID, tagged
@@ -303,70 +302,69 @@ code shown by a CLI) only works for an App that already exists. The installer th
 [manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest) with
 a static helper page, and the user copies one line back:
 
-1. The installer picks a random `state` (letters, digits, `-` and `_`, no `.`) and prints a link to the helper page,
-   `https://klponce.github.io/proxmox-actions-runners/app/v1/`, with one of these query strings:
+1. The installer picks a random `state`, 32 bytes from `/dev/urandom` in unpadded base64url (43 characters, 256
+   bits, so nobody can guess it), and prints a link to the helper page with it:
+   `https://klponce.github.io/proxmox-actions-runners/app/v1/?state=<state>`. The user opens it on any device with a
+   browser. The page refuses a link without a state of that shape.
+2. The page asks one question, where the runners should work:
+   - **An organization**, by name: its runners serve all of its repositories. The page posts to
+     `https://github.com/organizations/<org>/settings/apps/new?state=<state>`, and the App asks for
+     **Self-hosted runners: write** on the organization.
+   - **My personal account**: GitHub allows self-hosted runners on a personal account only per repository, so the
+     App asks for **Administration: write** on repositories, and the user picks the repository when installing it.
+     The page posts to `https://github.com/settings/apps/new?state=<state>`, which creates the App in the signed-in
+     account.
 
-   | Runners for | Query string |
-   | ----------- | ------------ |
-   | an organization | `?org=<org>&state=<state>` |
-   | a repository owned by an organization | `?org=<org>&repo=<repo>&state=<state>` |
-   | a repository owned by a personal account | `?user=<user>&repo=<repo>&state=<state>` |
-
-   The user opens it on any device with a browser.
-2. The page builds the manifest and submits it as a form `POST` to
-   `https://github.com/organizations/<org>/settings/apps/new?state=<state>`, or
-   `https://github.com/settings/apps/new?state=<state>` for a repository owned by a personal account (the user signs
-   in as that account). The manifest sets:
-   - a name, `par-<owner>-<6 random hex digits>`, since App names are unique across GitHub (the owner is shortened to
-     fit GitHub's 34-character limit)
-   - `url` and an inactive webhook (`hook_attributes: {url: <project repository>, active: false}`), because the
-     controller long-polls
-   - the one permission the target needs: **Self-hosted runners: write** for an organization, or
-     **Administration: write** for a repository. Write includes read.
-   - no events, `redirect_url` back to the same page, and `public: false`
-   The page shows the manifest it will send under *What is sent to GitHub*.
+   The manifest also sets a name, `par-runners-<8 random hex digits>` (App names are unique across GitHub), `url`
+   and an inactive webhook (`hook_attributes: {url: <project repository>, active: false}`), because the controller
+   long-polls, no events, `redirect_url` back to the same page, and `public: false`. The page shows what it will
+   send under *What is sent to GitHub*.
 3. The user reviews the App on GitHub and clicks **Create GitHub App**. GitHub redirects back to the page with `code`
    and `state`. The page shows one line to copy, `<state>.<code>`, removes the code from the address bar, and warns
    that the line unlocks the App's private key for up to an hour.
 4. The user pastes the line into the installer. The installer splits it at the first `.`, checks that the state is
    the one it printed, and pipes **only the code** into `parcon github app create` in the controller VM.
-5. The installer prints the App's install link (`https://github.com/apps/<slug>/installations/new`), and the user
-   installs the App on the organization or repository. `parcon github app wait-installation` polls until the
-   installation appears. No second copy-back is needed.
-6. The installer writes `clientId`, `installationId`, and `privateKeyFile` into `github.app` in `config.yaml`, then
-   runs `parcon check github`.
+5. The installer prints the App's install link (`https://github.com/apps/<slug>/installations/new`), GitHub's own
+   install page, where the user installs the App on the organization, or on the repository for a personal account.
+   A private App can only be installed on the account that owns it, so the App and its installation can't disagree.
+   `parcon github app wait-installation` polls until the installation appears. No second copy-back is needed.
+6. The installer takes the runners' target from the installation: the organization, or the one repository the App
+   can reach on a personal account. If it can reach several, `PAR_GITHUB_URL` from the answers file picks one, or the
+   installer asks. With `PAR_GITHUB_URL` set, the installation must match it. The installer writes `configUrl`,
+   `clientId`, `installationId`, and `privateKeyFile` into `github` in `config.yaml`, then runs `parcon check github`.
 
 The `parcon` commands, run in the controller VM as `parcon`. Secrets come only on stdin, never as arguments, and are
 never logged or printed:
 
 | Command | Stdin | Stdout |
 | ------- | ----- | ------ |
-| `parcon github app create [-key-file PATH]` | the manifest code | `{"clientId":"…","appId":…,"slug":"…"}` |
+| `parcon github app create [-key-file PATH]` | the manifest code | `{"clientId":"…","appId":…,"slug":"…","owner":"…","ownerType":"Organization"}` |
 | `parcon github app import [-key-file PATH]` | an existing App's PEM private key | nothing |
-| `parcon github app wait-installation -client-id ID -target URL [-key-file PATH] [-timeout 15m]` | nothing | the installation ID |
+| `parcon github app wait-installation -client-id ID [-key-file PATH] [-timeout 15m]` | nothing | `{"installationId":…,"account":"…","accountType":"User","repositories":["…"]}` |
 
 - `-key-file` defaults to `/etc/proxmox-actions-runners/github-app.pem`. `create` and `import` write it with mode
   `0600` through a temporary file in the same directory and a rename, so a reader never sees half a key. `create`
   creates the temporary file before it exchanges the code, so a key path it can't write fails without spending the
   single-use code.
-- `create` calls `POST /app-manifests/{code}/conversions` and keeps only the App ID, slug, Client ID, and private
-  key. It drops the client secret and webhook secret, which the controller doesn't use. An invalid, used, or expired
-  code fails with a message that says so.
+- `create` calls `POST /app-manifests/{code}/conversions` and keeps only the App ID, slug, Client ID, owner, and
+  private key. It drops the client secret and webhook secret, which the controller doesn't use. An invalid, used, or
+  expired code fails with a message that says so.
 - `import` is the `PAR_GITHUB_APP=manual` path for an App that already exists: the installer asks for its Client ID,
   reads its private key, and pipes the key to `import`. `import` checks that it is a PEM-encoded RSA private key.
-- `wait-installation` authenticates as the App with a JWT and polls `GET /orgs/{org}/installation` or
-  `GET /repos/{owner}/{repo}/installation` every 5 seconds until the App is installed on `-target`
-  (`https://github.com/<org>` or `https://github.com/<owner>/<repo>`, the same as `github.configUrl`). Errors don't
-  end the wait, because a network blip, a GitHub error, or a newly created App that GitHub doesn't know yet all
-  pass. It prints each new error as it happens and fails after `-timeout` with the last one.
+- `wait-installation` authenticates as the App with a JWT and polls `GET /app/installations` every 5 seconds until
+  the App is installed. On a personal account it also lists the repositories the installation can reach
+  (`GET /installation/repositories` with an installation token), since the runners need one of them; an
+  organization's runners serve the whole organization. Errors don't end the wait, because a network blip, a GitHub
+  error, or a newly created App that GitHub doesn't know yet all pass. It prints each new error as it happens and
+  fails after `-timeout` with the last one.
 
 About the helper page:
 
 - It lives in `site/app/v1/index.html` and is published with GitHub Pages by `.github/workflows/pages.yml`. It is
   plain HTML and JavaScript with no third-party scripts, analytics, or cookies. Its Content-Security-Policy allows
   no requests except the form `POST` to GitHub.
-- Its path is versioned (`/app/v1/`). A change to the manifest or the query parameters gets a new path, so older
-  installers keep working.
+- Its path is versioned (`/app/v1/`). Once a release has shipped, a change to the manifest or the query parameters
+  gets a new path, so older installers keep working.
 - The code on the page can be exchanged for the App's private key by anyone who has it, until it is used or expires.
   The page says so, and the installer exchanges it at once. Neither the installer nor `parcon` logs it.
 

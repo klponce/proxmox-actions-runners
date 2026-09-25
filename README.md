@@ -39,8 +39,10 @@ After that it:
 - creates an isolated **worker network** (a Proxmox SDN VNet with no uplink) and a small **gateway VM** that is its
   only way out to the internet
 - creates a small **controller VM** that runs the controller
-- creates the **GitHub App**: it prints a link that you open in a browser on any device, then you paste one code
-  back, so the host itself needs no browser
+- creates your **GitHub App**: it prints a link that you open in a browser on any device, where you choose your
+  organization or personal account and create the App on GitHub. You paste one line back, install the App with
+  GitHub's own install page, and the installer learns the organization or repository from it. The host itself needs
+  no browser
 - imports the **runner template** from the runner image published with the release
 - registers the scale set with GitHub
 
@@ -209,8 +211,9 @@ See [docs/install.md](docs/install.md#gateway-and-controller-images) for the det
   to it: they get a dedicated network behind the gateway VM, which the installer creates.
 - **Proxmox SDN** available, which it is by default on PVE 9 (`ifupdown2` and the `source /etc/network/interfaces.d/*`
   line in `/etc/network/interfaces`).
-- **A GitHub organization or repository** where you can create and install a GitHub App. The installer creates the
-  App with only the permission it needs:
+- **A GitHub organization or personal account** where you can create and install a GitHub App: an organization's
+  runners serve all its repositories, and a personal account's serve one repository, which GitHub requires. The App
+  is created in your account with only the permission it needs:
   - organization runners need **Self-hosted runners: write** (write includes read)
   - repository runners need **Administration: write**
 - **A browser on any device** for the one-time App creation step.
