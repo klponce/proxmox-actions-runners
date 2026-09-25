@@ -45,6 +45,21 @@ EOF
 	[ "$(free_reserved_vmid)" = 10098 ]
 }
 
+@test "system_vmid keeps the gateway and controller out of the worker range" {
+	PAR_VMID_START=100
+	PAR_VMID_END=199
+	echo '[{"vmid":150},{"vmid":200},{"vmid":201}]' >"$BATS_TEST_TMPDIR/resources.json"
+	stub pvesh "case \"\$*\" in
+		'get /cluster/nextid') echo 101 ;;
+		'get /cluster/resources'*) cat '$BATS_TEST_TMPDIR/resources.json' ;;
+	esac"
+	[ "$(system_vmid)" = 202 ]
+
+	PAR_VMID_START=10000
+	PAR_VMID_END=10099
+	[ "$(system_vmid)" = 101 ]
+}
+
 @test "guest_exec passes on output and the exit status" {
 	stub qm "echo '{\"exited\":1,\"exitcode\":3,\"out-data\":\"hello\\n\",\"err-data\":\"oops\\n\"}'"
 	run guest_exec 105 30 -- false

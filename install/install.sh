@@ -907,7 +907,24 @@ create_system_vm() {
 	change qm start "$vmid"
 }
 
-next_vmid() { pvesh get /cluster/nextid; }
+# system_vmid prints a free VMID for the gateway or controller VM outside the workers' and templates' range: nextid,
+# or the first free ID above the range when nextid falls inside it. A system VM in the range would fail check_vmids on
+# every later run.
+system_vmid() {
+	local id used
+	id=$(pvesh get /cluster/nextid)
+	if ((id < PAR_VMID_START || id > PAR_VMID_END)); then
+		echo "$id"
+		return 0
+	fi
+	used=$(used_vmids)
+	for ((id = PAR_VMID_END + 1; ; id++)); do
+		grep -qx "$id" <<<"$used" || {
+			echo "$id"
+			return 0
+		}
+	done
+}
 
 # system_vm prints the VMID of the gateway or controller VM, if it exists. One that a failed run left without its
 # disk is destroyed, and one that is stopped is started.
@@ -949,7 +966,7 @@ create_gateway() {
 	local vmid
 	vmid=$(system_vm "$TAG_GATEWAY")
 	if [[ -z $vmid ]]; then
-		vmid=$(next_vmid)
+		vmid=$(system_vmid)
 		create_system_vm "$vmid" par-gateway "par-gateway-$PAR_VERSION.qcow2" 1 1024 "$GATEWAY_GIB" \
 			"$TAG_GATEWAY;$(release_tag)" "$PAR_GATEWAY_IP" "virtio,bridge=$VNET"
 	fi
@@ -991,7 +1008,7 @@ create_controller() {
 	local vmid
 	vmid=$(system_vm "$TAG_CONTROLLER")
 	if [[ -z $vmid ]]; then
-		vmid=$(next_vmid)
+		vmid=$(system_vmid)
 		create_system_vm "$vmid" par-controller "parcon-$PAR_VERSION.qcow2" 2 2048 "$CONTROLLER_GIB" \
 			"$TAG_CONTROLLER" "$PAR_CONTROLLER_IP"
 	fi
