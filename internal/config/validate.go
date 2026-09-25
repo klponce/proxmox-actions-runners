@@ -154,7 +154,8 @@ func validateGitHubConfigURL(v *validator, raw string) {
 	}
 }
 
-// validate requires a loopback address, because nginx is what publishes the endpoint on the LAN.
+// validate requires a loopback address: parcon never listens on the LAN, and the metrics endpoint is deferred past
+// v0.1.
 func (m Metrics) validate(v *validator) {
 	const field = "metrics.listen"
 	host, _, err := net.SplitHostPort(m.Listen)
@@ -163,7 +164,7 @@ func (m Metrics) validate(v *validator) {
 		return
 	}
 	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-		v.addf(field, "%q must be a loopback address; nginx publishes the endpoint on the LAN", m.Listen)
+		v.addf(field, "%q must be a loopback address; the metrics endpoint is deferred past v0.1", m.Listen)
 	}
 }
 
