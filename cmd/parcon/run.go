@@ -13,7 +13,6 @@ import (
 
 	"github.com/klponce/proxmox-actions-runners/internal/config"
 	"github.com/klponce/proxmox-actions-runners/internal/controller"
-	"github.com/klponce/proxmox-actions-runners/internal/github"
 )
 
 // runController handles "parcon run": it runs the controller until SIGINT or SIGTERM.
@@ -44,9 +43,6 @@ func runController(args []string, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := cfg.RequireGitHubApp(); err != nil {
-		return err
-	}
 	c, err := newController(cfg, logger)
 	if err != nil {
 		return err
@@ -65,23 +61,11 @@ func runController(args []string, stderr io.Writer) error {
 
 // newController builds the controller and its clients from the config and the secret files it names.
 func newController(cfg *config.Config, logger *slog.Logger) (*controller.Controller, error) {
-	pve, err := newProxmoxClient(cfg)
+	gh, err := newGitHubClient(cfg, logger.With(slog.String("component", "github")))
 	if err != nil {
 		return nil, err
 	}
-
-	key, err := config.ReadSecretFile(cfg.GitHub.App.PrivateKeyFile)
-	if err != nil {
-		return nil, fmt.Errorf("GitHub App key: %w", err)
-	}
-	gh, err := github.New(github.Options{
-		ConfigURL:      cfg.GitHub.ConfigURL,
-		ClientID:       cfg.GitHub.App.ClientID,
-		InstallationID: cfg.GitHub.App.InstallationID,
-		PrivateKeyPEM:  key,
-		Version:        buildVersion(),
-		Logger:         logger.With(slog.String("component", "github")),
-	})
+	pve, err := newProxmoxClient(cfg)
 	if err != nil {
 		return nil, err
 	}
