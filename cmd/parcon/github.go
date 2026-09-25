@@ -100,10 +100,12 @@ func appCreate(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	return json.NewEncoder(stdout).Encode(struct {
-		ClientID string `json:"clientId"`
-		AppID    int64  `json:"appId"`
-		Slug     string `json:"slug"`
-	}{app.ClientID, app.ID, app.Slug})
+		ClientID  string `json:"clientId"`
+		AppID     int64  `json:"appId"`
+		Slug      string `json:"slug"`
+		Owner     string `json:"owner"`
+		OwnerType string `json:"ownerType"`
+	}{app.ClientID, app.ID, app.Slug, app.Owner, app.OwnerType})
 }
 
 // appImport writes an existing App's private key, read from stdin, for installs that don't use the manifest flow.
@@ -123,25 +125,19 @@ func appImport(args []string, _, stderr io.Writer) error {
 	return writeSecretFile(*keyFile, func() (string, error) { return key, nil })
 }
 
-// appWaitInstallation waits until the App is installed on the target organization or repository and prints the
-// installation's ID.
+// appWaitInstallation waits until the App is installed and prints where, as JSON: the installation's ID, the
+// account, its type, and, on a personal account, the repositories it can reach. The installer picks the runners'
+// organization or repository from it, so the user chooses the target only once, on GitHub.
 func appWaitInstallation(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("github app wait-installation", flag.ContinueOnError)
 	clientID := fs.String("client-id", "", "the App's client ID (required)")
 	keyFile := fs.String("key-file", defaultKeyFile, "the App's private key")
-	target := fs.String("target", "", "the organization or repository URL, such as https://github.com/my-org "+
-		"(required)")
 	timeout := fs.Duration("timeout", 15*time.Minute, "how long to wait for the installation")
 	if err := parseFlags(fs, args, stderr); err != nil {
 		return err
 	}
-	if *clientID == "" || *target == "" {
-		fmt.Fprintln(stderr, "-client-id and -target are required")
-		return errUsage
-	}
-	owner, repo, err := config.ParseGitHubURL(*target)
-	if err != nil {
-		fmt.Fprintf(stderr, "-target: %v\n", err)
+	if *clientID == "" {
+		fmt.Fprintln(stderr, "-client-id is required")
 		return errUsage
 	}
 	key, err := config.ReadSecretFile(*keyFile)
@@ -155,10 +151,14 @@ func appWaitInstallation(args []string, stdout, stderr io.Writer) error {
 	// new error is shown right away, and the last one is repeated if the wait times out.
 	var lastErr error
 	for {
-		id, err := findInstallation(ctx, *clientID, key, owner, repo)
-		if id != 0 {
-			fmt.Fprintln(stdout, id)
-			return nil
+		in, err := findInstallation(ctx, *clientID, key)
+		if in.ID != 0 {
+			return json.NewEncoder(stdout).Encode(struct {
+				InstallationID int64    `json:"installationId"`
+				Account        string   `json:"account"`
+				AccountType    string   `json:"accountType"`
+				Repositories   []string `json:"repositories,omitempty"`
+			}{in.ID, in.Account, in.AccountType, in.Repositories})
 		}
 		// An error after the deadline is just the deadline.
 		if err != nil && ctx.Err() == nil {
@@ -170,10 +170,9 @@ func appWaitInstallation(args []string, stdout, stderr io.Writer) error {
 		select {
 		case <-ctx.Done():
 			if lastErr != nil {
-				return fmt.Errorf("the GitHub App isn't installed on %s after %s; last error: %w", *target, *timeout,
-					lastErr)
+				return fmt.Errorf("the GitHub App isn't installed after %s; last error: %w", *timeout, lastErr)
 			}
-			return fmt.Errorf("the GitHub App isn't installed on %s after %s", *target, *timeout)
+			return fmt.Errorf("the GitHub App isn't installed after %s", *timeout)
 		case <-time.After(installationPollInterval):
 		}
 	}

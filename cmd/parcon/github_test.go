@@ -20,7 +20,6 @@ import (
 const (
 	testCode     = "a1b2c3d4e5f6a1b2c3d4"
 	testClientID = "Iv23liEXAMPLE0000000"
-	testTarget   = "https://github.com/my-org"
 )
 
 var testKeyPEM = func() string {
@@ -62,7 +61,8 @@ func fakeConvert(t *testing.T) *int {
 			return github.App{}, "", errors.New("github: convert the App manifest code: 404 Not Found: the code is " +
 				"invalid, already used, or more than an hour old")
 		}
-		return github.App{ID: 123456, Slug: "par-my-org-a1b2c3", ClientID: testClientID}, testKeyPEM, nil
+		return github.App{ID: 123456, Slug: "par-runners-a1b2c3d4", ClientID: testClientID, Owner: "octocat",
+			OwnerType: "User"}, testKeyPEM, nil
 	}
 	return &calls
 }
@@ -113,7 +113,8 @@ func TestGitHubAppCreate(t *testing.T) {
 	if got != succeeded {
 		t.Fatalf("outcome %s:\n%s", got, all)
 	}
-	if want := `{"clientId":"Iv23liEXAMPLE0000000","appId":123456,"slug":"par-my-org-a1b2c3"}` + "\n"; stdout != want {
+	if want := `{"clientId":"Iv23liEXAMPLE0000000","appId":123456,"slug":"par-runners-a1b2c3d4",` +
+		`"owner":"octocat","ownerType":"User"}` + "\n"; stdout != want {
 		t.Errorf("stdout = %q, want %q", stdout, want)
 	}
 	if *calls != 1 {
@@ -189,48 +190,54 @@ func TestGitHubAppWaitInstallation(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	org := github.Installation{ID: 7890123, Account: "my-org", AccountType: "Organization"}
+	user := github.Installation{ID: 7890123, Account: "octocat", AccountType: "User",
+		Repositories: []string{"hello", "world"}}
+	const orgOut = `{"installationId":7890123,"account":"my-org","accountType":"Organization"}` + "\n"
 	tests := []struct {
 		name     string
 		args     []string
+		found    github.Installation
 		pollsTo  int   // the poll that finds the installation; 0 means never
 		findErr  error // returned by every poll before it
 		want     outcome
 		wantOut  string
 		wantMsgs string
 	}{
-		{name: "installed after a few polls", pollsTo: 3, want: succeeded, wantOut: "7890123\n"},
+		{name: "installed on an organization after a few polls", found: org, pollsTo: 3, want: succeeded,
+			wantOut: orgOut},
+		{name: "installed on a personal account", found: user, pollsTo: 1, want: succeeded,
+			wantOut: `{"installationId":7890123,"account":"octocat","accountType":"User",` +
+				`"repositories":["hello","world"]}` + "\n"},
 		{name: "timeout", args: []string{"-timeout", "20ms"}, want: failed,
-			wantMsgs: "the GitHub App isn't installed on https://github.com/my-org after 20ms"},
-		{name: "installed after transient errors", pollsTo: 3, findErr: errors.New("github: find the App's " +
-			"installation: GET /orgs/my-org/installation: 502 Bad Gateway"), want: succeeded, wantOut: "7890123\n",
+			wantMsgs: "the GitHub App isn't installed after 20ms"},
+		{name: "installed after transient errors", found: org, pollsTo: 3, findErr: errors.New("github: find the " +
+			"App's installation: GET /app/installations: 502 Bad Gateway"), want: succeeded, wantOut: orgOut,
 			wantMsgs: "502 Bad Gateway; still waiting"},
 		{name: "bad credentials until the timeout", args: []string{"-timeout", "20ms"}, findErr: errors.New("github: " +
-			"find the App's installation: GET /orgs/my-org/installation: 401 Unauthorized"), want: failed,
-			wantMsgs: "after 20ms; last error: github: find the App's installation: GET /orgs/my-org/installation: " +
+			"find the App's installation: GET /app/installations: 401 Unauthorized"), want: failed,
+			wantMsgs: "after 20ms; last error: github: find the App's installation: GET /app/installations: " +
 				"401 Unauthorized"},
 		{name: "key readable by others", args: []string{"-key-file", looseKey}, want: failed,
 			wantMsgs: "must not be accessible to group or others"},
-		{name: "no target", args: []string{"-target", ""}, want: usageError,
-			wantMsgs: "-client-id and -target are required"},
-		{name: "target not on GitHub", args: []string{"-target", "https://example.com/my-org"}, want: usageError,
-			wantMsgs: "must be https://github.com/<org> or https://github.com/<owner>/<repo>"},
+		{name: "no client ID", args: []string{"-client-id", ""}, want: usageError,
+			wantMsgs: "-client-id is required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			polls := 0
-			findInstallation = func(_ context.Context, clientID, keyPEM, owner, repo string) (int64, error) {
+			findInstallation = func(_ context.Context, clientID, keyPEM string) (github.Installation, error) {
 				polls++
-				if clientID != testClientID || keyPEM != strings.TrimSpace(testKeyPEM) || owner != "my-org" ||
-					repo != "" {
-					t.Errorf("findInstallation(%q, <key>, %q, %q) got the wrong arguments", clientID, owner, repo)
+				if clientID != testClientID || keyPEM != strings.TrimSpace(testKeyPEM) {
+					t.Errorf("findInstallation(%q, <key>) got the wrong arguments", clientID)
 				}
 				if tt.pollsTo != 0 && polls >= tt.pollsTo {
-					return 7890123, nil
+					return tt.found, nil
 				}
-				return 0, tt.findErr
+				return github.Installation{}, tt.findErr
 			}
-			args := append([]string{"github", "app", "wait-installation", "-client-id", testClientID, "-target",
-				testTarget, "-key-file", key}, tt.args...)
+			args := append([]string{"github", "app", "wait-installation", "-client-id", testClientID, "-key-file",
+				key}, tt.args...)
 			got, stdout, all := runApp(t, "", args...)
 			if got != tt.want || !strings.Contains(all, tt.wantMsgs) || stdout != tt.wantOut {
 				t.Errorf("outcome %s, stdout %q, want %s and %q mentioning %q:\n%s", got, stdout, tt.want, tt.wantOut,

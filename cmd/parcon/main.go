@@ -10,7 +10,7 @@
 //	parcon check template [-config path]
 //	parcon github app create [-key-file path] < code
 //	parcon github app import [-key-file path] < key.pem
-//	parcon github app wait-installation -client-id id -target url [-key-file path] [-timeout duration]
+//	parcon github app wait-installation -client-id id [-key-file path] [-timeout duration]
 //	parcon github scaleset delete [-config path]
 package main
 
@@ -35,12 +35,13 @@ const usage = `usage:
   parcon check template [-config path]  check the runner template and its actions/runner version
   parcon github app create [-key-file path] < code
                                         create the GitHub App from the manifest code on stdin, write its key,
-                                        and print its clientId, appId, and slug as JSON
+                                        and print its clientId, appId, slug, owner, and ownerType as JSON
   parcon github app import [-key-file path] < key.pem
                                         write an existing GitHub App's private key from stdin
-  parcon github app wait-installation -client-id id -target url [-key-file path] [-timeout duration]
-                                        wait until the App is installed on the target and print the
-                                        installation ID
+  parcon github app wait-installation -client-id id [-key-file path] [-timeout duration]
+                                        wait until the App is installed and print its installationId,
+                                        account, accountType, and (for a personal account) repositories
+                                        as JSON
   parcon github scaleset delete [-config path]
                                         remove the configured scale sets and their runners from GitHub
 `

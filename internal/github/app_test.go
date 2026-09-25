@@ -6,7 +6,10 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"net/http"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -18,7 +21,8 @@ func TestConvertManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConvertManifest: %v", err)
 	}
-	if want := (App{ID: testAppID, Slug: testAppSlug, ClientID: testClientID}); app != want {
+	if want := (App{ID: testAppID, Slug: testAppSlug, ClientID: testClientID, Owner: "my-org",
+		OwnerType: "Organization"}); app != want {
 		t.Errorf("App = %+v, want %+v", app, want)
 	}
 	if key != testKeyPEM() {
@@ -66,36 +70,37 @@ func TestFindInstallation(t *testing.T) {
 	}
 	otherPEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY",
 		Bytes: x509.MarshalPKCS1PrivateKey(otherKey)}))
+	tokenRoute := fmt.Sprintf("POST /app/installations/%d/access_tokens", testInstallationID)
 
-	// Which URLs name an organization or a repository is config.ParseGitHubURL's job, tested there.
 	tests := []struct {
-		name        string
-		owner, repo string
-		key         string
-		installed   bool
-		want        int64
-		wantErr     string
-		wantRoute   string
+		name       string
+		on         string
+		key        string
+		want       Installation
+		wantErr    string
+		wantRoutes []string
 	}{
-		{name: "organization", owner: "my-org", installed: true, want: testInstallationID,
-			wantRoute: "GET /orgs/my-org/installation"},
-		{name: "repository", owner: "my-org", repo: "my-repo", installed: true, want: testInstallationID,
-			wantRoute: "GET /repos/my-org/my-repo/installation"},
-		{name: "not installed yet", owner: "my-org", wantRoute: "GET /orgs/my-org/installation"},
-		{name: "wrong key", owner: "my-org", key: otherPEM, installed: true, wantErr: "401",
-			wantRoute: "GET /orgs/my-org/installation"},
-		{name: "key not PEM", owner: "my-org", key: "not a key", wantErr: "not a valid RSA key"},
+		{name: "organization", on: "Organization",
+			want:       Installation{ID: testInstallationID, Account: "my-org", AccountType: "Organization"},
+			wantRoutes: []string{"GET /app/installations"}},
+		{name: "personal account, with its repositories", on: "User",
+			want: Installation{ID: testInstallationID, Account: "octocat", AccountType: "User",
+				Repositories: []string{"hello", "world"}},
+			wantRoutes: []string{"GET /app/installations", tokenRoute, "GET /installation/repositories"}},
+		{name: "not installed yet", wantRoutes: []string{"GET /app/installations"}},
+		{name: "wrong key", on: "Organization", key: otherPEM, wantErr: "401",
+			wantRoutes: []string{"GET /app/installations"}},
+		{name: "key not PEM", key: "not a key", wantErr: "not a valid RSA key"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFakeGitHub(t)
-			f.installed = tt.installed
+			f.installedOn = tt.on
 			key := tt.key
 			if key == "" {
 				key = testKeyPEM()
 			}
-			got, err := findInstallation(context.Background(), f.httpClient(), f.srv.URL, testClientID, key, tt.owner,
-				tt.repo)
+			got, err := findInstallation(context.Background(), f.httpClient(), f.srv.URL, testClientID, key)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("FindInstallation error = %v, want it to mention %q", err, tt.wantErr)
@@ -103,12 +108,11 @@ func TestFindInstallation(t *testing.T) {
 				if strings.Contains(err.Error(), "PRIVATE KEY") {
 					t.Errorf("error leaks the key: %v", err)
 				}
-			} else if err != nil || got != tt.want {
-				t.Fatalf("FindInstallation = %d, %v; want %d", got, err, tt.want)
+			} else if err != nil || !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("FindInstallation = %+v, %v; want %+v", got, err, tt.want)
 			}
-			if calls := f.called(); tt.wantRoute == "" && len(calls) > 0 ||
-				tt.wantRoute != "" && (len(calls) != 1 || calls[0] != tt.wantRoute) {
-				t.Errorf("requests = %v, want %q", calls, tt.wantRoute)
+			if calls := f.called(); !slices.Equal(calls, tt.wantRoutes) {
+				t.Errorf("requests = %v, want %v", calls, tt.wantRoutes)
 			}
 		})
 	}
