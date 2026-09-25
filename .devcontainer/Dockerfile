@@ -20,6 +20,7 @@ RUN apt-get update \
         git \
         less \
         libjson-perl \
+        openssl \
         ovmf \
         qemu-system-x86 \
         qemu-utils \
