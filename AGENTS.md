@@ -158,7 +158,9 @@ test/integration/run.sh                   # needs SSH to a throwaway Proxmox nod
 for each image, and `actionlint` on the workflows. It must pass before you consider a change done, and CI runs the
 same script in the same image. When you change an image, also build it. Each build runs its scripts twice (they must be idempotent) and checks the result; the runner build also
 runs the one-job flow with a stand-in runner. The boot test then boots the finished image the way Proxmox first
-boots a VM made from it and checks the console for failed units, ordering cycles, and each image's own lines. A
+boots a VM made from it: net0 at Proxmox's PCI slot with a cloud-init network config that names it `eth0` by MAC,
+and, for the gateway, net1 at its slot. It checks the console for failed units, ordering cycles, a network that
+timed out, cloud-init finishing within 90 seconds, and each image's own lines. A
 build needs `/dev/kvm` and 2 to 4 GiB of free memory. `build-image.sh` builds one image and boot-tests it, the same
 way the release workflow does; run one build at a time:
 
@@ -239,8 +241,8 @@ See [docs/install.md](docs/install.md) for the full design.
   disable runner auto-update. GitHub stops accepting a runner that doesn't update itself 30 days after a newer
   release, so each runner release needs a new runner image, imported by `install.sh upgrade`. The controller logs a
   warning 7 days after a release its template lacks and an error after 21 (`parcon check template` shows the same).
-- Scripts run in order: `images/common/base.sh` (system upgrade and `qemu-guest-agent`, shared with the other
-  images), `scripts/base.sh` (the `runner` user, automatic updates off),
+- Scripts run in order: `images/common/base.sh` (system upgrade, `qemu-guest-agent`, and `net.ifnames=0`, shared
+  with the other images), `scripts/base.sh` (the `runner` user, automatic updates off),
   `scripts/10-runner.sh` (the pinned runner in `/opt/actions-runner`, its job environment in `.env`, and
   `/home/runner/work`), `scripts/20-par-runner.sh` (the one-job units), `scripts/30-minimal-tools.sh`, the checks in
   `tests/`, then `images/common/cleanup.sh`, which every image build shares.
@@ -274,6 +276,10 @@ See [docs/install.md](docs/install.md) for the full design.
 - The gateway holds no secrets and no state beyond `/etc/par-gateway/config`. `par-gateway-configure` renders
   everything else from it, and running it again with the same input changes nothing. The worker NIC is always
   `net1` (Proxmox's `net1`, named by its PCI slot), so the rules never depend on MACs.
+- Every image boots with `net.ifnames=0` (`images/common/base.sh`), so the first NIC is `eth0`, the name Proxmox's
+  cloud-init network config gives it. With predictable names, the dracut initrd brings it up as `ens18` before
+  cloud-init can rename it, netplan's config for `eth0` never applies (a static address is lost), and every boot
+  waits two minutes for an `eth0` that never appears. The boot test catches that.
 - The controller image, the installer, and `parcon` all follow the *Controller VM contract* in
   [docs/install.md](docs/install.md): the `parcon` user, `/usr/local/bin/parcon`, `parcon.service`
   ([deploy/parcon.service](deploy/parcon.service), installed but not enabled by the image), and the modes of
