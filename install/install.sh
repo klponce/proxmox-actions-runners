@@ -256,7 +256,7 @@ validate_settings() {
 		errors+=("PAR_GITHUB_URL must be https://github.com/<org> or https://github.com/<owner>/<repo>")
 	[[ $PAR_GITHUB_APP == manifest || $PAR_GITHUB_APP == manual ]] ||
 		errors+=("PAR_GITHUB_APP must be manifest or manual")
-	[[ $PAR_GITHUB_APP != manual || $PAR_GITHUB_APP_CLIENT_ID =~ ^[A-Za-z0-9._-]+$ ]] ||
+	[[ $PAR_GITHUB_APP != manual || $PAR_GITHUB_APP_CLIENT_ID =~ $CLIENT_ID_PATTERN ]] ||
 		errors+=("PAR_GITHUB_APP_CLIENT_ID must be the App's Client ID")
 	[[ $PAR_SCALE_SET =~ $SCALE_SET_PATTERN ]] ||
 		errors+=("PAR_SCALE_SET must be 1-63 lowercase letters, digits, . _ -, starting with a letter or digit")
@@ -299,6 +299,8 @@ is_repository() { [[ ${PAR_GITHUB_URL#https://github.com/} == */* ]]; }
 
 # An organization or repository on github.com. Its names end up in the config, so they are kept to safe characters.
 readonly GITHUB_URL_PATTERN='^https://github\.com/[A-Za-z0-9-]+(/[A-Za-z0-9._-]+)?$'
+# A GitHub App's Client ID, such as Iv23liEXAMPLE0000000, or its numeric App ID.
+readonly CLIENT_ID_PATTERN='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 
 # ---------------------------------------------------------------------------------------------------------------
 # IPv4 arithmetic
@@ -1094,13 +1096,13 @@ EOF
 # configure_controller writes the config without the App and the API token, then checks Proxmox from the VM.
 configure_controller() {
 	step "Configure the controller"
-	local vmid=$CONTROLLER_VMID url client_id installation_id
-	read -r url client_id installation_id <<<"$(existing_github)"
-	[[ -n $PAR_GITHUB_URL ]] || PAR_GITHUB_URL=$url
+	local vmid=$CONTROLLER_VMID
+	load_existing_github
+	[[ -n $PAR_GITHUB_URL ]] || PAR_GITHUB_URL=$EXISTING_URL
 	if [[ $(tls_mode) == ca ]]; then
 		write_controller_file "$vmid" "$CA_FILE" <"$PVE_DIR/pve-root-ca.pem" || die "writing the node's CA failed"
 	fi
-	render_config "$client_id" "$installation_id" | write_controller_file "$vmid" "$ETC/config.yaml" ||
+	render_config "$EXISTING_CLIENT_ID" "$EXISTING_INSTALLATION_ID" | write_controller_file "$vmid" "$ETC/config.yaml" ||
 		die "writing the config failed"
 
 	# A token's secret is shown only when it's created. Keep a token the controller already holds; otherwise make a
@@ -1123,16 +1125,18 @@ configure_controller() {
 	as_parcon "$vmid" 60 parcon check proxmox || die "parcon check proxmox failed in the controller VM"
 }
 
-# existing_github prints the organization or repository, Client ID, and installation ID in the controller's config,
-# each "-" when it isn't set yet, so that `read` keeps them apart.
-existing_github() {
-	local config key value
+# load_existing_github reads what an earlier run wrote into the controller's config: the organization or repository
+# (EXISTING_URL), the App's Client ID (EXISTING_CLIENT_ID), and its installation ID (EXISTING_INSTALLATION_ID). Each is
+# empty when it isn't set yet, or when it isn't valid, so a broken file can't carry a bad value into a new one.
+load_existing_github() {
+	local config
 	config=$(as_parcon "$CONTROLLER_VMID" 30 cat "$ETC/config.yaml" 2>/dev/null) || true
-	for key in configUrl clientId installationId; do
-		value=$(sed -n "s/^ *$key: *//p" <<<"$config" | head -n 1)
-		printf '%s ' "${value:--}"
-	done
-	echo
+	EXISTING_URL=$(sed -n 's/^ *configUrl: *//p' <<<"$config" | head -n 1)
+	EXISTING_CLIENT_ID=$(sed -n 's/^ *clientId: *//p' <<<"$config" | head -n 1)
+	EXISTING_INSTALLATION_ID=$(sed -n 's/^ *installationId: *//p' <<<"$config" | head -n 1)
+	[[ $EXISTING_URL =~ $GITHUB_URL_PATTERN ]] || EXISTING_URL=""
+	[[ $EXISTING_CLIENT_ID =~ $CLIENT_ID_PATTERN ]] || EXISTING_CLIENT_ID=""
+	[[ $EXISTING_INSTALLATION_ID =~ ^[1-9][0-9]*$ ]] || EXISTING_INSTALLATION_ID=""
 }
 
 # setup_app creates or imports the GitHub App, waits for the user to install it, and learns from the installation
@@ -1140,12 +1144,10 @@ existing_github() {
 # controller, so a re-run after a failure continues with the same App instead of creating another.
 setup_app() {
 	step "GitHub App"
-	local vmid=$CONTROLLER_VMID url client_id installation_id out target
-	read -r url client_id installation_id <<<"$(existing_github)"
-	[[ $url == - ]] && url=""
-	[[ $client_id == - ]] && client_id=""
-	[[ $installation_id == - ]] && installation_id=""
-	[[ -n $PAR_GITHUB_URL ]] || PAR_GITHUB_URL=$url
+	local vmid=$CONTROLLER_VMID out target
+	load_existing_github
+	local client_id=$EXISTING_CLIENT_ID installation_id=$EXISTING_INSTALLATION_ID
+	[[ -n $PAR_GITHUB_URL ]] || PAR_GITHUB_URL=$EXISTING_URL
 	if [[ -z $client_id ]]; then
 		if [[ $PAR_GITHUB_APP == manual ]]; then
 			client_id=$PAR_GITHUB_APP_CLIENT_ID
