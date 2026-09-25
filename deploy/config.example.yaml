@@ -21,9 +21,6 @@ github:
     installationId: 7890123
     privateKeyFile: /etc/proxmox-actions-runners/github-app.pem
 
-metrics:
-  listen: 127.0.0.1:9465  # loopback only; metrics and their HTTPS endpoint are deferred past v0.1
-
 worker:            # controller-wide; omit to use the GitHub-matching defaults (2 cores, 8 GiB, 14 GiB free)
   cores: 2
 

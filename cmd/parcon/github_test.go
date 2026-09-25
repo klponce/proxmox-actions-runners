@@ -193,7 +193,7 @@ func TestGitHubAppWaitInstallation(t *testing.T) {
 		name     string
 		args     []string
 		pollsTo  int   // the poll that finds the installation; 0 means never
-		findErr  error // returned by every poll
+		findErr  error // returned by every poll before it
 		want     outcome
 		wantOut  string
 		wantMsgs string
@@ -201,20 +201,28 @@ func TestGitHubAppWaitInstallation(t *testing.T) {
 		{name: "installed after a few polls", pollsTo: 3, want: succeeded, wantOut: "7890123\n"},
 		{name: "timeout", args: []string{"-timeout", "20ms"}, want: failed,
 			wantMsgs: "the GitHub App isn't installed on https://github.com/my-org after 20ms"},
-		{name: "bad credentials", findErr: errors.New("github: find the App's installation: GET " +
-			"/orgs/my-org/installation: 401 Unauthorized"), want: failed, wantMsgs: "401 Unauthorized"},
+		{name: "installed after transient errors", pollsTo: 3, findErr: errors.New("github: find the App's " +
+			"installation: GET /orgs/my-org/installation: 502 Bad Gateway"), want: succeeded, wantOut: "7890123\n",
+			wantMsgs: "502 Bad Gateway; still waiting"},
+		{name: "bad credentials until the timeout", args: []string{"-timeout", "20ms"}, findErr: errors.New("github: " +
+			"find the App's installation: GET /orgs/my-org/installation: 401 Unauthorized"), want: failed,
+			wantMsgs: "after 20ms; last error: github: find the App's installation: GET /orgs/my-org/installation: " +
+				"401 Unauthorized"},
 		{name: "key readable by others", args: []string{"-key-file", looseKey}, want: failed,
 			wantMsgs: "must not be accessible to group or others"},
 		{name: "no target", args: []string{"-target", ""}, want: usageError,
 			wantMsgs: "-client-id and -target are required"},
+		{name: "target not on GitHub", args: []string{"-target", "https://example.com/my-org"}, want: usageError,
+			wantMsgs: "must be https://github.com/<org> or https://github.com/<owner>/<repo>"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			polls := 0
-			findInstallation = func(_ context.Context, clientID, keyPEM, target string) (int64, error) {
+			findInstallation = func(_ context.Context, clientID, keyPEM, owner, repo string) (int64, error) {
 				polls++
-				if clientID != testClientID || keyPEM != strings.TrimSpace(testKeyPEM) || target != testTarget {
-					t.Errorf("findInstallation(%q, <key>, %q) got the wrong arguments", clientID, target)
+				if clientID != testClientID || keyPEM != strings.TrimSpace(testKeyPEM) || owner != "my-org" ||
+					repo != "" {
+					t.Errorf("findInstallation(%q, <key>, %q, %q) got the wrong arguments", clientID, owner, repo)
 				}
 				if tt.pollsTo != 0 && polls >= tt.pollsTo {
 					return 7890123, nil
@@ -230,6 +238,11 @@ func TestGitHubAppWaitInstallation(t *testing.T) {
 			}
 			if tt.pollsTo != 0 && polls != tt.pollsTo {
 				t.Errorf("polled %d times, want %d", polls, tt.pollsTo)
+			}
+			// The same error is shown once, not on every poll.
+			if tt.findErr != nil && strings.Count(all, "still waiting") != 1 {
+				t.Errorf("the repeated error was shown %d times, want once:\n%s", strings.Count(all, "still waiting"),
+					all)
 			}
 		})
 	}

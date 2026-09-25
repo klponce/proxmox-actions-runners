@@ -227,12 +227,14 @@ func TestWithoutGitHubApp(t *testing.T) {
 			t.Errorf("%v without an App: %v\n%s", args, err, stdout.String())
 		}
 	}
+	// run fails with the reason; check github reports it as a failed check.
 	const want = "the GitHub App isn't set up yet: missing github.app.clientId"
 	for _, args := range [][]string{{"run"}, {"check", "github"}} {
 		var stdout, stderr bytes.Buffer
 		err := run(append(args, "-config", path), &stdout, &stderr)
-		if outcomeOf(err) != failed || !strings.Contains(err.Error(), want) {
-			t.Errorf("%v without an App: error = %v, want it to mention %q", args, err, want)
+		if outcomeOf(err) != failed || !strings.Contains(err.Error()+stdout.String(), want) {
+			t.Errorf("%v without an App: error = %v, output %q, want it to mention %q", args, err, stdout.String(),
+				want)
 		}
 	}
 }

@@ -261,8 +261,15 @@ which repositories and workflows may use each scale set. One-job VMs already sto
 data.
 
 All scale sets share one worker network and one runner pool. Separate networks or pools per scale set were
-considered and dropped: they would multiply the gateway and SDN setup for little gain over one-job VMs on a network
-that can only reach the internet.
+considered and dropped: they would multiply the gateway and SDN setup.
+
+The gateway controls only traffic that leaves the worker network. Workers running at the same time share one
+layer-2 segment, so a hostile job can connect to services on other workers, answer their DHCP, or answer ARP for
+the gateway's address and intercept their traffic. Isolating workers from each other through the Proxmox firewall is
+planned: per-worker MAC and IP filters and an inbound DROP policy, enforced in the host's bridge, where a job can't
+turn them off. GitHub gets the same guarantees from Azure's network, which has no layer-2 broadcast and filters
+spoofed traffic, and it tells customers whose runners share a network to block all inbound connections. Until then,
+run jobs that must be protected from untrusted code on a separate node.
 
 ## Sources
 

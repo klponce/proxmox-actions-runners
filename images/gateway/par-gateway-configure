@@ -3,8 +3,10 @@
 # through `qm guest exec --pass-stdin`:
 #
 #   WORKER_SUBNET=10.251.0.0/22     the worker network's IPv4 subnet (the default)
-#   BLOCK=192.0.2.0/24 192.0.2.10   IPv4 addresses and CIDRs workers must not reach, besides the private ranges
-#                                   that are always blocked: the LAN, the Proxmox host, and the controller VM
+#   BLOCK=192.0.2.0/24 192.0.2.10   IPv4 addresses and CIDRs workers must not reach, on top of the private,
+#                                   CGNAT, and link-local ranges that are always blocked. The installer passes the
+#                                   LAN, the Proxmox host, and the controller VM here: they are blocked only if
+#                                   they are listed, or fall in an always-blocked range.
 #
 # It saves the settings to /etc/par-gateway/config, then renders net1's address (the subnet's first), dnsmasq's DHCP
 # and DNS config, and the nftables rules, and reloads them. Each run replaces the previous settings: a key that is

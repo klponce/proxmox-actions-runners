@@ -128,9 +128,6 @@ github:
     installationId: 7890123
     privateKeyFile: /etc/proxmox-actions-runners/github-app.pem
 
-metrics:
-  listen: 127.0.0.1:9465  # loopback only; metrics and their HTTPS endpoint are deferred past v0.1
-
 worker:            # controller-wide; omit to use the GitHub-matching defaults (2 cores, 8 GiB, 14 GiB free)
   cores: 2
 
@@ -248,6 +245,9 @@ These are deliberate. The project supports exactly the setup the installer creat
   outside its VM. The repository is public, so you are welcome to fork it for other setups.
 - **One worker network.** Every scale set shares the same worker network and runner pool. Keep jobs with different
   trust levels apart with separate scale sets and GitHub runner groups.
+- **Workers can reach each other.** Workers running at the same time share one network segment, so a hostile job
+  can connect to other workers, answer their DHCP, or impersonate the gateway. Isolating workers through the Proxmox
+  firewall is planned. Until then, run jobs that must be protected from untrusted code on a separate node.
 - **amd64 only**, and workers run **Ubuntu 26.04 only**.
 - **A lean runner image, not GitHub's.** Workers don't have the preinstalled toolset of GitHub-hosted runners, which
   is tens of GB. Workflows install what they need with `setup-*` actions, or you extend the Packer build in

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -52,12 +53,6 @@ func runCheck(args []string, stdout, stderr io.Writer) error {
 	cfg, err := config.Load(*path)
 	if err != nil {
 		return err
-	}
-	// Only check github talks to GitHub as the App; the other checks run before the installer creates it.
-	if target == "github" {
-		if err := cfg.RequireGitHubApp(); err != nil {
-			return err
-		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
 	defer cancel()
@@ -176,11 +171,16 @@ func newProxmoxClient(cfg *config.Config) (*proxmox.Client, error) {
 	})
 }
 
-// newGitHubClient builds the GitHub client from the config.
-func newGitHubClient(cfg *config.Config) (*github.Client, error) {
+// newGitHubClient builds the client that talks to GitHub as the App. It fails if the config doesn't name the App
+// yet: only run and check github need it, and the installer runs the other checks before it creates the App.
+// logger may be nil.
+func newGitHubClient(cfg *config.Config, logger *slog.Logger) (*github.Client, error) {
+	if err := cfg.RequireGitHubApp(); err != nil {
+		return nil, err
+	}
 	key, err := config.ReadSecretFile(cfg.GitHub.App.PrivateKeyFile)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("GitHub App key: %w", err)
 	}
 	return github.New(github.Options{
 		ConfigURL:      cfg.GitHub.ConfigURL,
@@ -188,6 +188,7 @@ func newGitHubClient(cfg *config.Config) (*github.Client, error) {
 		InstallationID: cfg.GitHub.App.InstallationID,
 		PrivateKeyPEM:  key,
 		Version:        buildVersion(),
+		Logger:         logger,
 	})
 }
 
@@ -195,7 +196,7 @@ func newGitHubClient(cfg *config.Config) (*github.Client, error) {
 // It only reads: the scale sets are created when the controller starts.
 func checkGitHub(ctx context.Context, cfg *config.Config, _ string, out io.Writer) error {
 	c := &checker{out: out}
-	client, err := newGitHubClient(cfg)
+	client, err := newGitHubClient(cfg, nil)
 	if err != nil {
 		c.fail("GitHub App: %v", err)
 		return c.err()

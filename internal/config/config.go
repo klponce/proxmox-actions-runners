@@ -24,7 +24,6 @@ const DefaultPath = "/etc/proxmox-actions-runners/config.yaml"
 type Config struct {
 	Proxmox Proxmox `yaml:"proxmox"`
 	GitHub  GitHub  `yaml:"github"`
-	Metrics Metrics `yaml:"metrics"`
 	// Worker is the controller-wide worker hardware. Fields left unset use the GitHub-matching defaults.
 	Worker    Worker     `yaml:"worker"`
 	ScaleSets []ScaleSet `yaml:"scaleSets"`
@@ -102,11 +101,25 @@ type GitHub struct {
 
 // IsRepository reports whether ConfigURL names a repository rather than an organization.
 func (g GitHub) IsRepository() bool {
-	u, err := url.Parse(g.ConfigURL)
-	if err != nil {
-		return false
+	_, repo, err := ParseGitHubURL(g.ConfigURL)
+	return err == nil && repo != ""
+}
+
+// ParseGitHubURL splits https://github.com/<org> or https://github.com/<owner>/<repo>, with or without a trailing
+// slash, into the owner and, for a repository, its name. Anything else is an error: GitHub Enterprise Server and
+// enterprise-level scale sets are out of scope (README, "Limitations").
+func ParseGitHubURL(raw string) (owner, repo string, err error) {
+	u, err := url.Parse(raw)
+	if err == nil && u.Scheme == "https" && u.Host == "github.com" && u.RawQuery == "" && u.Fragment == "" &&
+		u.User == nil {
+		switch parts := strings.Split(strings.Trim(u.Path, "/"), "/"); {
+		case len(parts) == 1 && parts[0] != "":
+			return parts[0], "", nil
+		case len(parts) == 2 && parts[0] != "" && parts[1] != "":
+			return parts[0], parts[1], nil
+		}
 	}
-	return strings.Count(strings.Trim(u.Path, "/"), "/") == 1
+	return "", "", fmt.Errorf("%q must be https://github.com/<org> or https://github.com/<owner>/<repo>", raw)
 }
 
 // GitHubApp holds the GitHub App credentials. The installer writes them once it has created the App; until then
@@ -116,12 +129,6 @@ type GitHubApp struct {
 	InstallationID int64  `yaml:"installationId"`
 	// PrivateKeyFile is the absolute path of the App's PEM private key.
 	PrivateKeyFile string `yaml:"privateKeyFile"`
-}
-
-// Metrics configures the metrics and health endpoint.
-type Metrics struct {
-	// Listen is the address to serve on: loopback only; the metrics endpoint is deferred past v0.1.
-	Listen string `yaml:"listen"`
 }
 
 // Worker is a worker VM's hardware. A zero field means "not set" and is filled from the level above.

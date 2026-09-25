@@ -2,11 +2,9 @@ package config
 
 import (
 	"fmt"
-	"net"
 	"net/url"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"time"
 )
@@ -69,7 +67,6 @@ func (c *Config) validate() error {
 	v := &validator{}
 	c.Proxmox.validate(v)
 	c.GitHub.validate(v)
-	c.Metrics.validate(v)
 	c.Worker.validate(v, "worker")
 	c.validateScaleSets(v)
 	if len(v.problems) > 0 {
@@ -106,12 +103,14 @@ func (p Proxmox) validate(v *validator) {
 
 func (g GitHub) validate(v *validator) {
 	if v.required("github.configUrl", g.ConfigURL) {
-		validateGitHubConfigURL(v, g.ConfigURL)
+		if _, _, err := ParseGitHubURL(g.ConfigURL); err != nil {
+			v.addf("github.configUrl", "%v", err)
+		}
 	}
 	// The App is optional here: the installer checks Proxmox before it creates the App. RequireGitHubApp checks
 	// that it is complete.
 	if g.App.InstallationID < 0 {
-		v.addf("github.app.installationId", "must be positive")
+		v.addf("github.app.installationId", "must not be negative")
 	}
 	if g.App.PrivateKeyFile != "" {
 		v.absPath("github.app.privateKeyFile", g.App.PrivateKeyFile)
@@ -137,35 +136,6 @@ func (c *Config) RequireGitHubApp() error {
 		return fmt.Errorf("the GitHub App isn't set up yet: missing %s", strings.Join(missing, ", "))
 	}
 	return nil
-}
-
-// validateGitHubConfigURL accepts https://github.com/<org> and https://github.com/<owner>/<repo>, the shapes
-// IsRepository tells apart. GitHub Enterprise Server and enterprise-level scale sets are out of scope (README,
-// "Limitations").
-func validateGitHubConfigURL(v *validator, raw string) {
-	u, err := url.Parse(raw)
-	var parts []string
-	if err == nil {
-		parts = strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
-	}
-	if err != nil || u.Scheme != "https" || u.Host != "github.com" || u.RawQuery != "" || u.Fragment != "" ||
-		u.User != nil || len(parts) > 2 || slices.Contains(parts, "") {
-		v.addf("github.configUrl", "%q must be https://github.com/<org> or https://github.com/<owner>/<repo>", raw)
-	}
-}
-
-// validate requires a loopback address: parcon never listens on the LAN, and the metrics endpoint is deferred past
-// v0.1.
-func (m Metrics) validate(v *validator) {
-	const field = "metrics.listen"
-	host, _, err := net.SplitHostPort(m.Listen)
-	if err != nil {
-		v.addf(field, "%q must be host:port", m.Listen)
-		return
-	}
-	if ip := net.ParseIP(host); host != "localhost" && (ip == nil || !ip.IsLoopback()) {
-		v.addf(field, "%q must be a loopback address; the metrics endpoint is deferred past v0.1", m.Listen)
-	}
 }
 
 func (w Worker) validate(v *validator, prefix string) {

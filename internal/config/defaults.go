@@ -20,8 +20,7 @@ const (
 	// DefaultZone is the SDN zone the installer creates for the worker VNet.
 	DefaultZone = "parzone"
 
-	DefaultMetricsListen = "127.0.0.1:9465"
-	DefaultLinkedClone   = true
+	DefaultLinkedClone = true
 
 	// DefaultRunnerGroup is GitHub's default runner group, the only one repository scale sets can use.
 	DefaultRunnerGroup = "default"
@@ -71,9 +70,6 @@ func (c *Config) applyDefaults() {
 		c.Proxmox.LinkedClone = &linked
 	}
 	c.GitHub.ConfigURL = strings.TrimSuffix(c.GitHub.ConfigURL, "/")
-	if c.Metrics.Listen == "" {
-		c.Metrics.Listen = DefaultMetricsListen
-	}
 
 	c.Worker = c.Worker.withDefaults(DefaultWorker())
 	for i := range c.ScaleSets {

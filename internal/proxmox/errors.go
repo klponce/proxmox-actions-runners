@@ -68,22 +68,11 @@ func IsVMIDInUse(err error) bool {
 // IsForbidden reports whether the API refused a request in its permission check (403).
 //
 // For a token whose rights come from a pool's ACL, as the controller's do, Proxmox also answers a request for a VM
-// that no longer exists this way, rather than with IsNotFound: the missing VM isn't in the pool, so the permission
-// check fails first. Only the VM list tells the two apart.
+// that no longer exists this way, rather than with "does not exist": the missing VM isn't in the pool, so the
+// permission check fails first. Only the VM list tells the two apart.
 func IsForbidden(err error) bool {
 	var apiErr *APIError
 	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden
-}
-
-// IsNotFound reports whether the API said a VM or other object doesn't exist. See IsForbidden for why a pool-scoped
-// token never sees this for a VM that is gone.
-func IsNotFound(err error) bool {
-	var apiErr *APIError
-	if !errors.As(err, &apiErr) {
-		return false
-	}
-	return apiErr.StatusCode == http.StatusNotFound ||
-		(apiErr.StatusCode == http.StatusInternalServerError && strings.Contains(apiErr.Message, "does not exist"))
 }
 
 // IsAgentNotReady reports whether a guest-agent call failed because the VM or its agent isn't running yet, which
