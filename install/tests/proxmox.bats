@@ -242,6 +242,19 @@ JSON
 	run ! grep -qx 'qm destroy 10000 --purge 1' "$CALLS"
 	grep -qx 'qm destroy 101 --purge 1' "$CALLS"
 	grep -qx 'qm destroy 10099 --purge 1' "$CALLS"
+	# It waits as long as the controller's stop can take.
+	grep -qx "qm guest exec 101 --timeout $CONTROLLER_STOP_TIMEOUT -- systemctl disable --now parcon.service" "$CALLS"
+}
+
+@test "the installer waits longer than parcon.service may take to stop" {
+	local stop
+	stop=$(sed -n 's/^TimeoutStopSec=//p' "$BATS_TEST_DIRNAME/../../deploy/parcon.service")
+	case $stop in
+	*min) stop=$((${stop%min} * 60)) ;;
+	*s) stop=${stop%s} ;;
+	esac
+	[[ $stop =~ ^[0-9]+$ ]]
+	((CONTROLLER_STOP_TIMEOUT > stop))
 }
 
 @test "destroy_vm counts a VM that is already gone as destroyed" {

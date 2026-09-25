@@ -51,6 +51,9 @@ readonly RESERVED_VMIDS=4
 # Disk sizes in GiB: the images' disks and the controller VM's, which the installer grows.
 readonly TEMPLATE_GIB=10 GATEWAY_GIB=8 CONTROLLER_GIB=20 DOWNLOAD_GIB=4
 readonly WORKER_MEMORY_MIB=8192
+# How long to wait, in seconds, for parcon.service to stop or restart: longer than its TimeoutStopSec in
+# deploy/parcon.service, since the controller finishes retirements in flight first. A test keeps the two in step.
+readonly CONTROLLER_STOP_TIMEOUT=420
 
 # Settings: from the answers file, prompts, or defaults. `settings_help` describes them.
 readonly SETTINGS=(PAR_GITHUB_URL PAR_GITHUB_APP PAR_GITHUB_APP_CLIENT_ID PAR_SCALE_SET PAR_LABELS PAR_RUNNER_GROUP
@@ -1274,7 +1277,8 @@ upgrade_controller() {
 	sum=$(asset_sha256 "$name")
 	[[ -n $sum ]] || die "no checksum for $name in this install.sh"
 	say "    the controller VM downloads $name"
-	guest_exec "$CONTROLLER_VMID" 300 -- sh -c 'set -e
+	# Up to 5 minutes for the download, then the restart, which waits for the old controller to stop.
+	guest_exec "$CONTROLLER_VMID" $((300 + CONTROLLER_STOP_TIMEOUT)) -- sh -c 'set -e
 		curl -fsSL --retry 3 -o /usr/local/bin/parcon.new "$1"
 		echo "$2  /usr/local/bin/parcon.new" | sha256sum -c --quiet -
 		chmod 0755 /usr/local/bin/parcon.new
@@ -1369,7 +1373,7 @@ do_uninstall() {
 
 	if [[ -n $controller ]] && qm status "$controller" | grep -q running; then
 		step "Stop the controller"
-		guest_exec "$controller" 60 -- systemctl disable --now parcon.service >/dev/null ||
+		guest_exec "$controller" "$CONTROLLER_STOP_TIMEOUT" -- systemctl disable --now parcon.service >/dev/null ||
 			warn "stopping parcon.service failed"
 		as_parcon "$controller" 120 parcon github scaleset delete ||
 			warn "deleting the scale set in GitHub failed; remove it in the organization's or repository's" \
