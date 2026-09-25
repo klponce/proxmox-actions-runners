@@ -145,14 +145,16 @@ include the agent avoids both changes to the host.
 | Outbound HTTPS | `github.com`, `api.github.com`, and the release asset hosts (`objects.githubusercontent.com`, `release-assets.githubusercontent.com`) | hard |
 | Target storage | exists, active, and accepts `images` content | hard |
 | Linked-clone support | storage type is `lvmthin`, `zfspool`, `rbd`, or file-based with qcow2. Otherwise `linkedClone: false` | warn |
-| Free space | controller and gateway disks + template + `maxRunners` × (`freeDiskGiB`, or template size + `freeDiskGiB` if not linked) + image download | hard |
+| Free space | controller and gateway disks + template + `maxRunners` × (`freeDiskGiB`, or template size + `freeDiskGiB` if not linked) | hard |
+| Download space | 6 GiB free in `/var/tmp`, on the host's root filesystem, where the images are downloaded before they are imported | hard |
 | Free memory and CPU | host RAM and threads against `maxRunners` × worker size plus existing VMs | warn |
 | LAN bridge | the bridge for the controller and gateway VMs exists. VLAN tag valid if set | hard |
+| API certificate | how the controller will verify it: the node's CA, the system CAs, or a pinned fingerprint for a certificate from a CA the host doesn't trust | warn if pinned |
 | SDN available | `ifupdown2` installed and `/etc/network/interfaces` sources `/etc/network/interfaces.d/*`, so applying SDN works | hard |
 | Worker subnet free | the worker subnet doesn't overlap any route or address on the host, or the LAN subnet given for the gateway | hard |
 | SDN names free | zone `parzone` and VNet `parnet` are unused, or already ours (upgrade) | hard |
 | No name or ID clash | pools, user, role, and VMIDs are unused, or already tagged as ours (upgrade) | hard |
-| Pending SDN changes | `pvesh get /cluster/sdn` shows no pending changes from someone else, since applying ours would apply theirs too | warn |
+| Pending SDN changes | no SDN zone or VNet other than ours has pending changes, since applying ours would apply theirs too. Uninstall doesn't apply while any exist, and says so | hard |
 
 ## Controller VM contract
 
@@ -198,18 +200,24 @@ The controller image and the installer agree on this layout:
 8. **Create the gateway VM** in `par-system` from `par-gateway-<ver>.qcow2`: 1 vCPU, 1 GiB RAM, an 8 GiB disk (the
    image's size), `net0` on the LAN bridge, and `net1` on `parnet`. Use the built-in cloud-init drive for hostname
    and the LAN address only, tag it `par-managed,par-gateway`, and start it. Once the guest agent responds, pipe
-   the worker subnet and the ranges to block (the LAN, the host, and the controller VM) into
-   `par-gateway-configure` through `qm guest exec --pass-stdin` (see *Gateway and controller images*), then check
-   that it serves DHCP on `parnet` and reaches the internet.
+   the worker subnet and the ranges to block (the LAN bridge's networks, every address the host has on any
+   interface, and the controller VM) into `par-gateway-configure` through `qm guest exec --pass-stdin` (see
+   *Gateway and controller images*), then check that it serves DHCP on `parnet` and reaches the internet.
 9. **Create the controller VM** in `par-system` from `parcon-<ver>.qcow2`: 2 vCPU, 2 GiB RAM, the disk grown to
    20 GiB. Use Proxmox's built-in cloud-init drive for hostname and network only (no user data, no snippets), tag it
    `par-managed,par-controller`, and start it.
 10. **Configure the controller** through the guest agent once it responds. Secrets go through
     `qm guest exec --pass-stdin`, so they never appear on a command line or on the host's disk:
-    - `/etc/proxmox-actions-runners/config.yaml` with the settings and the Proxmox host's pinned TLS fingerprint,
-      but no `github.app` yet (see *Controller VM contract*)
+    - `/etc/proxmox-actions-runners/config.yaml` with the settings, but no `github.app` yet (see *Controller VM
+      contract*)
     - the Proxmox token in `/etc/proxmox-actions-runners/pve-token`
-    Both files are owned by `parcon` with mode `0600`. The installer then runs `parcon check proxmox` in the VM as
+    - with Proxmox's own certificate, a copy of the node's CA (`/etc/pve/pve-root-ca.pem`) in
+      `/etc/proxmox-actions-runners/pve-ca.pem`
+    The files are owned by `parcon` with mode `0600`. The controller connects to the API by IP and verifies its
+    certificate against a DNS name the certificate lists (`tlsServerName`), so renewals don't break it. It verifies
+    Proxmox's own certificate against the node's CA (`caCertFile`), and a custom or ACME certificate the host's
+    system CAs trust against the controller's system CAs. Only a certificate from a CA the host doesn't trust is
+    pinned by fingerprint (`tlsFingerprint`), which preflight warns about: its renewal needs a config edit. The installer then runs `parcon check proxmox` in the VM as
     `parcon`. It confirms the Proxmox VE version, that the token has every privilege it needs on the pool, storage,
     and VNet, and that the storage accepts VM disks.
 11. **Create the GitHub App** with the manifest flow described under *GitHub App setup*. The code the user pastes is
@@ -255,7 +263,7 @@ BLOCK=192.0.2.0/24 192.0.2.10 192.0.2.11
 | Key | Default | Meaning |
 | --- | ------- | ------- |
 | `WORKER_SUBNET` | `10.251.0.0/22` | The worker network's IPv4 subnet, a `/8` to a `/29` |
-| `BLOCK` | empty | Space-separated IPv4 addresses and CIDRs workers must not reach: the LAN, the Proxmox host, and the controller VM |
+| `BLOCK` | empty | Space-separated IPv4 addresses and CIDRs workers must not reach: the LAN, every address of the Proxmox host, and the controller VM |
 
 The command saves the settings to `/etc/par-gateway/config`, renders the config below from them, and reloads
 dnsmasq and nftables. Each run replaces the previous settings, so a key that is left out gets its default, and a

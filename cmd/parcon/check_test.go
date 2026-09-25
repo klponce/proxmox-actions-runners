@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -105,6 +107,37 @@ func healthyResponses() map[string]any {
 			{"type": "qemu", "vmid": 10000, "node": "pve1", "pool": "par-runners", "template": 1},
 			{"type": "qemu", "vmid": 100, "node": "pve1", "pool": "other"},
 		},
+	}
+}
+
+// The installer's default: verify the API against the node's CA, by a name the certificate lists, while the URL uses
+// an IP address. The httptest certificate is its own CA and lists example.com.
+func TestCheckProxmoxTrustsCA(t *testing.T) {
+	srv := fakeProxmox(t, healthyResponses())
+	path := writeCheckConfig(t, srv, 0o600)
+	ca := filepath.Join(filepath.Dir(path), "pve-ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		serverName string
+		wantOK     bool
+	}{{"example.com", true}, {"pve.example.net", false}} {
+		cfg := regexp.MustCompile(`(?m)^  tlsFingerprint: .*$`).ReplaceAllString(string(pinned),
+			"  caCertFile: "+ca+"\n  tlsServerName: "+tt.serverName)
+		if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var stdout, stderr bytes.Buffer
+		err = run([]string{"check", "proxmox", "-config", path}, &stdout, &stderr)
+		if (err == nil) != tt.wantOK || strings.Contains(stdout.String(), "ok    Proxmox VE 9.0.3") != tt.wantOK {
+			t.Errorf("tlsServerName %s: error = %v, want ok %v\n%s", tt.serverName, err, tt.wantOK, stdout.String())
+		}
 	}
 }
 

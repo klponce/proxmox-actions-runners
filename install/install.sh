@@ -28,6 +28,11 @@ readonly TAG_BUILD=par-build RELEASE_TAG_PREFIX=par-release-
 # The controller VM (docs/install.md, "Controller VM contract").
 readonly ETC=/etc/proxmox-actions-runners
 readonly KEY_FILE=$ETC/github-app.pem
+# A copy of the node's CA, which the controller verifies the API's certificate against.
+readonly CA_FILE=$ETC/pve-ca.pem
+
+# Where Proxmox keeps the node's certificates. Tests point it elsewhere.
+PVE_DIR=/etc/pve
 
 # The token's role: exactly what internal/proxmox/access.go requires, on the runner pool, the storage, and the VNet.
 # A Go test keeps this list in sync with it.
@@ -44,10 +49,20 @@ readonly PRIVILEGES=(
 # ReservedVMIDs in internal/config: the IDs at the end of the range that hold templates and smoke-test clones.
 readonly RESERVED_VMIDS=4
 # Disk sizes in GiB: the images' disks and the controller VM's, which the installer grows.
-readonly TEMPLATE_GIB=10 GATEWAY_GIB=8 CONTROLLER_GIB=20 DOWNLOAD_GIB=4
+readonly TEMPLATE_GIB=10 GATEWAY_GIB=8 CONTROLLER_GIB=20
+# The images are downloaded here, on the host's root filesystem, before they are imported: about 4 GiB for the three,
+# with room to grow.
+readonly DOWNLOAD_DIR=/var/tmp DOWNLOAD_GIB=6
 readonly WORKER_MEMORY_MIB=8192
+# How long to wait, in seconds, for parcon.service to stop or restart: longer than its TimeoutStopSec in
+# deploy/parcon.service, since the controller finishes retirements in flight first. A test keeps the two in step.
+readonly CONTROLLER_STOP_TIMEOUT=420
 
 # Settings: from the answers file, prompts, or defaults. `settings_help` describes them.
+# Scale set names, as parcon's config accepts them (scaleSetNamePattern in internal/config, kept in step by a Go test):
+# they become Proxmox tags and runs-on labels.
+readonly SCALE_SET_PATTERN='^[a-z0-9][a-z0-9._-]{0,62}$'
+
 readonly SETTINGS=(PAR_GITHUB_URL PAR_GITHUB_APP PAR_GITHUB_APP_CLIENT_ID PAR_SCALE_SET PAR_LABELS PAR_RUNNER_GROUP
 	PAR_MIN_RUNNERS PAR_MAX_RUNNERS PAR_STORAGE PAR_BRIDGE PAR_VLAN PAR_PVE_ADDRESS PAR_GATEWAY_IP PAR_CONTROLLER_IP
 	PAR_LAN_GATEWAY PAR_WORKER_SUBNET PAR_VMID_START PAR_VMID_END)
@@ -121,7 +136,7 @@ settings (answers file keys):
   PAR_GITHUB_URL            organization or repository, https://github.com/<org> or https://github.com/<owner>/<repo>
   PAR_GITHUB_APP            manifest (create a new App in the browser, the default) or manual (use an existing App)
   PAR_GITHUB_APP_CLIENT_ID  the existing App's Client ID, for manual
-  PAR_SCALE_SET             scale set name, used in runs-on (default proxmox-ubuntu-26.04)
+  PAR_SCALE_SET             scale set name in lowercase, used in runs-on (default proxmox-ubuntu-26.04)
   PAR_LABELS                comma-separated runs-on labels (default: the scale set name)
   PAR_RUNNER_GROUP          GitHub runner group (default default; repositories must use default)
   PAR_MIN_RUNNERS           idle workers to keep booted (default 0)
@@ -233,7 +248,8 @@ validate_settings() {
 		errors+=("PAR_GITHUB_APP must be manifest or manual")
 	[[ $PAR_GITHUB_APP != manual || $PAR_GITHUB_APP_CLIENT_ID =~ ^[A-Za-z0-9._-]+$ ]] ||
 		errors+=("PAR_GITHUB_APP_CLIENT_ID must be the App's Client ID")
-	[[ $PAR_SCALE_SET =~ ^[A-Za-z0-9._-]+$ ]] || errors+=("PAR_SCALE_SET may contain only letters, digits, . _ -")
+	[[ $PAR_SCALE_SET =~ $SCALE_SET_PATTERN ]] ||
+		errors+=("PAR_SCALE_SET must be 1-63 lowercase letters, digits, . _ -, starting with a letter or digit")
 	[[ $PAR_LABELS =~ ^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$ ]] ||
 		errors+=("PAR_LABELS must be comma-separated names of letters, digits, . _ -")
 	[[ $PAR_RUNNER_GROUP =~ ^[A-Za-z0-9._\ -]+$ ]] || errors+=("PAR_RUNNER_GROUP has invalid characters")
@@ -319,6 +335,9 @@ node_name() { pvesh get /nodes --output-format json | json 'print $d->[0]{node}'
 # bridge_cidrs prints the host's IPv4 addresses with prefixes on the LAN bridge.
 bridge_cidrs() { ip -4 -o addr show dev "$PAR_BRIDGE" 2>/dev/null | awk '{print $4}'; }
 
+# host_cidrs prints the host's IPv4 addresses with prefixes on every interface.
+host_cidrs() { ip -4 -o addr show 2>/dev/null | awk '{print $4}'; }
+
 pve_address() {
 	if [[ -n $PAR_PVE_ADDRESS ]]; then
 		echo "$PAR_PVE_ADDRESS"
@@ -327,11 +346,55 @@ pve_address() {
 	fi
 }
 
-# tls_fingerprint prints the SHA-256 fingerprint of the certificate the API serves, which the controller pins.
-tls_fingerprint() {
-	local cert=/etc/pve/local/pve-ssl.pem
-	[[ -e /etc/pve/local/pveproxy-ssl.pem ]] && cert=/etc/pve/local/pveproxy-ssl.pem
-	openssl x509 -noout -fingerprint -sha256 -in "$cert" | cut -d= -f2
+# served_cert prints the certificate file the API serves: a custom or ACME certificate if one is installed, otherwise
+# the node's own, which the node's CA signs.
+served_cert() {
+	if [[ -e $PVE_DIR/local/pveproxy-ssl.pem ]]; then
+		echo "$PVE_DIR/local/pveproxy-ssl.pem"
+	else
+		echo "$PVE_DIR/local/pve-ssl.pem"
+	fi
+}
+
+# tls_mode prints how the controller verifies the API's certificate. Each way keeps working when the certificate is
+# renewed, except pin:
+#   ca      the node's own certificate, against the node's CA (pve-root-ca.pem), which renewals keep
+#   system  a custom or ACME certificate that the system CAs trust
+#   pin     a certificate from a CA the system doesn't trust: its fingerprint is pinned
+tls_mode() {
+	local cert
+	cert=$(served_cert)
+	if [[ $cert == */pve-ssl.pem ]]; then
+		echo ca
+	elif openssl verify -untrusted "$cert" "$cert" >/dev/null 2>&1; then
+		echo system
+	else
+		echo pin
+	fi
+}
+
+# tls_server_name prints a DNS name the served certificate is issued for, other than localhost. The controller
+# connects by IP address and checks the certificate against this name.
+tls_server_name() {
+	openssl x509 -noout -ext subjectAltName -in "$(served_cert)" 2>/dev/null | tr ',' '\n' |
+		sed -n 's/^[[:space:]]*DNS://p' | grep -vx localhost | head -n 1 || true
+}
+
+# tls_fingerprint prints the SHA-256 fingerprint of the served certificate, for tls_mode pin.
+tls_fingerprint() { openssl x509 -noout -fingerprint -sha256 -in "$(served_cert)" | cut -d= -f2; }
+
+# tls_config prints the proxmox: lines of the controller config that say how to verify the API.
+tls_config() {
+	local name
+	case $(tls_mode) in
+	ca) printf '  caCertFile: %s\n' "$CA_FILE" ;;
+	pin)
+		printf '  tlsFingerprint: "%s"\n' "$(tls_fingerprint)"
+		return
+		;;
+	esac
+	name=$(tls_server_name)
+	[[ -z $name ]] || printf '  tlsServerName: %s\n' "$name"
 }
 
 # vms_with_tag prints the VMIDs in a pool that carry a tag, one per line.
@@ -524,9 +587,16 @@ check_free_space() {
 	local avail need per_worker=$((14))
 	avail=$(storage_json | json 'print int(($d->{avail} // 0) / 2**30)')
 	linked_clones_supported >/dev/null || per_worker=$((TEMPLATE_GIB + 14))
-	need=$((GATEWAY_GIB + CONTROLLER_GIB + TEMPLATE_GIB + PAR_MAX_RUNNERS * per_worker + DOWNLOAD_GIB))
+	need=$((GATEWAY_GIB + CONTROLLER_GIB + TEMPLATE_GIB + PAR_MAX_RUNNERS * per_worker))
 	echo "$avail GiB free, about $need GiB needed"
 	((avail >= need))
+}
+
+check_download_space() {
+	local avail
+	avail=$(df -Pk "$DOWNLOAD_DIR" | awk 'NR == 2 {print int($4 / 1048576)}')
+	echo "$avail GiB free, $DOWNLOAD_GIB GiB needed"
+	((avail >= DOWNLOAD_GIB))
 }
 
 check_memory() {
@@ -582,6 +652,19 @@ installed_controller() {
 	vms_with_tag "$SYSTEM_POOL" "$TAG_CONTROLLER" | head -n 1
 }
 
+# check_tls reports how the controller will verify the API's certificate. Only a pinned certificate needs attention.
+check_tls() {
+	case $(tls_mode) in
+	ca) echo "the node's own certificate, verified against the node's CA" ;;
+	system) echo "a certificate the system CAs trust, verified as $(tls_server_name)" ;;
+	pin)
+		echo "a certificate from a CA the host doesn't trust: the controller pins it, and after it is renewed the" \
+			"controller's config needs its new fingerprint"
+		return 1
+		;;
+	esac
+}
+
 check_names() {
 	ours && { echo "found an earlier install; continuing it" && return 0; }
 	local taken=()
@@ -607,11 +690,24 @@ check_vmids() {
 		{ echo "VMIDs ${clash[*]} in $PAR_VMID_START-$PAR_VMID_END belong to other VMs; choose another range" && return 1; }
 }
 
+# pending_sdn prints the SDN zones and VNets, other than ours, with changes that aren't applied yet. Applying the SDN
+# config (pvesh set /cluster/sdn) applies all of them, so the installer never applies while any exist.
+pending_sdn() {
+	local kind
+	for kind in zones vnets; do
+		pvesh get "/cluster/sdn/$kind" --pending 1 --output-format json 2>/dev/null | json '
+			my ($key, @ours) = @ARGV;
+			my %ours = map { $_ => 1 } @ours;
+			print "$_->{$key}\n" for grep { $_->{state} && !$ours{$_->{$key}} } @$d' "${kind%s}" "$ZONE" "$VNET" ||
+			true
+	done
+}
+
 check_pending_sdn() {
 	local pending
-	pending=$(pvesh get /cluster/sdn/zones --pending 1 --output-format json 2>/dev/null |
-		json 'print join(" ", map { $_->{zone} } grep { $_->{state} } @$d)') || true
-	[[ -z $pending ]] || { echo "pending SDN changes to $pending would be applied too" && return 1; }
+	pending=$(pending_sdn | tr '\n' ' ')
+	[[ -z $pending ]] ||
+		{ echo "pending SDN changes to ${pending% } would be applied too; apply or revert them first" && return 1; }
 }
 
 preflight() {
@@ -629,13 +725,15 @@ preflight() {
 	check hard "storage $PAR_STORAGE" check_storage
 	check warn "linked clones on $PAR_STORAGE" check_linked_clones
 	check hard "free space on $PAR_STORAGE" check_free_space
+	check hard "free space for downloads in $DOWNLOAD_DIR" check_download_space
 	check warn "memory" check_memory
 	check hard "LAN bridge $PAR_BRIDGE" check_bridge
+	check warn "API certificate" check_tls
 	check hard "SDN available" check_sdn
 	check hard "worker subnet $PAR_WORKER_SUBNET free" check_worker_subnet
 	check hard "names free" check_names
 	check hard "VMIDs $PAR_VMID_START-$PAR_VMID_END free" check_vmids
-	check warn "no pending SDN changes" check_pending_sdn
+	check hard "no pending SDN changes" check_pending_sdn
 	((PREFLIGHT_FAILED == 0)) || die "preflight checks failed"
 }
 
@@ -667,7 +765,7 @@ download() {
 }
 
 make_work_dir() {
-	WORK_DIR=$(mktemp -d /var/tmp/par-install.XXXXXX)
+	WORK_DIR=$(mktemp -d "$DOWNLOAD_DIR/par-install.XXXXXX")
 	trap 'rm -rf "$WORK_DIR"' EXIT
 }
 
@@ -791,25 +889,41 @@ import_template() {
 # release_template prints the VMID of this release's runner template, if it was imported.
 release_template() { vms_with_tag "$RUNNER_POOL" "$(release_tag)" | head -n 1; }
 
-# create_system_vm creates the gateway or controller VM from its image: create_system_vm VMID NAME IMAGE CORES
-# MEMORY_MIB DISK_GIB TAG ADDRESS [NET1]
+# create_system_vm creates the gateway or controller VM from its image and starts it: create_system_vm VMID NAME
+# IMAGE CORES MEMORY_MIB DISK_GIB TAG NET0 IPCONFIG0 [NET1]
 create_system_vm() {
-	local vmid=$1 name=$2 image=$3 cores=$4 memory=$5 disk=$6 tag=$7 address=$8 net1=${9:-}
+	local vmid=$1 name=$2 image=$3 cores=$4 memory=$5 disk=$6 tag=$7 net0=$8 ipconfig0=$9 net1=${10:-}
 	local args=(--name "$name" --pool "$SYSTEM_POOL" --memory "$memory" --cores "$cores" --cpu host --ostype l26
-		--scsihw virtio-scsi-single --net0 "$(net_config)" --agent enabled=1 --onboot 1 --serial0 socket
+		--scsihw virtio-scsi-single --net0 "$net0" --agent enabled=1 --onboot 1 --serial0 socket
 		--vga serial0 --tags "$TAG_MANAGED;$tag")
 	[[ -z $net1 ]] || args+=(--net1 "$net1")
 	change qm create "$vmid" "${args[@]}"
 	change qm set "$vmid" --scsi0 "$PAR_STORAGE:0,import-from=$WORK_DIR/$image"
-	change qm set "$vmid" --ide2 "$PAR_STORAGE:cloudinit" --boot order=scsi0 --ipconfig0 "$(ip_config "$address")" \
-		--ciupgrade 0
+	change qm set "$vmid" --ide2 "$PAR_STORAGE:cloudinit" --boot order=scsi0 --ipconfig0 "$ipconfig0" --ciupgrade 0
 	if ((disk > GATEWAY_GIB)); then
 		change qm disk resize "$vmid" scsi0 "${disk}G"
 	fi
 	change qm start "$vmid"
 }
 
-next_vmid() { pvesh get /cluster/nextid; }
+# system_vmid prints a free VMID for the gateway or controller VM outside the workers' and templates' range: nextid,
+# or the first free ID above the range when nextid falls inside it. A system VM in the range would fail check_vmids on
+# every later run.
+system_vmid() {
+	local id used
+	id=$(pvesh get /cluster/nextid)
+	if ((id < PAR_VMID_START || id > PAR_VMID_END)); then
+		echo "$id"
+		return 0
+	fi
+	used=$(used_vmids)
+	for ((id = PAR_VMID_END + 1; ; id++)); do
+		grep -qx "$id" <<<"$used" || {
+			echo "$id"
+			return 0
+		}
+	done
+}
 
 # system_vm prints the VMID of the gateway or controller VM, if it exists. One that a failed run left without its
 # disk is destroyed, and one that is stopped is started.
@@ -846,26 +960,36 @@ vm_ipv4() {
 	return 1
 }
 
+# create_gateway_vm creates the gateway VM, the one place its hardware is defined: create_gateway_vm VMID NET0
+# IPCONFIG0 NET1. replace_gateway passes the old VM's NICs, MACs included, and address.
+create_gateway_vm() {
+	create_system_vm "$1" par-gateway "par-gateway-$PAR_VERSION.qcow2" 1 1024 "$GATEWAY_GIB" \
+		"$TAG_GATEWAY;$(release_tag)" "$2" "$3" "$4"
+}
+
 create_gateway() {
 	step "Gateway VM"
 	local vmid
 	vmid=$(system_vm "$TAG_GATEWAY")
 	if [[ -z $vmid ]]; then
-		vmid=$(next_vmid)
-		create_system_vm "$vmid" par-gateway "par-gateway-$PAR_VERSION.qcow2" 1 1024 "$GATEWAY_GIB" \
-			"$TAG_GATEWAY;$(release_tag)" "$PAR_GATEWAY_IP" "virtio,bridge=$VNET"
+		vmid=$(system_vmid)
+		create_gateway_vm "$vmid" "$(net_config)" "$(ip_config "$PAR_GATEWAY_IP")" "virtio,bridge=$VNET"
 	fi
 	GATEWAY_VMID=$vmid
 	wait_agent "$vmid"
 	configure_gateway "$vmid"
 }
 
-# gateway_block prints what workers must not reach: the host's networks on the LAN bridge, the API address, and the
-# controller VM once it has one. RFC 1918, CGNAT, and link-local ranges are always blocked by the gateway itself.
+# gateway_block prints what workers must not reach: the host's networks on the LAN bridge, every address the host
+# has on any interface (the API listens on all of them), and the controller VM once it has one. RFC 1918, CGNAT, and
+# link-local ranges are always blocked by the gateway itself.
 gateway_block() {
 	local cidr block=()
 	for cidr in $(bridge_cidrs); do
 		block+=("$(network_of "$cidr")")
+	done
+	for cidr in $(host_cidrs); do
+		[[ $cidr == 127.* ]] || block+=("${cidr%/*}")
 	done
 	block+=("$(pve_address)")
 	[[ -z ${CONTROLLER_ADDRESS:-} ]] || block+=("$CONTROLLER_ADDRESS")
@@ -876,7 +1000,6 @@ gateway_block() {
 configure_gateway() {
 	local vmid=$1
 	say "    configuring gateway $vmid: worker subnet $PAR_WORKER_SUBNET, blocking $(gateway_block)"
-	((DRY_RUN)) && return 0
 	printf 'WORKER_SUBNET=%s\nBLOCK=%s\n' "$PAR_WORKER_SUBNET" "$(gateway_block)" |
 		guest_exec "$vmid" 60 --stdin -- /usr/local/sbin/par-gateway-configure >/dev/null ||
 		die "configuring the gateway failed"
@@ -889,9 +1012,9 @@ create_controller() {
 	local vmid
 	vmid=$(system_vm "$TAG_CONTROLLER")
 	if [[ -z $vmid ]]; then
-		vmid=$(next_vmid)
+		vmid=$(system_vmid)
 		create_system_vm "$vmid" par-controller "parcon-$PAR_VERSION.qcow2" 2 2048 "$CONTROLLER_GIB" \
-			"$TAG_CONTROLLER" "$PAR_CONTROLLER_IP"
+			"$TAG_CONTROLLER" "$(net_config)" "$(ip_config "$PAR_CONTROLLER_IP")"
 	fi
 	CONTROLLER_VMID=$vmid
 	wait_agent "$vmid"
@@ -902,16 +1025,17 @@ create_controller() {
 }
 
 # render_config prints the controller's config.yaml. With a Client ID, it names the GitHub App; the installation ID
-# follows once the App is installed.
+# follows once the App is installed. The scale set name and labels are quoted, so a label such as null or true stays
+# a string; validate_settings keeps them to characters that are safe in double quotes.
 render_config() {
-	local client_id=${1:-} installation_id=${2:-} labels=${PAR_LABELS//,/, }
+	local client_id=${1:-} installation_id=${2:-} labels="\"${PAR_LABELS//,/\", \"}\""
 	cat <<EOF
 # Written by install.sh. Rewritten on install; upgrade keeps it.
 proxmox:
   url: https://$(pve_address):8006/api2/json
   tokenId: $PVE_USER!$TOKEN
   tokenSecretFile: $ETC/pve-token
-  tlsFingerprint: "$(tls_fingerprint)"
+$(tls_config)
   node: $(node_name)
   pool: $RUNNER_POOL
   storage: $PAR_STORAGE
@@ -931,7 +1055,7 @@ EOF
 	cat <<EOF
 
 scaleSets:
-  - name: $PAR_SCALE_SET
+  - name: "$PAR_SCALE_SET"
     labels: [$labels]
     runnerGroup: "$PAR_RUNNER_GROUP"
     minRunners: $PAR_MIN_RUNNERS
@@ -942,9 +1066,11 @@ EOF
 # configure_controller writes the config without the App and the API token, then checks Proxmox from the VM.
 configure_controller() {
 	step "Configure the controller"
-	((DRY_RUN)) && return 0
 	local vmid=$CONTROLLER_VMID client_id installation_id
 	read -r client_id installation_id <<<"$(read_existing_app)" || true
+	if [[ $(tls_mode) == ca ]]; then
+		write_controller_file "$vmid" "$CA_FILE" <"$PVE_DIR/pve-root-ca.pem" || die "writing the node's CA failed"
+	fi
 	render_config "$client_id" "$installation_id" | write_controller_file "$vmid" "$ETC/config.yaml" ||
 		die "writing the config failed"
 
@@ -997,7 +1123,6 @@ read_existing_app() {
 # another.
 setup_app() {
 	step "GitHub App"
-	((DRY_RUN)) && return 0
 	local vmid=$CONTROLLER_VMID client_id="" installation_id=""
 	read -r client_id installation_id <<<"$(read_existing_app)" || true
 	if [[ -z $client_id ]]; then
@@ -1068,7 +1193,6 @@ import_app_key() {
 
 start_controller() {
 	step "Start the controller"
-	((DRY_RUN)) && return 0
 	SERVICE_STARTED=$(date +%s)
 	guest_exec "$CONTROLLER_VMID" 60 -- systemctl enable --now parcon.service >/dev/null ||
 		die "starting parcon.service failed"
@@ -1078,7 +1202,6 @@ start_controller() {
 # scale set session.
 smoke_test() {
 	step "Smoke test"
-	((DRY_RUN)) && return 0
 	local vmid template
 	for vmid in $(vms_with_tag "$RUNNER_POOL" "$TAG_BUILD"); do
 		change qm stop "$vmid" --skiplock 1 >/dev/null 2>&1 || true
@@ -1189,12 +1312,7 @@ replace_gateway() {
 	settings=$(guest_exec "$vmid" 30 -- cat /etc/par-gateway/config) || die "can't read the gateway's settings"
 	change qm stop "$vmid"
 	change qm destroy "$vmid" --purge 1
-	change qm create "$vmid" --name par-gateway --pool "$SYSTEM_POOL" --memory 1024 --cores 1 --cpu host --ostype l26 \
-		--scsihw virtio-scsi-single --net0 "$net0" --net1 "$net1" --agent enabled=1 --onboot 1 --serial0 socket \
-		--vga serial0 --tags "$TAG_MANAGED;$TAG_GATEWAY;$(release_tag)"
-	change qm set "$vmid" --scsi0 "$PAR_STORAGE:0,import-from=$WORK_DIR/par-gateway-$PAR_VERSION.qcow2"
-	change qm set "$vmid" --ide2 "$PAR_STORAGE:cloudinit" --boot order=scsi0 --ipconfig0 "$ipconfig0" --ciupgrade 0
-	change qm start "$vmid"
+	create_gateway_vm "$vmid" "$net0" "$ipconfig0" "$net1"
 	wait_agent "$vmid"
 	guest_exec "$vmid" 60 --stdin -- /usr/local/sbin/par-gateway-configure <<<"$settings" >/dev/null ||
 		die "configuring the new gateway failed"
@@ -1208,7 +1326,8 @@ upgrade_controller() {
 	sum=$(asset_sha256 "$name")
 	[[ -n $sum ]] || die "no checksum for $name in this install.sh"
 	say "    the controller VM downloads $name"
-	guest_exec "$CONTROLLER_VMID" 300 -- sh -c 'set -e
+	# Up to 5 minutes for the download, then the restart, which waits for the old controller to stop.
+	guest_exec "$CONTROLLER_VMID" $((300 + CONTROLLER_STOP_TIMEOUT)) -- sh -c 'set -e
 		curl -fsSL --retry 3 -o /usr/local/bin/parcon.new "$1"
 		echo "$2  /usr/local/bin/parcon.new" | sha256sum -c --quiet -
 		chmod 0755 /usr/local/bin/parcon.new
@@ -1268,6 +1387,16 @@ managed_vms() {
 	' "$SYSTEM_POOL" "$RUNNER_POOL"
 }
 
+# destroy_vm stops and destroys a VM. One that is already gone counts as destroyed.
+destroy_vm() {
+	local vmid=$1
+	if qm status "$vmid" 2>/dev/null | grep -q running; then
+		change qm stop "$vmid" --skiplock 1 || true
+	fi
+	change qm destroy "$vmid" --purge 1 && return 0
+	! qm status "$vmid" >/dev/null 2>&1 || die "destroying VM $vmid failed"
+}
+
 # user_acls prints "path type ugid role" for every ACL of our user and its tokens.
 user_acls() {
 	pveum acl list --output-format json | json '
@@ -1285,7 +1414,7 @@ do_uninstall() {
 	step "Plan"
 	say "Remove proxmox-actions-runners from node $(node_name):"
 	[[ -z $controller ]] || say "  stop the controller and delete its scale sets in GitHub (the App itself stays)"
-	say "  destroy VMs: ${vms:-none}"
+	say "  destroy the VMs tagged $TAG_MANAGED in $SYSTEM_POOL and $RUNNER_POOL, now: ${vms:-none}"
 	say "  remove pools $SYSTEM_POOL and $RUNNER_POOL, role $ROLE, user $PVE_USER with its token and ACLs"
 	say "  remove SDN VNet $VNET and zone $ZONE, then apply the SDN config"
 	((DRY_RUN)) && return 0
@@ -1293,7 +1422,7 @@ do_uninstall() {
 
 	if [[ -n $controller ]] && qm status "$controller" | grep -q running; then
 		step "Stop the controller"
-		guest_exec "$controller" 60 -- systemctl disable --now parcon.service >/dev/null ||
+		guest_exec "$controller" "$CONTROLLER_STOP_TIMEOUT" -- systemctl disable --now parcon.service >/dev/null ||
 			warn "stopping parcon.service failed"
 		as_parcon "$controller" 120 parcon github scaleset delete ||
 			warn "deleting the scale set in GitHub failed; remove it in the organization's or repository's" \
@@ -1301,12 +1430,10 @@ do_uninstall() {
 	fi
 
 	step "Destroy VMs"
+	# Listed again: until it stopped, the controller kept creating and destroying workers.
 	local vmid
-	for vmid in $vms; do
-		if qm status "$vmid" | grep -q running; then
-			change qm stop "$vmid" --skiplock 1
-		fi
-		change qm destroy "$vmid" --purge 1
+	for vmid in $(managed_vms); do
+		destroy_vm "$vmid"
 	done
 
 	step "Proxmox access objects"
@@ -1339,7 +1466,15 @@ do_uninstall() {
 		change pvesh delete "/cluster/sdn/zones/$ZONE"
 		changed=1
 	fi
-	((changed == 0)) || change pvesh set /cluster/sdn
+	local pending
+	pending=$(pending_sdn | tr '\n' ' ')
+	if ((changed)) && [[ -n $pending ]]; then
+		# Applying would also apply someone else's unfinished SDN changes.
+		warn "not applying the SDN config: ${pending% } have pending changes too. Review them, then apply the SDN" \
+			"config (Datacenter > SDN > Apply, or pvesh set /cluster/sdn) to remove $VNET and $ZONE from the host."
+	elif ((changed)); then
+		change pvesh set /cluster/sdn
+	fi
 	step "Done"
 	say "proxmox-actions-runners is removed. The GitHub App remains; delete it in GitHub's settings if you like."
 }

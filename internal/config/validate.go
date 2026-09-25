@@ -89,6 +89,13 @@ func (p Proxmox) validate(v *validator) {
 	}
 	v.required("proxmox.tokenId", p.TokenID)
 	v.absPath("proxmox.tokenSecretFile", p.TokenSecretFile)
+	if p.CACertFile != "" {
+		v.absPath("proxmox.caCertFile", p.CACertFile)
+		if p.TLSFingerprint != "" {
+			v.addf("proxmox.caCertFile", "can't be combined with tlsFingerprint: a pinned certificate isn't verified "+
+				"against a CA")
+		}
+	}
 	v.required("proxmox.node", p.Node)
 	v.required("proxmox.pool", p.Pool)
 	v.required("proxmox.storage", p.Storage)

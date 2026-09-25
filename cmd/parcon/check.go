@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -161,11 +162,20 @@ func newProxmoxClient(cfg *config.Config) (*proxmox.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("proxmox token: %w", err)
 	}
+	var ca []byte
+	if p.CACertFile != "" {
+		// A CA certificate isn't a secret, so it isn't held to ReadSecretFile's permission check.
+		if ca, err = os.ReadFile(p.CACertFile); err != nil {
+			return nil, fmt.Errorf("proxmox CA certificate: %w", err)
+		}
+	}
 	return proxmox.New(proxmox.Options{
 		URL:            p.URL,
 		TokenID:        p.TokenID,
 		TokenSecret:    secret,
 		TLSFingerprint: p.TLSFingerprint,
+		CACertPEM:      ca,
+		ServerName:     p.TLSServerName,
 		Node:           p.Node,
 		UserAgent:      "parcon/" + buildVersion(),
 	})

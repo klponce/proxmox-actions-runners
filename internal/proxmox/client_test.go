@@ -2,7 +2,14 @@ package proxmox
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"net/http"
 	"reflect"
 	"strings"
@@ -25,6 +32,7 @@ func TestNewRejectsBadOptions(t *testing.T) {
 		{"no node", func(o *Options) { o.Node = "" }, "node is required"},
 		{"short fingerprint", func(o *Options) { o.TLSFingerprint = "AA:BB" }, "SHA-256 fingerprint"},
 		{"non-hex fingerprint", func(o *Options) { o.TLSFingerprint = strings.Repeat("ZZ:", 31) + "ZZ" }, "SHA-256"},
+		{"CA without certificates", func(o *Options) { o.CACertPEM = []byte("not PEM") }, "no PEM certificates"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -44,25 +52,52 @@ func TestNewRejectsBadOptions(t *testing.T) {
 	}
 }
 
+// selfSignedCA returns a new CA certificate in PEM. Every httptest server shares one certificate, so another CA has
+// to be made.
+func selfSignedCA(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "another CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true,
+		BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
 func TestTLSVerification(t *testing.T) {
 	f := newFakePVE(t)
 	f.reply(http.MethodGet, "/version", reply{Data: map[string]any{"version": "9.0.3", "release": "9.0"}})
 
 	wrong := strings.Repeat("00:", 31) + "00"
+	// The httptest certificate is its own CA and is issued for 127.0.0.1, ::1, and example.com.
+	ca := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: f.server.Certificate().Raw})
+	otherCA := selfSignedCA(t)
 	tests := []struct {
 		name        string
 		fingerprint string
+		ca          []byte
+		serverName  string
 		wantErr     string
 	}{
-		{"pinned fingerprint", f.fingerprint(), ""},
-		{"lowercase pinned fingerprint", strings.ToLower(f.fingerprint()), ""},
-		{"wrong fingerprint", wrong, "doesn't match the pinned fingerprint"},
-		{"no pin uses the system trust store", "", "certificate"},
+		{name: "pinned fingerprint", fingerprint: f.fingerprint()},
+		{name: "lowercase pinned fingerprint", fingerprint: strings.ToLower(f.fingerprint())},
+		{name: "wrong fingerprint", fingerprint: wrong, wantErr: "doesn't match the pinned fingerprint"},
+		{name: "no pin or CA uses the system trust store", wantErr: "certificate"},
+		{name: "trusted CA, by IP", ca: ca},
+		{name: "trusted CA, by server name", ca: ca, serverName: "example.com"},
+		{name: "trusted CA, wrong server name", ca: ca, serverName: "pve.example.net", wantErr: "not pve.example.net"},
+		{name: "another CA", ca: otherCA, wantErr: "unknown authority"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			c, err := New(Options{URL: f.server.URL + "/api2/json", TokenID: testTokenID, TokenSecret: testTokenSecret,
-				TLSFingerprint: tt.fingerprint, Node: testNode})
+				TLSFingerprint: tt.fingerprint, CACertPEM: tt.ca, ServerName: tt.serverName, Node: testNode})
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}

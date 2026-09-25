@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -38,9 +39,15 @@ type Options struct {
 	TokenID string
 	// TokenSecret is the token's secret. It is sent only in the Authorization header and never logged.
 	TokenSecret string
-	// TLSFingerprint pins the server certificate by its SHA-256 fingerprint (AA:BB:...). If empty, the system trust
-	// store verifies the certificate instead.
+	// TLSFingerprint pins the server certificate by its SHA-256 fingerprint (AA:BB:...) instead of verifying its
+	// chain. A renewed certificate no longer matches, so CACertPEM is preferred.
 	TLSFingerprint string
+	// CACertPEM holds the CA certificates that verify the server's certificate chain, such as the node's
+	// /etc/pve/pve-root-ca.pem. Empty means the system trust store. It is ignored with TLSFingerprint.
+	CACertPEM []byte
+	// ServerName is the name the server's certificate must be issued for. Empty means the URL's host. It lets the
+	// client connect by IP address to a certificate issued for the node's host name.
+	ServerName string
 	// Node is the node every VM operation targets.
 	Node string
 
@@ -78,13 +85,20 @@ func New(opts Options) (*Client, error) {
 		return nil, errors.New("proxmox node is required")
 	}
 
-	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
-	if opts.TLSFingerprint != "" {
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: opts.ServerName}
+	switch {
+	case opts.TLSFingerprint != "":
 		want, err := parseFingerprint(opts.TLSFingerprint)
 		if err != nil {
 			return nil, err
 		}
 		pinCertificate(tlsConfig, want)
+	case len(opts.CACertPEM) > 0:
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(opts.CACertPEM) {
+			return nil, errors.New("proxmox CA certificate has no PEM certificates")
+		}
+		tlsConfig.RootCAs = pool
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = tlsConfig

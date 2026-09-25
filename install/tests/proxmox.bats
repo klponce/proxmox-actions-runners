@@ -45,6 +45,38 @@ EOF
 	[ "$(free_reserved_vmid)" = 10098 ]
 }
 
+@test "system_vmid keeps the gateway and controller out of the worker range" {
+	PAR_VMID_START=100
+	PAR_VMID_END=199
+	echo '[{"vmid":150},{"vmid":200},{"vmid":201}]' >"$BATS_TEST_TMPDIR/resources.json"
+	stub pvesh "case \"\$*\" in
+		'get /cluster/nextid') echo 101 ;;
+		'get /cluster/resources'*) cat '$BATS_TEST_TMPDIR/resources.json' ;;
+	esac"
+	[ "$(system_vmid)" = 202 ]
+
+	PAR_VMID_START=10000
+	PAR_VMID_END=10099
+	[ "$(system_vmid)" = 101 ]
+}
+
+@test "replace_gateway keeps the old gateway's NICs and address, with the gateway's hardware" {
+	stub qm "case \"\$*\" in
+		'config 105') printf '%s\n' 'net0: virtio=BC:24:11:00:00:01,bridge=vmbr0' \
+			'net1: virtio=BC:24:11:00:00:02,bridge=parnet' 'ipconfig0: ip=192.0.2.10/24,gw=192.0.2.1' ;;
+		'guest exec 105 '*) echo '{\"exited\":1,\"exitcode\":0,\"out-data\":\"WORKER_SUBNET=10.251.0.0/22\\n\"}' ;;
+	esac"
+	PAR_VERSION=0.1.0
+	PAR_STORAGE=local-lvm
+	WORK_DIR=/var/tmp/par-install.test
+	GATEWAY_VMID=105
+	run replace_gateway
+	[ "$status" -eq 0 ]
+	grep -qx 'qm create 105 --name par-gateway --pool par-system --memory 1024 --cores 1 --cpu host --ostype l26 --scsihw virtio-scsi-single --net0 virtio=BC:24:11:00:00:01,bridge=vmbr0 --agent enabled=1 --onboot 1 --serial0 socket --vga serial0 --tags par-managed;par-gateway;par-release-0.1.0 --net1 virtio=BC:24:11:00:00:02,bridge=parnet' "$CALLS"
+	grep -qx 'qm set 105 --ide2 local-lvm:cloudinit --boot order=scsi0 --ipconfig0 ip=192.0.2.10/24,gw=192.0.2.1 --ciupgrade 0' "$CALLS"
+	grep -qx 'qm start 105' "$CALLS"
+}
+
 @test "guest_exec passes on output and the exit status" {
 	stub qm "echo '{\"exited\":1,\"exitcode\":3,\"out-data\":\"hello\\n\",\"err-data\":\"oops\\n\"}'"
 	run guest_exec 105 30 -- false
@@ -133,16 +165,22 @@ EOF
 	[[ $output == *"VMIDs 10050"* ]]
 }
 
-@test "gateway_block covers the LAN, the API address, and the controller" {
-	stub ip "echo '2: vmbr0    inet 192.0.2.5/24 brd 192.0.2.255 scope global vmbr0'"
+@test "gateway_block covers the LAN, every host address, and the controller" {
+	# The host has a second, public address on another interface; the API listens there too.
+	stub ip "case \"\$*\" in
+		*'dev vmbr0') echo '2: vmbr0    inet 192.0.2.5/24 brd 192.0.2.255 scope global vmbr0' ;;
+		*) printf '%s\n' '1: lo    inet 127.0.0.1/8 scope host lo' \
+			'2: vmbr0    inet 192.0.2.5/24 brd 192.0.2.255 scope global vmbr0' \
+			'3: vmbr1    inet 203.0.113.9/24 brd 203.0.113.255 scope global vmbr1' ;;
+	esac"
 	settings_ok
 	CONTROLLER_ADDRESS=192.0.2.77
-	[ "$(gateway_block)" = "192.0.2.0/24 192.0.2.5 192.0.2.77" ]
+	[ "$(gateway_block)" = "192.0.2.0/24 192.0.2.5 192.0.2.77 203.0.113.9" ]
 }
 
 @test "render_config writes the App only once there is one" {
 	stub ip "echo '2: vmbr0    inet 192.0.2.5/24 brd 192.0.2.255 scope global vmbr0'"
-	stub openssl "echo 'sha256 Fingerprint=AA:BB'"
+	stub openssl "exit 1"
 	stub pvesh "case \"\$*\" in
 		'get /nodes --output-format json') echo '[{\"node\":\"pve1\"}]' ;;
 		*status*) echo '{\"type\":\"lvmthin\"}' ;;
@@ -151,10 +189,13 @@ EOF
 	PAR_LABELS=a,b
 	run render_config
 	[[ $output == *"url: https://192.0.2.5:8006/api2/json"* ]]
-	[[ $output == *'tlsFingerprint: "AA:BB"'* ]]
+	# No certificates in this test: the node's own certificate is assumed, verified against the node's CA.
+	[[ $output == *"caCertFile: /etc/proxmox-actions-runners/pve-ca.pem"* ]]
+	[[ $output != *tlsFingerprint* ]]
 	[[ $output == *"node: pve1"* ]]
 	[[ $output == *"linkedClone: true"* ]]
-	[[ $output == *"labels: [a, b]"* ]]
+	[[ $output == *'labels: ["a", "b"]'* ]]
+	[[ $output == *'name: "proxmox-ubuntu-26.04"'* ]]
 	[[ $output != *"app:"* ]]
 
 	run render_config Iv23liEXAMPLE0000000
@@ -164,6 +205,53 @@ EOF
 
 	run render_config Iv23liEXAMPLE0000000 7890123
 	[[ $output == *"installationId: 7890123"* ]]
+}
+
+@test "render_config keeps labels that look like YAML values strings" {
+	stub ip "echo '2: vmbr0    inet 192.0.2.5/24 brd 192.0.2.255 scope global vmbr0'"
+	stub openssl "exit 1"
+	stub pvesh "case \"\$*\" in
+		'get /nodes --output-format json') echo '[{\"node\":\"pve1\"}]' ;;
+		*status*) echo '{\"type\":\"lvmthin\"}' ;;
+	esac"
+	settings_ok
+	PAR_LABELS=null,true,1.5
+	validate_settings
+	run render_config
+	[[ $output == *'labels: ["null", "true", "1.5"]'* ]]
+}
+
+@test "downloads need room where they go, not on the VM storage" {
+	stub df "printf '%s\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on' \
+		'/dev/mapper/pve-root 98559220 90000000 3145728 97% /'" # 3 GiB free
+	run check_download_space
+	[ "$status" -eq 1 ]
+	[[ $output == "3 GiB free, 6 GiB needed" ]]
+	grep -qx 'df -Pk /var/tmp' "$CALLS"
+
+	stub df "printf '%s\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on' \
+		'/dev/mapper/pve-root 98559220 50000000 41943040 55% /'" # 40 GiB free
+	run check_download_space
+	[ "$status" -eq 0 ]
+}
+
+@test "pending SDN changes other than ours stop the install" {
+	stub pvesh "case \"\$*\" in
+		'get /cluster/sdn/zones --pending 1'*) echo '[{\"zone\":\"parzone\",\"state\":\"new\"},{\"zone\":\"lab\"},{\"zone\":\"dmz\",\"state\":\"changed\"}]' ;;
+		'get /cluster/sdn/vnets --pending 1'*) echo '[{\"vnet\":\"parnet\",\"state\":\"new\"},{\"vnet\":\"vlan20\",\"state\":\"deleted\"}]' ;;
+	esac"
+	[ "$(pending_sdn | tr '\n' ' ')" = "dmz vlan20 " ]
+	run check_pending_sdn
+	[ "$status" -eq 1 ]
+	[[ $output == *"pending SDN changes to dmz vlan20 would be applied too"* ]]
+
+	# Only our own zone and VNet pending, as on a re-run: fine.
+	stub pvesh "case \"\$*\" in
+		'get /cluster/sdn/zones --pending 1'*) echo '[{\"zone\":\"parzone\",\"state\":\"new\"}]' ;;
+		*) echo '[]' ;;
+	esac"
+	run check_pending_sdn
+	[ "$status" -eq 0 ]
 }
 
 @test "app_query tells organizations and personal accounts apart" {
@@ -208,6 +296,60 @@ EOF
 	check_root() { true; }
 	run do_uninstall
 	[ "$status" -eq 0 ]
-	[[ $output == *"destroy VMs: 101 10099"* ]]
+	[[ $output == *"now: 101 10099"* ]]
 	run ! grep -Eq '^(qm (stop|destroy)|pveum (pool|user|role) (delete|remove)|pvesh (delete|set))' "$CALLS"
+}
+
+@test "uninstall lists the VMs again once the controller has stopped" {
+	# At the plan, worker 10000 exists. While the controller stops, it destroys 10000 and creates 10001.
+	resources <<'EOF'
+[{"vmid":101,"pool":"par-system","tags":"par-managed;par-controller"},
+ {"vmid":10000,"pool":"par-runners","tags":"par-managed;par-worker"},
+ {"vmid":10099,"pool":"par-runners","template":1,"tags":"par-managed;par-template"}]
+EOF
+	stub pveum "echo '[{\"poolid\":\"par-system\",\"comment\":\"proxmox-actions-runners\"}]'"
+	stub qm "case \"\$*\" in
+		'status 101') echo 'status: running' ;;
+		'status '*) echo 'status: stopped' ;;
+		'guest exec 101 '*systemctl*)
+			cat >'$BATS_TEST_TMPDIR/resources.json' <<'JSON'
+[{\"vmid\":101,\"pool\":\"par-system\",\"tags\":\"par-managed;par-controller\"},
+ {\"vmid\":10001,\"pool\":\"par-runners\",\"tags\":\"par-managed;par-worker\"},
+ {\"vmid\":10099,\"pool\":\"par-runners\",\"template\":1,\"tags\":\"par-managed;par-template\"}]
+JSON
+			echo '{\"exited\":1,\"exitcode\":0}' ;;
+		'guest exec '*) echo '{\"exited\":1,\"exitcode\":0}' ;;
+	esac"
+	ASSUME_YES=1
+	check_root() { true; }
+	run do_uninstall
+	[ "$status" -eq 0 ]
+	grep -qx 'qm destroy 10001 --purge 1' "$CALLS"
+	run ! grep -qx 'qm destroy 10000 --purge 1' "$CALLS"
+	grep -qx 'qm destroy 101 --purge 1' "$CALLS"
+	grep -qx 'qm destroy 10099 --purge 1' "$CALLS"
+	# It waits as long as the controller's stop can take.
+	grep -qx "qm guest exec 101 --timeout $CONTROLLER_STOP_TIMEOUT -- systemctl disable --now parcon.service" "$CALLS"
+}
+
+@test "the installer waits longer than parcon.service may take to stop" {
+	local stop
+	stop=$(sed -n 's/^TimeoutStopSec=//p' "$BATS_TEST_DIRNAME/../../deploy/parcon.service")
+	case $stop in
+	*min) stop=$((${stop%min} * 60)) ;;
+	*s) stop=${stop%s} ;;
+	esac
+	[[ $stop =~ ^[0-9]+$ ]]
+	((CONTROLLER_STOP_TIMEOUT > stop))
+}
+
+@test "destroy_vm counts a VM that is already gone as destroyed" {
+	stub qm "exit 2" # Proxmox: Configuration file '...' does not exist
+	run destroy_vm 10000
+	[ "$status" -eq 0 ]
+
+	stub qm "case \"\$1\" in status) echo 'status: stopped' ;; *) exit 1 ;; esac"
+	run destroy_vm 10000
+	[ "$status" -eq 1 ]
+	[[ $output == *"destroying VM 10000 failed"* ]]
 }

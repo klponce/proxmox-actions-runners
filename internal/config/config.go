@@ -38,8 +38,15 @@ type Proxmox struct {
 	TokenID string `yaml:"tokenId"`
 	// TokenSecretFile is the absolute path of the file that holds the token secret.
 	TokenSecretFile string `yaml:"tokenSecretFile"`
-	// TLSFingerprint pins the API's certificate by its SHA-256 fingerprint (AA:BB:...). Empty means the system
-	// trust store is used instead.
+	// CACertFile is the absolute path of a PEM file with the CA certificates that verify the API's certificate, such
+	// as a copy of the node's /etc/pve/pve-root-ca.pem. Empty means the system trust store. Unlike a pinned
+	// fingerprint, it keeps working when the certificate is renewed.
+	CACertFile string `yaml:"caCertFile"`
+	// TLSServerName is the name the API's certificate must be issued for, when the URL uses an IP address the
+	// certificate doesn't list. Empty means the URL's host.
+	TLSServerName string `yaml:"tlsServerName"`
+	// TLSFingerprint pins the API's certificate by its SHA-256 fingerprint (AA:BB:...) instead of verifying it, for
+	// a certificate from a CA the controller can't trust. A renewed certificate breaks the pin.
 	TLSFingerprint string `yaml:"tlsFingerprint"`
 	// Node is the standalone node that runs the workers.
 	Node string `yaml:"node"`
