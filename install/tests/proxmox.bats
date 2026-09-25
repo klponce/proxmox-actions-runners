@@ -353,3 +353,13 @@ JSON
 	[ "$status" -eq 1 ]
 	[[ $output == *"destroying VM 10000 failed"* ]]
 }
+
+@test "free space needs 50 GiB" {
+	storage_json() { echo '{"avail":53687091200}'; } # 50 GiB
+	run check_free_space
+	[ "$status" -eq 0 ]
+	[ "$output" = "50 GiB free, 50 GiB needed" ]
+	storage_json() { echo '{"avail":53687091199}'; }
+	run ! check_free_space
+	[ "$output" = "49 GiB free, 50 GiB needed" ]
+}

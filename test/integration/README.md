@@ -2,7 +2,8 @@
 
 Runs the project against a real Proxmox VE 9 node. All it needs is root SSH access to a **throwaway** node: it
 creates its own test objects, runs the Go integration tests and the `parcon` checks, and can remove everything
-again. Given a runner image built from `images/runner`, it also runs a worker from that image.
+again. Given a runner image built from `images/runner`, it also runs a worker from that image, and given the
+gateway and controller images too, it runs `install/install.sh` on the node up to the GitHub App.
 
 GitHub itself is only partly covered: `parcon check template` looks up the latest `actions/runner` release on
 github.com, but the controller tests use the in-memory GitHub fake, so no real runner registers.
@@ -44,6 +45,7 @@ devcontainer exec --workspace-folder . \
 | `test` | Runs the Go integration tests, the `parcon` checks, and the permission checks below |
 | `teardown` | Removes everything `setup` created and restores the storage setting it changed |
 | `all` | `setup`, then `test` (the default) |
+| `installer` | Runs `install/install.sh` on the node without GitHub, then uninstalls it. See [The installer](#the-installer) |
 
 `run.sh -h` lists the settings, such as `PAR_IT_STORAGE`, `PAR_IT_TEMPLATE_VMID`, and `PAR_IT_TEST_VMID`.
 
@@ -62,6 +64,41 @@ devcontainer exec --workspace-folder . ... \
   --remote-env PAR_IT_RUNNER_IMAGE=output-runner/par-runner-it.qcow2 \
   test/integration/run.sh
 ```
+
+### The installer
+
+`run.sh installer` tests `install/install.sh` on the node with locally built images and no GitHub App. It needs all
+three images, built with the same version, and a node with no install on it:
+
+```bash
+packer init images/gateway && packer build -var version=it images/gateway
+CGO_ENABLED=0 go build -o bin/parcon ./cmd/parcon
+packer init images/controller && packer build -var version=it -var parcon_binary=bin/parcon images/controller
+```
+
+```bash
+devcontainer exec --workspace-folder . ... \
+  --remote-env PAR_IT_RUNNER_IMAGE=output-runner/par-runner-it.qcow2 \
+  --remote-env PAR_IT_GATEWAY_IMAGE=output-gateway/par-gateway-it.qcow2 \
+  --remote-env PAR_IT_CONTROLLER_IMAGE=output-controller/parcon-it.qcow2 \
+  test/integration/run.sh installer
+```
+
+It copies `install.sh`, an answers file, and the images to `/var/tmp/par-it-installer` on the node, then:
+
+1. runs `install.sh check` and `install.sh install --dry-run`, and checks the dry run changed nothing;
+2. runs `install.sh`'s own install steps through `node/installer.sh`, which sources `install.sh` as its bats tests do
+   and points its release version and checksums at the local images: the Proxmox access objects, the worker
+   network, the runner template, the gateway and controller VMs, and the controller's configuration, which ends with
+   `parcon check proxmox` inside the controller VM;
+3. checks the worker network the way the installer's smoke test does: a worker cloned from the template gets a
+   DHCP lease from the gateway, reaches the internet, and can't reach the Proxmox API or the controller VM;
+4. stops the controller VM and runs `install.sh uninstall --yes`, then checks nothing of the install is left.
+
+It stops before the GitHub App (`setup_app`) and doesn't start the controller service, whose scale set session
+needs the App. It uses the install's real names (`par-runners`, `par-system`, `parzone`, `parnet`), so it refuses a
+node that already has an install, and it uninstalls even when a step fails. The node needs the free space the
+installer's preflight asks for: 50 GiB on the VM storage.
 
 ## What setup creates
 

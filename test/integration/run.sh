@@ -22,6 +22,7 @@ usage: test/integration/run.sh [setup|test|teardown|all]
   test      run the integration tests and checks against them; needs PAR_IT_THROWAWAY=1
   teardown  remove everything setup created; needs PAR_IT_THROWAWAY=1
   all       setup, then test (the default)
+  installer run install.sh on the node without GitHub, then uninstall it (see below); needs PAR_IT_THROWAWAY=1
 
 environment:
   PAR_IT_SSH             root@<node>, required
@@ -36,6 +37,9 @@ environment:
   PAR_IT_RUNNER_IMAGE    optional: a par-runner-<version>.qcow2 built from images/runner, with its .json manifest
                          next to it; the suite imports it and runs a worker from it
   PAR_IT_IMAGE_TEMPLATE_VMID  the runner image template's VMID (default 9001)
+  PAR_IT_GATEWAY_IMAGE   for installer: par-gateway-<version>.qcow2 built from images/gateway
+  PAR_IT_CONTROLLER_IMAGE  for installer: parcon-<version>.qcow2 built from images/controller
+                         installer also needs PAR_IT_RUNNER_IMAGE, all three built with the same version
   PAR_IT_STATE           private working directory (default .agents/integration, which git ignores)
 EOF
 }
@@ -362,6 +366,88 @@ cmd_test() {
 	log "all integration tests passed"
 }
 
+# Where cmd_installer puts install.sh, its answers, and the images on the node.
+readonly INSTALLER_DIR=/var/tmp/par-it-installer
+
+# cmd_installer runs install.sh on the node without GitHub: its checks and dry run through its command line, its own
+# install steps up to the GitHub App through node/installer.sh, and its uninstall. It uses the install's real names
+# (par-runners, parzone), so it needs a node with no install on it, and it uninstalls even when a step fails.
+cmd_installer() {
+	require_throwaway
+	[[ -n $RUNNER_IMAGE && -f ${PAR_IT_GATEWAY_IMAGE:-} && -f ${PAR_IT_CONTROLLER_IMAGE:-} ]] ||
+		die "installer needs PAR_IT_RUNNER_IMAGE, PAR_IT_GATEWAY_IMAGE, and PAR_IT_CONTROLLER_IMAGE"
+	local version
+	version=$(basename "$RUNNER_IMAGE" .qcow2)
+	version=${version#par-runner-}
+	[[ $(basename "$PAR_IT_GATEWAY_IMAGE") == "par-gateway-$version.qcow2" &&
+		$(basename "$PAR_IT_CONTROLLER_IMAGE") == "parcon-$version.qcow2" ]] ||
+		die "the images must share one version: par-runner-$version, par-gateway-$version, parcon-$version"
+
+	local before
+	before=$(node_script objects.sh) || die "can't list the node's objects"
+	[[ -z $before ]] || die "the node already has an install on it; run install.sh uninstall there first:"$'\n'"$before"
+
+	log "copy install.sh, its answers, and the images to $INSTALLER_DIR on the node"
+	node "rm -rf $INSTALLER_DIR && mkdir -p $INSTALLER_DIR"
+	# The GitHub settings are placeholders: nothing here contacts the App or the organization.
+	node "cat >$INSTALLER_DIR/answers" <<EOF
+PAR_GITHUB_URL=https://github.com/my-org
+PAR_GITHUB_APP=manual
+PAR_GITHUB_APP_CLIENT_ID=Iv23liEXAMPLE0000000
+PAR_MAX_RUNNERS=1
+PAR_STORAGE=$STORAGE
+PAR_BRIDGE=$BUILD_BRIDGE
+EOF
+	scp -q "${SSH_OPTS[@]}" "$ROOT/install/install.sh" "$HERE/node/installer.sh" "$RUNNER_IMAGE" "$IMAGE_MANIFEST" \
+		"$PAR_IT_GATEWAY_IMAGE" "$PAR_IT_CONTROLLER_IMAGE" "$PAR_IT_SSH:$INSTALLER_DIR/"
+
+	log "install.sh check"
+	node "cd $INSTALLER_DIR && bash install.sh check --answers answers" || die "install.sh check failed"
+
+	log "install.sh install --dry-run"
+	node "cd $INSTALLER_DIR && bash install.sh install --dry-run --answers answers" ||
+		die "install.sh install --dry-run failed"
+	[[ -z $(node_script objects.sh) ]] || die "install.sh install --dry-run changed the node"
+	echo "the dry run changed nothing"
+
+	# From here on a failure leaves a partial install, which the uninstall removes.
+	trap installer_cleanup EXIT
+	log "install.sh's install steps, up to the GitHub App"
+	node "env DIR=$INSTALLER_DIR VERSION=$version bash $INSTALLER_DIR/installer.sh" || die "the install steps failed"
+
+	local objects
+	objects=$(node_script objects.sh)
+	printf '%s\n' "$objects"
+	local want
+	for want in "pool par-runners" "pool par-system" "role PARController" "user par@pve" "zone parzone" \
+		"vnet parnet" "par-gateway" "par-controller" "par-runner-"; do
+		grep -qF -- "$want" <<<"$objects" || die "the install has no $want"
+	done
+
+	installer_uninstall
+	trap - EXIT
+	local left
+	left=$(node_script objects.sh)
+	[[ -z $left ]] || die "install.sh uninstall left:"$'\n'"$left"
+	node "rm -rf $INSTALLER_DIR"
+	log "installer tests passed: check, dry run, install steps, worker network, and uninstall"
+}
+
+# installer_uninstall runs install.sh uninstall. It stops the controller VM first: this install has no GitHub App,
+# and uninstall asks a running controller to delete its scale set in GitHub.
+installer_uninstall() {
+	log "install.sh uninstall"
+	local controller
+	controller=$(node_script objects.sh | awk '$1 == "vm" && $3 == "par-controller" {print $2}')
+	[[ -z $controller ]] || node "qm stop $controller" || true
+	node "cd $INSTALLER_DIR && bash install.sh uninstall --yes"
+}
+
+installer_cleanup() {
+	echo "the installer tests failed; uninstalling what they installed" >&2
+	installer_uninstall || echo "warning: install.sh uninstall failed too; remove the install by hand" >&2
+}
+
 cmd_teardown() {
 	require_throwaway
 	log "teardown on $HOST"
@@ -378,7 +464,7 @@ main() {
 		usage
 		return
 		;;
-	setup | test | teardown | all) ;;
+	setup | test | teardown | all | installer) ;;
 	*)
 		usage >&2
 		exit 2
@@ -389,6 +475,7 @@ main() {
 	setup) cmd_setup ;;
 	test) cmd_test ;;
 	teardown) cmd_teardown ;;
+	installer) cmd_installer ;;
 	all)
 		cmd_setup
 		cmd_test
