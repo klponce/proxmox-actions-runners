@@ -82,6 +82,23 @@ EOF
 	[[ $output == *"VMID range"* ]]
 }
 
+@test "scale set names follow parcon's rules" {
+	local name
+	for name in Proxmox-Ubuntu .hidden "$(printf 'a%.0s' {1..64})"; do
+		settings_ok
+		PAR_SCALE_SET=$name
+		run validate_settings
+		[ "$status" -eq 1 ]
+		[[ $output == *"PAR_SCALE_SET must be 1-63 lowercase"* ]]
+	done
+	for name in proxmox-ubuntu-26.04 x "$(printf 'a%.0s' {1..63})"; do
+		settings_ok
+		PAR_SCALE_SET=$name
+		PAR_LABELS=$name
+		validate_settings
+	done
+}
+
 @test "repository runners must use the default runner group" {
 	PAR_GITHUB_URL=https://github.com/my-org/my-repo
 	PAR_RUNNER_GROUP=builders

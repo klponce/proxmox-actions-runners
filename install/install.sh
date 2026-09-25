@@ -56,6 +56,10 @@ readonly WORKER_MEMORY_MIB=8192
 readonly CONTROLLER_STOP_TIMEOUT=420
 
 # Settings: from the answers file, prompts, or defaults. `settings_help` describes them.
+# Scale set names, as parcon's config accepts them (scaleSetNamePattern in internal/config, kept in step by a Go test):
+# they become Proxmox tags and runs-on labels.
+readonly SCALE_SET_PATTERN='^[a-z0-9][a-z0-9._-]{0,62}$'
+
 readonly SETTINGS=(PAR_GITHUB_URL PAR_GITHUB_APP PAR_GITHUB_APP_CLIENT_ID PAR_SCALE_SET PAR_LABELS PAR_RUNNER_GROUP
 	PAR_MIN_RUNNERS PAR_MAX_RUNNERS PAR_STORAGE PAR_BRIDGE PAR_VLAN PAR_PVE_ADDRESS PAR_GATEWAY_IP PAR_CONTROLLER_IP
 	PAR_LAN_GATEWAY PAR_WORKER_SUBNET PAR_VMID_START PAR_VMID_END)
@@ -129,7 +133,7 @@ settings (answers file keys):
   PAR_GITHUB_URL            organization or repository, https://github.com/<org> or https://github.com/<owner>/<repo>
   PAR_GITHUB_APP            manifest (create a new App in the browser, the default) or manual (use an existing App)
   PAR_GITHUB_APP_CLIENT_ID  the existing App's Client ID, for manual
-  PAR_SCALE_SET             scale set name, used in runs-on (default proxmox-ubuntu-26.04)
+  PAR_SCALE_SET             scale set name in lowercase, used in runs-on (default proxmox-ubuntu-26.04)
   PAR_LABELS                comma-separated runs-on labels (default: the scale set name)
   PAR_RUNNER_GROUP          GitHub runner group (default default; repositories must use default)
   PAR_MIN_RUNNERS           idle workers to keep booted (default 0)
@@ -241,7 +245,8 @@ validate_settings() {
 		errors+=("PAR_GITHUB_APP must be manifest or manual")
 	[[ $PAR_GITHUB_APP != manual || $PAR_GITHUB_APP_CLIENT_ID =~ ^[A-Za-z0-9._-]+$ ]] ||
 		errors+=("PAR_GITHUB_APP_CLIENT_ID must be the App's Client ID")
-	[[ $PAR_SCALE_SET =~ ^[A-Za-z0-9._-]+$ ]] || errors+=("PAR_SCALE_SET may contain only letters, digits, . _ -")
+	[[ $PAR_SCALE_SET =~ $SCALE_SET_PATTERN ]] ||
+		errors+=("PAR_SCALE_SET must be 1-63 lowercase letters, digits, . _ -, starting with a letter or digit")
 	[[ $PAR_LABELS =~ ^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+)*$ ]] ||
 		errors+=("PAR_LABELS must be comma-separated names of letters, digits, . _ -")
 	[[ $PAR_RUNNER_GROUP =~ ^[A-Za-z0-9._\ -]+$ ]] || errors+=("PAR_RUNNER_GROUP has invalid characters")
