@@ -153,7 +153,7 @@ include the agent avoids both changes to the host.
 | Worker subnet free | the worker subnet doesn't overlap any route or address on the host, or the LAN subnet given for the gateway | hard |
 | SDN names free | zone `parzone` and VNet `parnet` are unused, or already ours (upgrade) | hard |
 | No name or ID clash | pools, user, role, and VMIDs are unused, or already tagged as ours (upgrade) | hard |
-| Pending SDN changes | `pvesh get /cluster/sdn` shows no pending changes from someone else, since applying ours would apply theirs too | warn |
+| Pending SDN changes | no SDN zone or VNet other than ours has pending changes, since applying ours would apply theirs too. Uninstall doesn't apply while any exist, and says so | hard |
 
 ## Controller VM contract
 

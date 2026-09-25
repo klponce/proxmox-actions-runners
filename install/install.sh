@@ -680,11 +680,24 @@ check_vmids() {
 		{ echo "VMIDs ${clash[*]} in $PAR_VMID_START-$PAR_VMID_END belong to other VMs; choose another range" && return 1; }
 }
 
+# pending_sdn prints the SDN zones and VNets, other than ours, with changes that aren't applied yet. Applying the SDN
+# config (pvesh set /cluster/sdn) applies all of them, so the installer never applies while any exist.
+pending_sdn() {
+	local kind
+	for kind in zones vnets; do
+		pvesh get "/cluster/sdn/$kind" --pending 1 --output-format json 2>/dev/null | json '
+			my ($key, @ours) = @ARGV;
+			my %ours = map { $_ => 1 } @ours;
+			print "$_->{$key}\n" for grep { $_->{state} && !$ours{$_->{$key}} } @$d' "${kind%s}" "$ZONE" "$VNET" ||
+			true
+	done
+}
+
 check_pending_sdn() {
 	local pending
-	pending=$(pvesh get /cluster/sdn/zones --pending 1 --output-format json 2>/dev/null |
-		json 'print join(" ", map { $_->{zone} } grep { $_->{state} } @$d)') || true
-	[[ -z $pending ]] || { echo "pending SDN changes to $pending would be applied too" && return 1; }
+	pending=$(pending_sdn | tr '\n' ' ')
+	[[ -z $pending ]] ||
+		{ echo "pending SDN changes to ${pending% } would be applied too; apply or revert them first" && return 1; }
 }
 
 preflight() {
@@ -709,7 +722,7 @@ preflight() {
 	check hard "worker subnet $PAR_WORKER_SUBNET free" check_worker_subnet
 	check hard "names free" check_names
 	check hard "VMIDs $PAR_VMID_START-$PAR_VMID_END free" check_vmids
-	check warn "no pending SDN changes" check_pending_sdn
+	check hard "no pending SDN changes" check_pending_sdn
 	((PREFLIGHT_FAILED == 0)) || die "preflight checks failed"
 }
 
@@ -1430,7 +1443,15 @@ do_uninstall() {
 		change pvesh delete "/cluster/sdn/zones/$ZONE"
 		changed=1
 	fi
-	((changed == 0)) || change pvesh set /cluster/sdn
+	local pending
+	pending=$(pending_sdn | tr '\n' ' ')
+	if ((changed)) && [[ -n $pending ]]; then
+		# Applying would also apply someone else's unfinished SDN changes.
+		warn "not applying the SDN config: ${pending% } have pending changes too. Review them, then apply the SDN" \
+			"config (Datacenter > SDN > Apply, or pvesh set /cluster/sdn) to remove $VNET and $ZONE from the host."
+	elif ((changed)); then
+		change pvesh set /cluster/sdn
+	fi
 	step "Done"
 	say "proxmox-actions-runners is removed. The GitHub App remains; delete it in GitHub's settings if you like."
 }

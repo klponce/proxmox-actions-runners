@@ -189,6 +189,25 @@ EOF
 	[[ $output == *'labels: ["null", "true", "1.5"]'* ]]
 }
 
+@test "pending SDN changes other than ours stop the install" {
+	stub pvesh "case \"\$*\" in
+		'get /cluster/sdn/zones --pending 1'*) echo '[{\"zone\":\"parzone\",\"state\":\"new\"},{\"zone\":\"lab\"},{\"zone\":\"dmz\",\"state\":\"changed\"}]' ;;
+		'get /cluster/sdn/vnets --pending 1'*) echo '[{\"vnet\":\"parnet\",\"state\":\"new\"},{\"vnet\":\"vlan20\",\"state\":\"deleted\"}]' ;;
+	esac"
+	[ "$(pending_sdn | tr '\n' ' ')" = "dmz vlan20 " ]
+	run check_pending_sdn
+	[ "$status" -eq 1 ]
+	[[ $output == *"pending SDN changes to dmz vlan20 would be applied too"* ]]
+
+	# Only our own zone and VNet pending, as on a re-run: fine.
+	stub pvesh "case \"\$*\" in
+		'get /cluster/sdn/zones --pending 1'*) echo '[{\"zone\":\"parzone\",\"state\":\"new\"}]' ;;
+		*) echo '[]' ;;
+	esac"
+	run check_pending_sdn
+	[ "$status" -eq 0 ]
+}
+
 @test "app_query tells organizations and personal accounts apart" {
 	PAR_GITHUB_URL=https://github.com/my-org
 	[ "$(app_query)" = "org=my-org" ]
