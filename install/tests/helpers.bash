@@ -30,8 +30,7 @@ EOF
 	chmod +x "$STUBS/$1"
 }
 
-# settings_ok sets valid settings for an organization.
+# settings_ok sets the settings of a default install, which leaves the GitHub organization or repository to the App.
 settings_ok() {
-	PAR_GITHUB_URL=https://github.com/my-org
 	apply_defaults
 }

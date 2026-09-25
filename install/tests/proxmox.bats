@@ -196,14 +196,17 @@ EOF
 	[[ $output == *"linkedClone: true"* ]]
 	[[ $output == *'labels: ["a", "b"]'* ]]
 	[[ $output == *'name: "proxmox-ubuntu-26.04"'* ]]
-	[[ $output != *"app:"* ]]
+	[[ $output != *"github:"* ]]
 
 	run render_config Iv23liEXAMPLE0000000
 	[[ $output == *"clientId: Iv23liEXAMPLE0000000"* ]]
 	[[ $output != *installationId* ]]
+	[[ $output != *configUrl* ]]
 	[[ $output == *"privateKeyFile: /etc/proxmox-actions-runners/github-app.pem"* ]]
 
+	PAR_GITHUB_URL=https://github.com/my-org
 	run render_config Iv23liEXAMPLE0000000 7890123
+	[[ $output == *"configUrl: https://github.com/my-org"* ]]
 	[[ $output == *"installationId: 7890123"* ]]
 }
 
@@ -254,15 +257,47 @@ EOF
 	[ "$status" -eq 0 ]
 }
 
-@test "app_query tells organizations and personal accounts apart" {
-	PAR_GITHUB_URL=https://github.com/my-org
-	[ "$(app_query)" = "org=my-org" ]
-	stub curl "echo '{\"type\":\"Organization\"}'"
-	PAR_GITHUB_URL=https://github.com/my-org/my-repo
-	[ "$(app_query)" = "org=my-org&repo=my-repo" ]
-	stub curl "echo '{\"type\":\"User\"}'"
-	PAR_GITHUB_URL=https://github.com/octocat/hello
-	[ "$(app_query)" = "user=octocat&repo=hello" ]
+@test "an organization's installation serves the organization" {
+	run installation_target '{"installationId":1,"account":"my-org","accountType":"Organization"}'
+	[ "$status" -eq 0 ]
+	[ "$output" = https://github.com/my-org ]
+}
+
+@test "a personal account's installation serves its repository" {
+	run installation_target '{"installationId":1,"account":"octocat","accountType":"User","repositories":["hello"]}'
+	[ "$status" -eq 0 ]
+	[ "$output" = https://github.com/octocat/hello ]
+
+	run installation_target '{"installationId":1,"account":"octocat","accountType":"User"}'
+	[ "$status" -eq 1 ]
+	[[ $output == *"without a repository"* ]]
+}
+
+@test "with several repositories, PAR_GITHUB_URL picks one, and without a terminal nothing is guessed" {
+	local several='{"installationId":1,"account":"octocat","accountType":"User","repositories":["hello","world"]}'
+	PAR_GITHUB_URL=https://github.com/octocat/world
+	run installation_target "$several"
+	[ "$status" -eq 0 ]
+	[ "$output" = https://github.com/octocat/world ]
+
+	PAR_GITHUB_URL=""
+	run installation_target "$several" </dev/null
+	[ "$status" -eq 1 ]
+	[[ $output == *"set PAR_GITHUB_URL"* && $output == *"hello world"* ]]
+}
+
+@test "the state is 32 random bytes in base64url" {
+	local a b
+	a=$(new_state)
+	b=$(new_state)
+	[[ $a =~ ^[A-Za-z0-9_-]{43}$ ]]
+	[ "$a" != "$b" ]
+}
+
+@test "existing_github reads what an earlier run learned" {
+	stub qm "echo '{\"exited\":1,\"exitcode\":0,\"out-data\":\"github:\\n  app:\\n    clientId: Iv23liEXAMPLE0000000\\n    privateKeyFile: /etc/k\\n\"}'"
+	CONTROLLER_VMID=105
+	[ "$(existing_github)" = "- Iv23liEXAMPLE0000000 - " ]
 }
 
 @test "download checks each image against the embedded checksum" {

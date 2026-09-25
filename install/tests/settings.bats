@@ -57,7 +57,7 @@ EOF
 	[[ $output == *"not KEY=value"* ]]
 }
 
-@test "the defaults are valid for an organization" {
+@test "the defaults are valid, with no GitHub target until the App is installed" {
 	settings_ok
 	run validate_settings
 	[ "$status" -eq 0 ]
