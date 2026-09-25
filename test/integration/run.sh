@@ -6,8 +6,9 @@
 set -euo pipefail
 
 # Names of everything the suite creates on the node. They differ from a real install's (parzone, parnet,
-# par-runners), so the suite can't touch one.
-readonly POOL=par-it ROLE=PARIntegration USER=par-it@pve TOKEN=it ZONE=parit VNET=paritnet
+# par-runners), so the suite can't touch one. The runner image gets its own pool: the controller prunes every
+# template in its pool but the newest, so the test template and the image can't share one.
+readonly POOL=par-it IMAGE_POOL=par-it-image ROLE=PARIntegration USER=par-it@pve TOKEN=it ZONE=parit VNET=paritnet
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
@@ -32,6 +33,9 @@ environment:
   PAR_IT_TEMPLATE_VMID   the test template's VMID (default 9000)
   PAR_IT_TEST_VMID       first of 11 VMIDs the tests create and destroy (default 9900)
   PAR_IT_REBUILD_TEMPLATE  set to 1 to rebuild an existing template
+  PAR_IT_RUNNER_IMAGE    optional: a par-runner-<version>.qcow2 built from images/runner, with its .json manifest
+                         next to it; the suite imports it and runs a worker from it
+  PAR_IT_IMAGE_TEMPLATE_VMID  the runner image template's VMID (default 9001)
   PAR_IT_STATE           private working directory (default .agents/integration, which git ignores)
 EOF
 }
@@ -50,7 +54,14 @@ load_settings() {
 	BUILD_BRIDGE=${PAR_IT_BUILD_BRIDGE:-vmbr0}
 	TEMPLATE_VMID=${PAR_IT_TEMPLATE_VMID:-9000}
 	TEST_VMID=${PAR_IT_TEST_VMID:-9900}
+	RUNNER_IMAGE=${PAR_IT_RUNNER_IMAGE:-}
+	IMAGE_TEMPLATE_VMID=${PAR_IT_IMAGE_TEMPLATE_VMID:-9001}
 	STATE=${PAR_IT_STATE:-$ROOT/.agents/integration}
+	if [[ -n $RUNNER_IMAGE ]]; then
+		[[ -f $RUNNER_IMAGE ]] || die "PAR_IT_RUNNER_IMAGE: no such file: $RUNNER_IMAGE"
+		IMAGE_MANIFEST=${RUNNER_IMAGE%.qcow2}.json
+		[[ -f $IMAGE_MANIFEST ]] || die "no manifest next to the runner image: $IMAGE_MANIFEST"
+	fi
 
 	umask 077
 	mkdir -p "$STATE"
@@ -96,19 +107,39 @@ preflight() {
 	node 'test -e /dev/kvm' || die "the node has no /dev/kvm; enable (nested) virtualization for it"
 	echo "$version, standalone, KVM available"
 
-	# Refuse VMIDs that belong to anything but the suite: the template's and the 11 test VMIDs. This fails closed:
+	# Refuse VMIDs that belong to anything but the suite: the templates' and the 11 test VMIDs. This fails closed:
 	# if the VM list can't be read or parsed, setup stops.
 	local vms taken
 	vms=$(node 'pvesh get /cluster/resources --type vm --output-format json') || die "can't list the node's VMs"
 	taken=$(perl -MJSON -e '
-		my ($pool, $tpl, $first) = @ARGV;
+		my ($pool, $image_pool, $tpl, $image_tpl, $first) = @ARGV;
 		for my $vm (@{decode_json(do { local $/; <STDIN> })}) {
 			my $id = $vm->{vmid} // next;
-			next unless $id == $tpl || ($id >= $first && $id <= $first + 10);
-			print "$id " unless ($vm->{pool} // "") eq $pool;
-		}' "$POOL" "$TEMPLATE_VMID" "$TEST_VMID" <<<"$vms") || die "can't parse the node's VM list"
-	[[ -z $taken ]] || die "VMIDs ${taken% } are in use outside pool $POOL; set PAR_IT_TEMPLATE_VMID or PAR_IT_TEST_VMID"
-	echo "VMIDs $TEMPLATE_VMID and $TEST_VMID-$((TEST_VMID + 10)) are free or the suite's own"
+			my $in = $vm->{pool} // "";
+			my $ok = $id == $tpl ? $in eq $pool
+				: $id == $image_tpl ? $in eq $image_pool
+				: $id >= $first && $id <= $first + 10 ? ($in eq $pool || $in eq $image_pool)
+				: 1;
+			print "$id " unless $ok;
+		}' "$POOL" "$IMAGE_POOL" "$TEMPLATE_VMID" "$IMAGE_TEMPLATE_VMID" "$TEST_VMID" <<<"$vms") ||
+		die "can't parse the node's VM list"
+	[[ -z $taken ]] || die "VMIDs ${taken% } are in use by something other than the suite; set PAR_IT_TEMPLATE_VMID," \
+		"PAR_IT_IMAGE_TEMPLATE_VMID, or PAR_IT_TEST_VMID"
+	echo "VMIDs $TEMPLATE_VMID, $IMAGE_TEMPLATE_VMID, and $TEST_VMID-$((TEST_VMID + 10)) are free or the suite's own"
+}
+
+# acl_paths lists the paths the test role is granted on: the pools, the storage, and the VNet.
+acl_paths() {
+	printf '%s ' "/pool/$POOL"
+	[[ -z $RUNNER_IMAGE ]] || printf '%s ' "/pool/$IMAGE_POOL"
+	printf '%s %s' "/storage/$STORAGE" "/sdn/zones/$ZONE/$VNET"
+}
+
+# latest_runner_version prints the latest actions/runner release from GitHub's public API, such as 2.337.0.
+latest_runner_version() {
+	curl -fsSL -H 'Accept: application/vnd.github+json' https://api.github.com/repos/actions/runner/releases/latest |
+		perl -MJSON -e 'my $tag = decode_json(do { local $/; <STDIN> })->{tag_name} // ""; $tag =~ s/^v//;
+			$tag =~ /^\d+\.\d+\.\d+$/ or die "unexpected tag: $tag\n"; print $tag'
 }
 
 cmd_setup() {
@@ -117,12 +148,17 @@ cmd_setup() {
 
 	log "fixtures"
 	node_script fixtures.sh "ZONE=$ZONE" "VNET=$VNET" "POOL=$POOL" "ROLE=$ROLE" "USER=$USER" "PRIVS=$(privileges)"
+	if [[ -n $RUNNER_IMAGE ]]; then
+		node "pveum pool list --output-format json | grep -q '\"poolid\":\"$IMAGE_POOL\"' ||
+			pveum pool add '$IMAGE_POOL' --comment 'proxmox-actions-runners integration suite: runner image'"
+		echo "pool $IMAGE_POOL"
+	fi
 
 	# A token's secret is only shown when it's created, so setup always makes a new one. It goes straight into a
 	# private file and is never printed.
 	# Removing a token that still has ACLs leaves them behind for Proxmox to clean up with warnings, so drop them first.
 	log "API token $USER!$TOKEN"
-	node "for path in /pool/$POOL /storage/$STORAGE /sdn/zones/$ZONE/$VNET; do
+	node "for path in $(acl_paths); do
 			pveum acl delete \"\$path\" --tokens '$USER!$TOKEN' --roles '$ROLE' >/dev/null 2>&1 || true
 		done
 		pveum user token remove '$USER' '$TOKEN' >/dev/null 2>&1 || true
@@ -137,7 +173,7 @@ cmd_setup() {
 
 	# A privilege-separated token gets only what both it and its user have, so both get every ACL.
 	log "ACLs"
-	node "for path in /pool/$POOL /storage/$STORAGE /sdn/zones/$ZONE/$VNET; do
+	node "for path in $(acl_paths); do
 		pveum acl modify \"\$path\" --users '$USER' --tokens '$USER!$TOKEN' --roles '$ROLE' && echo \"\$path\"
 	done"
 
@@ -145,7 +181,52 @@ cmd_setup() {
 	node_script template.sh "VMID=$TEMPLATE_VMID" "POOL=$POOL" "STORAGE=$STORAGE" "BRIDGE=$BUILD_BRIDGE" \
 		"VNET=$VNET" "REBUILD=${PAR_IT_REBUILD_TEMPLATE:-0}"
 
+	# parcon check template compares the template's runner version with the latest release, so tag the test template
+	# with the latest one for a result that doesn't depend on when the suite runs.
+	# Keep the template's version (par-tv, its creation time) and replace only the runner version.
+	local runner version
+	runner=$(latest_runner_version) || die "can't look up the latest actions/runner release"
+	version=$(node "qm config $TEMPLATE_VMID" | sed -n 's/^tags: .*par-tv-\([0-9]*\).*/\1/p')
+	[[ -n $version ]] || die "template $TEMPLATE_VMID has no par-tv tag; rebuild it with PAR_IT_REBUILD_TEMPLATE=1"
+	node "qm set $TEMPLATE_VMID --tags 'par-managed;par-template;par-tv-$version;par-rv-$runner' >/dev/null"
+	echo "tagged with actions/runner $runner, the latest release"
+
+	# parcon check template builds the GitHub App client before its unauthenticated release lookup, so it needs a
+	# key that parses. This one belongs to no App and is never sent anywhere.
+	if [[ ! -f $STATE/github-app.pem ]]; then
+		openssl genrsa -out "$STATE/github-app.pem" 2048 2>/dev/null
+		chmod 600 "$STATE/github-app.pem"
+	fi
+
+	[[ -z $RUNNER_IMAGE ]] || import_runner_image
+
 	write_state
+}
+
+# import_runner_image copies the runner image to the node and imports it as a template in its own pool, tagged from
+# its manifest the way the installer will.
+import_runner_image() {
+	log "runner image $(basename "$RUNNER_IMAGE") as template $IMAGE_TEMPLATE_VMID"
+	local tags remote=/var/lib/vz/import/par-it-runner.qcow2 sum
+	tags=$(perl -MJSON -e '
+		my $m = decode_json(do { local $/; <STDIN> });
+		my ($b) = grep { $_->{packer_run_uuid} eq $m->{last_run_uuid} } @{$m->{builds}};
+		$b //= $m->{builds}[-1];
+		my $rv = $b->{custom_data}{runner_version} or die "no runner_version in the manifest\n";
+		print "par-managed;par-template;par-tv-$b->{build_time};par-rv-$rv";' <"$IMAGE_MANIFEST") ||
+		die "can't read $IMAGE_MANIFEST"
+	echo "tags: $tags"
+
+	sum=$(sha256sum "$RUNNER_IMAGE" | cut -d' ' -f1)
+	if [[ $(node "sha256sum $remote 2>/dev/null | cut -d' ' -f1") != "$sum" ]]; then
+		echo "copying $(du -h "$RUNNER_IMAGE" | cut -f1) to the node"
+		scp -q "${SSH_OPTS[@]}" "$RUNNER_IMAGE" "$PAR_IT_SSH:$remote.part"
+		node "echo '$sum  $remote.part' | sha256sum -c --quiet - && mv $remote.part $remote" ||
+			die "the runner image arrived corrupted"
+	fi
+	node_script import-image.sh "VMID=$IMAGE_TEMPLATE_VMID" "POOL=$IMAGE_POOL" "STORAGE=$STORAGE" "VNET=$VNET" \
+		"IMAGE=$remote" "TAGS=$tags"
+	IMAGE_RUNNER=${tags##*par-rv-}
 }
 
 write_state() {
@@ -167,16 +248,32 @@ PAR_PVE_VNET=$VNET
 PAR_PVE_TEMPLATE_VMID=$TEMPLATE_VMID
 PAR_PVE_TEST_VMID=$TEST_VMID
 EOF
+	if [[ -n $RUNNER_IMAGE ]]; then
+		cat >>"$STATE/env" <<EOF
+PAR_PVE_IMAGE_POOL=$IMAGE_POOL
+PAR_PVE_IMAGE_TEMPLATE_VMID=$IMAGE_TEMPLATE_VMID
+PAR_IT_IMAGE_RUNNER=$IMAGE_RUNNER
+EOF
+		write_config "$IMAGE_POOL" "$name" "$fingerprint" >"$STATE/config-image.yaml"
+	else
+		rm -f "$STATE/config-image.yaml"
+	fi
+	write_config "$POOL" "$name" "$fingerprint" >"$STATE/config.yaml"
+	echo "state written to $STATE"
+}
 
-	# A controller config for parcon check proxmox. The GitHub section is a placeholder that check proxmox ignores.
-	cat >"$STATE/config.yaml" <<EOF
+# write_config prints a controller config for the parcon checks, for one pool. The GitHub App is a placeholder:
+# check proxmox ignores it, and check template only needs its key to parse.
+write_config() {
+	local pool=$1 name=$2 fingerprint=$3
+	cat <<EOF
 proxmox:
   url: $API_URL
   tokenId: $USER!$TOKEN
   tokenSecretFile: $STATE/token
   tlsFingerprint: "$fingerprint"
   node: $name
-  pool: $POOL
+  pool: $pool
   storage: $STORAGE
   zone: $ZONE
   vnet: $VNET
@@ -189,7 +286,6 @@ worker:
 scaleSets:
   - { name: par-integration, maxRunners: 1 }
 EOF
-	echo "state written to $STATE"
 }
 
 # check_proxmox runs parcon check proxmox against the suite's config and prints its output.
@@ -234,6 +330,28 @@ cmd_test() {
 	(cd "$ROOT" && go build -o "$STATE/parcon" ./cmd/parcon)
 	check_proxmox || die "parcon check proxmox failed"
 
+	# The test template is tagged with the latest actions/runner release, so this is up to date. The release lookup
+	# goes to the real github.com.
+	log "parcon check template"
+	local out
+	out=$("$STATE/parcon" check template -config "$STATE/config.yaml" 2>&1) || {
+		printf '%s\n' "$out"
+		die "parcon check template failed"
+	}
+	printf '%s\n' "$out"
+	grep -q "^ok    runner template $TEMPLATE_VMID, " <<<"$out" || die "check template didn't find template $TEMPLATE_VMID"
+	grep -q "is the latest release" <<<"$out" || die "check template doesn't report the test template as up to date"
+
+	if [[ -f $STATE/config-image.yaml ]]; then
+		# The image's runner may be older than the latest release, which the check reports; that depends on when the
+		# image was built, so only the template and its version are required here.
+		log "parcon check template on the runner image"
+		out=$("$STATE/parcon" check template -config "$STATE/config-image.yaml" 2>&1) || true
+		printf '%s\n' "$out"
+		grep -q "^ok    runner template $PAR_PVE_IMAGE_TEMPLATE_VMID, .*actions/runner $PAR_IT_IMAGE_RUNNER\$" <<<"$out" ||
+			die "check template didn't report the runner image template with actions/runner $PAR_IT_IMAGE_RUNNER"
+	fi
+
 	# The next checks break the test role on purpose; the trap puts it back even if one fails.
 	trap restore_access EXIT
 
@@ -255,8 +373,10 @@ cmd_test() {
 cmd_teardown() {
 	require_throwaway
 	log "teardown on $HOST"
-	node_script teardown.sh "ZONE=$ZONE" "VNET=$VNET" "POOL=$POOL" "ROLE=$ROLE" "USER=$USER"
-	rm -f "$STATE/env" "$STATE/token" "$STATE/config.yaml" "$STATE/parcon"
+	# Always both pools: the image pool may be left from an earlier run with PAR_IT_RUNNER_IMAGE.
+	node_script teardown.sh "ZONE=$ZONE" "VNET=$VNET" "POOLS=$POOL $IMAGE_POOL" "ROLE=$ROLE" "USER=$USER"
+	rm -f "$STATE/env" "$STATE/token" "$STATE/config.yaml" "$STATE/config-image.yaml" "$STATE/github-app.pem" \
+		"$STATE/parcon"
 }
 
 main() {
