@@ -4,16 +4,11 @@
 # workers are cloned from. Built in CI and published as par-runner-<version>.qcow2 with a manifest,
 # par-runner-<version>.json, that records the runner version and build time the installer tags the template with.
 #
-# The plugin and Ubuntu image pins are in ubuntu.pkr.hcl, a link to images/common/ubuntu.pkr.hcl.
+# The plugin and Ubuntu image pins and the shared build VM are in ubuntu.pkr.hcl, a link to
+# images/common/ubuntu.pkr.hcl.
 #
 #   packer init images/runner
 #   packer build -var version=dev images/runner
-
-variable "version" {
-  type        = string
-  default     = "dev"
-  description = "Release version, used in the output file names."
-}
 
 variable "runner_version" {
   type        = string
@@ -33,54 +28,22 @@ variable "output_directory" {
 }
 
 locals {
-  dir = abspath(path.root)
-  # The build VM is local, reachable only through QEMU's user-mode network, and its build user is locked by
-  # cleanup.sh and deleted on first boot, so a fixed password is fine.
-  build_user     = "packer"
-  build_password = "packer"
-  name           = "par-runner-${var.version}"
-}
-
-source "qemu" "runner" {
-  iso_url      = "https://cloud-images.ubuntu.com/releases/26.04/${var.ubuntu_release}/ubuntu-26.04-server-cloudimg-amd64.img"
-  iso_checksum = "sha256:${var.ubuntu_image_sha256}"
-  disk_image   = true
-
-  # The template's disk. Every worker's disk is this plus freeDiskGiB, so keep it just big enough for the image.
-  disk_size          = "10G"
-  format             = "qcow2"
-  disk_interface     = "virtio-scsi"
-  disk_discard       = "unmap"
-  disk_detect_zeroes = "unmap"
-  disk_compression   = true
-
-  accelerator = var.accelerator
-  cpus        = 2
-  memory      = 4096
-  headless    = true
-
-  # cloud-init NoCloud seed for the build only: it creates the build user. cleanup.sh resets cloud-init so the
-  # image picks up Proxmox's cloud-init drive on its first real boot.
-  cd_label = "cidata"
-  cd_content = {
-    "meta-data" = "instance-id: par-runner-build\nlocal-hostname: par-runner\n"
-    "user-data" = templatefile("${local.dir}/../common/user-data.pkrtpl", {
-      user     = local.build_user
-      password = local.build_password
-    })
-  }
-
-  ssh_username     = local.build_user
-  ssh_password     = local.build_password
-  ssh_timeout      = "5m"
-  shutdown_command = "sudo shutdown -P now"
-
-  output_directory = var.output_directory
-  vm_name          = "${local.name}.qcow2"
+  name = "par-runner-${var.version}"
 }
 
 build {
-  sources = ["source.qemu.runner"]
+  source "qemu.ubuntu" {
+    name = "runner"
+    # The template's disk. Every worker's disk is this plus freeDiskGiB, so keep it just big enough for the image.
+    disk_size = "10G"
+    memory    = 4096
+    cd_content = {
+      "meta-data" = "instance-id: par-runner-build\nlocal-hostname: par-runner\n"
+      "user-data" = local.build_user_data
+    }
+    output_directory = var.output_directory
+    vm_name          = "${local.name}.qcow2"
+  }
 
   provisioner "shell" {
     # env(1), because sudo drops the caller's environment.
@@ -90,6 +53,7 @@ build {
       "PAR_RUNNER_SHA256=${var.runner_sha256}",
     ]
     scripts = [
+      "${local.dir}/../common/base.sh",
       "${local.dir}/scripts/base.sh",
       "${local.dir}/scripts/10-runner.sh",
       "${local.dir}/scripts/20-par-runner.sh",

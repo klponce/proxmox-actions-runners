@@ -1,26 +1,14 @@
 #!/usr/bin/env bash
-# First step of the runner image: the QEMU guest agent, the runner user, and settings every worker needs. The
+# The runner image's step after images/common/base.sh: the runner user and settings every worker needs. The
 # runner, its one-job units, and the toolset follow in the numbered scripts.
 set -euo pipefail
 
 main() {
   export DEBIAN_FRONTEND=noninteractive
-
-  # Wait for cloud-init to finish its first boot before touching apt.
-  cloud-init status --wait >/dev/null || true
-
-  apt-get update
-  apt-get -y -o Dpkg::Options::=--force-confold full-upgrade
   apt-get -y install --no-install-recommends \
-    ca-certificates \
     cloud-guest-utils \
     curl \
-    qemu-guest-agent \
     sudo
-
-  # The controller talks to workers only through the guest agent. Ubuntu starts it through a udev rule when the
-  # virtio serial port is present; make sure it also starts on boot.
-  systemctl enable qemu-guest-agent
 
   create_runner_user
   disable_background_updates

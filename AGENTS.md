@@ -249,7 +249,8 @@ See [docs/install.md](docs/install.md) for the full design.
   disable runner auto-update. GitHub stops accepting a runner that doesn't update itself 30 days after a newer
   release, so each runner release needs a new runner image, imported by `install.sh upgrade`. The controller logs a
   warning 7 days after a release its template lacks and an error after 21 (`parcon check template` shows the same).
-- Scripts run in order: `scripts/base.sh` (the `runner` user, `qemu-guest-agent`, cloud-init settings),
+- Scripts run in order: `images/common/base.sh` (system upgrade and `qemu-guest-agent`, shared with the other
+  images), `scripts/base.sh` (the `runner` user, automatic updates off),
   `scripts/10-runner.sh` (the pinned runner in `/opt/actions-runner`, its job environment in `.env`, and
   `/home/runner/work`), `scripts/20-par-runner.sh` (the one-job units), `scripts/30-minimal-tools.sh`, the checks in
   `tests/`, then `images/common/cleanup.sh`, which every image build shares.
@@ -273,8 +274,9 @@ See [docs/install.md](docs/install.md) for the full design.
 
 ## Gateway and controller image guidelines (`images/gateway/`, `images/controller/`)
 
-- Both start from the same pinned Ubuntu 26.04 cloud image as the runner (`images/common/ubuntu.pkr.hcl`, linked
-  into each image directory) and run `images/common/base.sh` first: the guest agent and `unattended-upgrades`.
+- Both start from the same pinned Ubuntu 26.04 cloud image and build VM as the runner (`images/common/ubuntu.pkr.hcl`,
+  linked into each image directory) and run `images/common/base.sh` (the guest agent) and
+  `images/common/auto-updates.sh` (`unattended-upgrades`) first.
   Unlike workers, these VMs are long-lived and patch themselves. They hold no machine identity either:
   `images/common/cleanup.sh` runs last.
 - Keep their disks small: 8 GiB, the gateway VM's disk size. The installer grows the controller's to its VM size in

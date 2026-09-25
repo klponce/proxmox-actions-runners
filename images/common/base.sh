@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# First step of the gateway and controller images: an up-to-date system, the QEMU guest agent the installer drives
-# them through, and automatic security updates. These VMs are long-lived, unlike workers, so they keep themselves
-# patched with unattended-upgrades. The runner image has its own base.sh, which turns automatic updates off.
+# First step of every image: an up-to-date system and the QEMU guest agent, which is how the controller reaches
+# workers and the installer configures the gateway and controller VMs. The runner image turns automatic updates off
+# (images/runner/scripts/base.sh); the long-lived gateway and controller turn them on (auto-updates.sh).
 set -euo pipefail
 
 main() {
@@ -14,14 +14,11 @@ main() {
   apt-get -y -o Dpkg::Options::=--force-confold full-upgrade
   apt-get -y install --no-install-recommends \
     ca-certificates \
-    qemu-guest-agent \
-    unattended-upgrades
+    qemu-guest-agent
 
-  systemctl enable qemu-guest-agent unattended-upgrades
-  cat >/etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
-APT::Periodic::Update-Package-Lists "1";
-APT::Periodic::Unattended-Upgrade "1";
-EOF
+  # Ubuntu starts the agent through a udev rule when the virtio serial port is present; make sure it also starts on
+  # boot.
+  systemctl enable qemu-guest-agent
 }
 
 main "$@"
