@@ -1,9 +1,10 @@
 # Installer design
 
-*Planned.* The whole project installs with one script run as root on a Proxmox VE 9 node. The script checks the
-host, creates an isolated worker network with a gateway VM, creates a small controller VM, builds the runner
-template, and registers the scale set. It changes the host only through Proxmox's own tools, and it can remove
-everything it created.
+The whole project installs with one script, [`install/install.sh`](../install/install.sh), run as root on a
+Proxmox VE 9 node. The script checks the host, creates an isolated worker network with a gateway VM, creates a small
+controller VM, imports the runner template, and registers the scale set. It changes the host only through Proxmox's
+own tools, and it can remove everything it created. It installs only from a release: the release workflow writes
+the version and the assets' checksums into it, and a copy from the source tree refuses to install.
 
 ## Goals
 
@@ -36,22 +37,31 @@ Or run it in one line:
 bash -c "$(curl -fsSL https://github.com/klponce/proxmox-actions-runners/releases/latest/download/install.sh)"
 ```
 
-Without flags, the script prompts for each setting. For unattended installs, pass an answers file:
+Without flags, the script prompts for the settings that have no default. For unattended installs, pass an answers
+file of `KEY=value` lines; `bash install.sh --help` lists the keys and their defaults. Values are read literally,
+never evaluated.
 
 ```bash
+cat >par.env <<'EOF'
+PAR_GITHUB_URL=https://github.com/my-org
+PAR_MAX_RUNNERS=4
+PAR_STORAGE=local-zfs
+EOF
 bash install.sh --answers par.env --yes
 ```
 
 | Command or flag | Effect |
 | --------------- | ------ |
 | `install` (default) | Install, or upgrade if an install is found |
-| `upgrade` | Upgrade the controller and rebuild the template. Keeps config and secrets |
+| `upgrade` | Upgrade to the script's release: the controller's `parcon`, the gateway VM, and a new runner template. Keeps config and secrets |
 | `uninstall` | Remove all managed VMs, templates, the controller VM, and the Proxmox objects |
 | `check` | Run the preflight checks only |
-| `--dry-run` | Print every change it would make, then exit |
+| `--dry-run` | Run the checks and print the plan, then exit without changing anything |
 | `--answers <file>` | Read settings from a `KEY=value` file instead of prompting |
-| `--yes` | Skip the confirmation prompt |
-| `--version <tag>` | Install a specific release instead of the one the script belongs to |
+| `--yes` | Skip the confirmation prompts |
+
+Each `install.sh` installs exactly its own release. To install another version, download that release's
+`install.sh`.
 
 ## Architecture
 
@@ -106,7 +116,11 @@ and refuses a file that doesn't match.
 | `par-gateway-<ver>.qcow2` | The gateway VM: Ubuntu 26.04, `qemu-guest-agent`, `unattended-upgrades`, nftables, dnsmasq, `par-gateway-configure` | Packer `qemu` builder in CI (`images/gateway/`) |
 | `par-runner-<ver>.qcow2` | The runner template: Ubuntu 26.04, `qemu-guest-agent`, the `runner` user, a pinned `actions/runner`, Docker, and a few basics | Packer `qemu` builder in CI (`images/runner/`) |
 | `par-runner-<ver>.json` | The runner image's build manifest, including its `actions/runner` version | Packer `qemu` builder in CI |
+| `parcon-<ver>-linux-amd64` | The `parcon` binary, which `upgrade` puts in the controller VM | Release workflow |
 | `SHA256SUMS` | Checksums of the above | Release workflow |
+
+The release workflow writes the version and the `SHA256SUMS` lines into `install.sh` (its `@PAR_VERSION@` and
+`@PAR_SHA256SUMS@` placeholders), so the script is the trust anchor for every asset it downloads.
 
 **Why prebuilt images instead of stock Ubuntu cloud images:** stock images don't include `qemu-guest-agent`, and the
 only way to add it at first boot is custom cloud-init user data. Proxmox stores that as snippet files, which means
@@ -201,15 +215,17 @@ The controller image and the installer agree on this layout:
 11. **Create the GitHub App** with the manifest flow described under *GitHub App setup*. The code the user pastes is
     passed to `parcon github app create` in the controller VM, so the App's private key goes straight from GitHub
     into the controller VM and never passes through the host. The installer then waits for the user to install the
-    App (`parcon github app wait-installation`) and writes the App's Client ID and installation ID into
-    `config.yaml`. A re-run skips this step if the controller VM already holds working App credentials. The
-    installer then runs `parcon check github` in the VM. This confirms that the App credentials produce an
-    installation token and can reach the org or repo. It then enables and starts `parcon.service`.
+    App (`parcon github app wait-installation`) and writes the App's installation ID into `config.yaml`. It writes
+    the Client ID there as soon as the key is in the VM, so a re-run after a failure keeps waiting for the same App
+    rather than creating another. The installer then runs `parcon check github` in the VM. This confirms that the App
+    credentials produce an installation token and can reach the org or repo. It then enables and starts
+    `parcon.service`.
 12. **Smoke test.** The installer clones one worker from the template into a reserved VMID, tagged
     `par-managed,par-build` so the reconcile loop leaves it alone, confirms the guest agent responds, and confirms
     through `qm guest exec` that the worker got a DHCP lease, reaches GitHub, and can't reach the Proxmox API or the
-    controller VM. It then destroys the clone and confirms that the controller registered the scale set and holds a
-    listener session. A re-run first destroys a clone a failed run left.
+    controller VM. It then destroys the clone and waits for the controller to log `scale set session opened`, which
+    it does once the scale set is registered and its listener session is open. A re-run first destroys a clone a
+    failed run left.
 13. **Summary.** Print the `runs-on:` label, the controller and gateway VMs' IDs and IPs, and the upgrade and
     uninstall commands. (The metrics URL and its certificate's fingerprint come with the metrics endpoint, which is
     deferred.)
@@ -324,7 +340,7 @@ never logged or printed:
 - `create` calls `POST /app-manifests/{code}/conversions` and keeps only the App ID, slug, Client ID, and private
   key. It drops the client secret and webhook secret, which the controller doesn't use. An invalid, used, or expired
   code fails with a message that says so.
-- `import` is the `--github-app manual` path for an App that already exists: the installer asks for its Client ID,
+- `import` is the `PAR_GITHUB_APP=manual` path for an App that already exists: the installer asks for its Client ID,
   reads its private key, and pipes the key to `import`. `import` checks that it is a PEM-encoded RSA private key.
 - `wait-installation` authenticates as the App with a JWT and polls `GET /orgs/{org}/installation` or
   `GET /repos/{owner}/{repo}/installation` every 5 seconds until the App is installed on `-target`
@@ -413,21 +429,34 @@ stay queued and workers that never register, and `install.sh check` tests it. It
 
 ## Upgrade and uninstall
 
-- **Upgrade** is in place: the new controller binary is pushed through the guest agent to `/usr/local/bin/parcon`,
-  then `parcon.service` is restarted. Config and secrets stay in the controller VM. The gateway VM holds no state
-  beyond its settings, so it is replaced with a new image and reconfigured with `par-gateway-configure`. A new
-  runner image is imported as a new template when the release has one, and the controller removes the old template
-  once its workers are gone. The controller VM's OS updates itself with `unattended-upgrades`.
-- **Uninstall** first stops the controller and deletes the scale set in GitHub. It then destroys every VM tagged
-  `par-managed`, removes the ACLs, token, user, role, and pools, and removes the `parzone` zone and `parnet` VNet and
-  applies the SDN config. It doesn't touch anything it didn't create.
+Each VM the installer creates carries a `par-release-<version>` tag, and the controller VM gets its tag last, so
+it marks a finished install. `install` on a node with a finished install upgrades it; on one with an unfinished
+install (the `par-system` pool exists), it continues it.
+
+- **Upgrade** is in place, run on the host like the install:
+  - The controller VM downloads the release's `parcon-<ver>-linux-amd64` itself, checks it against the checksum the
+    installer passes it through the guest agent, replaces `/usr/local/bin/parcon`, and restarts `parcon.service`.
+    The binary is far too big for the guest agent to carry, and config and secrets never leave the VM. The VM's OS
+    updates itself with `unattended-upgrades`.
+  - The gateway VM holds no state beyond its settings, so the installer reads them, replaces the VM with the new
+    image under the same VMID and address, and reconfigures it with `par-gateway-configure`. Workers lose their
+    network for the minute or two this takes.
+  - The release's runner image is imported as a new template, and the controller removes the old one once its
+    workers are gone.
+- **Uninstall** first stops the controller and deletes the scale set in GitHub (`parcon github scaleset delete` in
+  the controller VM, which also unregisters its runners). It then destroys every VM tagged `par-managed` in the two
+  pools, clones before templates, removes the ACLs, token, user, role, and pools, and removes the `parzone` zone and
+  `parnet` VNet and applies the SDN config. It doesn't touch anything it didn't create. The GitHub App stays; delete
+  it in GitHub's settings if you no longer need it.
 
 ## Script conventions
 
 - Bash with `set -euo pipefail`. The whole body is inside `main` and called on the last line, so a partial
-  `curl | bash` download can't run half a script.
+  `curl | bash` download can't run half a script. Tests source the script with `PAR_INSTALL_SOURCED=1`, which skips
+  `main`.
 - Use only tools that ship with Proxmox VE 9. Parse JSON with `pvesh --output-format json` and `perl -MJSON`, not
   `jq`.
-- Every mutating command goes through one `run` function that honors `--dry-run` and logs the command with
-  secrets masked.
-- Must pass `shellcheck`. Tests use `bats` with stubbed `qm`, `pveum`, and `pvesh`.
+- Every command that changes the host goes through the `change` function, which logs it and honors `--dry-run`.
+  Secrets are never arguments, so the log never holds one: they go to the controller VM on `qm guest exec`'s stdin.
+- Must pass `shellcheck`. Tests use `bats` (`install/tests`) with stubbed `qm`, `pveum`, `pvesh`, `curl`, and `ip`.
+  A Go test keeps the script's role privileges equal to what `parcon check proxmox` requires.

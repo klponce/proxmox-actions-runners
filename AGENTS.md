@@ -97,7 +97,8 @@ Keep these true. If a change needs to break one, discuss it first.
 ## Repository layout (planned)
 
 ```
-cmd/parcon/            `parcon` binary: `run`, `check`, `github app create|import|wait-installation`; flags, wiring, signals
+cmd/parcon/            `parcon` binary: `run`, `check`, `github app create|import|wait-installation`,
+                       `github scaleset delete`; flags, wiring, signals
 internal/config/       config schema, defaults, validation
 internal/github/       thin wrapper over actions/scaleset: GitHub App auth, scale set, message session, JIT configs
 internal/proxmox/      Proxmox API client wrapper: clone, configure, start, stop, destroy, list by tag, guest-agent writes
@@ -157,7 +158,7 @@ packer validate images/runner
 packer validate images/gateway
 CGO_ENABLED=0 go build -o bin/parcon ./cmd/parcon && packer validate -var parcon_binary=bin/parcon images/controller
 shellcheck images/common/*.sh images/*/scripts/*.sh images/*/tests/*.sh images/gateway/par-gateway-configure \
-  test/integration/*.sh test/integration/node/*.sh
+  test/integration/*.sh test/integration/node/*.sh install/install.sh install/tests/helpers.bash
 bats install/tests
 ```
 
@@ -226,7 +227,8 @@ See [docs/install.md](docs/install.md) for the full design.
 - Use Bash with `set -euo pipefail`, put the body in `main`, and call it on the last line so a truncated
   `curl | bash` download can't run.
 - Use only tools that ship with Proxmox VE 9. Parse JSON with `perl -MJSON`, not `jq`.
-- Send every mutating command through one `run` helper that honors `--dry-run` and masks secrets in logs.
+- Send every command that changes the host through the `change` helper, which logs it and honors `--dry-run`.
+  Never pass a secret as an argument, so the log never holds one. (Not `run`: that name belongs to bats.)
 - Every step checks what already exists before it creates anything, so a re-run continues or upgrades.
 - Secrets never touch the host's disk or a command line. Capture them in variables and send them into the
   controller VM with `qm guest exec --pass-stdin`.
