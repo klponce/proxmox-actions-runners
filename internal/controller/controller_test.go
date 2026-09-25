@@ -309,8 +309,8 @@ func TestOnlyOwnedVMsAreTouched(t *testing.T) {
 		{VMID: 500, Pool: testPool, Tags: []string{vmtags.Managed}},
 		// Managed stray in another pool.
 		{VMID: 10001, Pool: "other", Tags: []string{vmtags.Managed}},
-		// The installer's smoke-test clone.
-		{VMID: 10002, Pool: testPool, Status: "running", Tags: []string{vmtags.Managed, vmtags.Build}},
+		// The installer's smoke-test clone, in the reserved IDs.
+		{VMID: 10008, Pool: testPool, Status: "running", Tags: []string{vmtags.Managed, vmtags.Build}},
 		// A stopped worker of another pool.
 		{VMID: 10003, Pool: "other", Tags: workerTags(testScaleSet, testStart, testTemplateID, true)},
 	}
@@ -318,7 +318,7 @@ func TestOnlyOwnedVMsAreTouched(t *testing.T) {
 		h.pve.add(vm)
 	}
 	h.pass()
-	if got := h.pve.ids(); !reflect.DeepEqual(got, []int{500, 10000, 10001, 10002, 10003}) {
+	if got := h.pve.ids(); !reflect.DeepEqual(got, []int{500, 10000, 10001, 10003, 10008}) {
 		t.Errorf("VMs left = %v; the controller touched a VM it doesn't own", got)
 	}
 	for _, call := range h.pve.calls {

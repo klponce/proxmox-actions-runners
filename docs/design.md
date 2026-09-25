@@ -50,7 +50,8 @@ containers.
   `par-rv-<actions/runner version>`. The controller clones the newest, tags each worker with the template it came
   from (`par-tpl-<VMID>`), and destroys an older template once no worker references it. Linked clones can't outlive
   their template, and Proxmox refuses to delete a template that clones still use, so pruning is conservative: it
-  waits while any worker is being created, and stops entirely if any worker lacks the reference.
+  waits while any worker is being created, and while any managed VM in the pool lacks the reference, such as a
+  half-created clone or the installer's smoke-test clone.
 - **The 30-day rule.** A runner with auto-update disabled must be updated within 30 days of a new `actions/runner`
   release, or GitHub stops assigning it jobs. Auto-update stays disabled, as in ARC: a one-job runner that updates
   itself first downloads the runner on every job. Each runner release therefore needs a new runner image. CI opens a

@@ -260,8 +260,9 @@ The image's disk size is the baseline that each worker's `freeDiskGiB` is added 
 
 Templates are immutable. The installer imports each new runner image as a new template with a newer `par-tv` tag,
 and the controller clones the newest one. Linked clones depend on their template, so the controller deletes an old
-template only once no worker references it (`par-tpl-<VMID>` on each worker). The installer's `par-build`
-smoke-test clones are never counted: the installer destroys them itself, and `uninstall` removes any that remain.
+template only once no worker references it (`par-tpl-<VMID>` on each worker). A `par-build` smoke-test clone doesn't
+say which template it came from, so the controller deletes no template while one exists. The installer destroys
+its clones itself, and `uninstall` removes any that remain.
 
 GitHub stops accepting a runner with auto-update disabled 30 days after a newer `actions/runner` release. Each
 runner release therefore ships as a project release with a new runner image, and `install.sh upgrade` imports it.

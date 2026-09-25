@@ -33,11 +33,6 @@ main() {
   # Where the setup-* actions cache tool versions, as on GitHub-hosted runners.
   install -d -o runner -g runner /opt/hostedtoolcache /home/runner/work
 
-  # Jobs use Docker without sudo.
-  if getent group docker >/dev/null; then
-    usermod -aG docker runner
-  fi
-
   # The runner passes the variables in .env to every job.
   cat >"$RUNNER_DIR/.env" <<'EOF'
 LANG=C.UTF-8

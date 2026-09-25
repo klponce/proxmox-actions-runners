@@ -88,7 +88,7 @@ func New(opts Options) (*Client, error) {
 		c.http = &http.Client{Timeout: restTimeout}
 	}
 	if c.apiBase == "" {
-		c.apiBase = "https://api.github.com"
+		c.apiBase = defaultAPIBase
 	}
 	return c, nil
 }

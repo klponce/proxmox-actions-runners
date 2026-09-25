@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"reflect"
@@ -44,6 +45,18 @@ func TestPruneTemplates(t *testing.T) {
 			want: []int{10000, 10006, 10007, 10009},
 		},
 		{
+			// Its template is unknown: it carries the template's tags, not a reference.
+			name: "a smoke-test clone stops all pruning",
+			extra: []proxmox.VM{{VMID: 10008, Pool: testPool, Status: "running",
+				Tags: []string{vmtags.Managed, vmtags.Template, vmtags.Build, "par-tv-100"}}},
+			want: []int{10006, 10007, 10008, 10009},
+		},
+		{
+			name:  "an unmanaged VM in the pool doesn't stop pruning",
+			extra: []proxmox.VM{{VMID: 500, Pool: testPool, Status: "running"}},
+			want:  []int{500, 10009},
+		},
+		{
 			name: "nothing is pruned while a worker is being created",
 			busy: map[int]string{10001: opCreatePrefix + testScaleSet},
 			want: []int{10006, 10007, 10009},
@@ -74,6 +87,28 @@ func TestPruneTemplates(t *testing.T) {
 				t.Errorf("VMs left = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPruneWaitsForHalfCreatedClone(t *testing.T) {
+	h := newHarness(t, testConfig())
+	h.pve.addTemplate(10006, 100)
+	h.pve.addTemplate(10009, 300)
+	// A clone of the old template that a crash left before it got worker tags.
+	h.pve.add(proxmox.VM{VMID: 10000, Pool: testPool, Tags: []string{vmtags.Managed, vmtags.Template, "par-tv-100"}})
+
+	h.pass()
+	if got := h.pve.ids(); !reflect.DeepEqual(got, []int{10006, 10009}) {
+		t.Fatalf("VMs left = %v, want the clone destroyed and the old template kept for now", got)
+	}
+	for _, call := range h.pve.calls {
+		if call == "destroy 10006" {
+			t.Errorf("tried to destroy the old template while a clone of it existed")
+		}
+	}
+	h.pass()
+	if got := h.pve.ids(); !reflect.DeepEqual(got, []int{10009}) {
+		t.Errorf("VMs left = %v, want the old template pruned once the clone was gone", got)
 	}
 }
 
@@ -121,6 +156,36 @@ func TestRunnerFreshness(t *testing.T) {
 				t.Errorf("runnerFreshness = %v, %v; want %v, %v", level, show, tt.wantLevel, tt.wantShow)
 			}
 		})
+	}
+}
+
+func TestSlowRunnerLookupDoesntHoldUpThePass(t *testing.T) {
+	h := newHarness(t, testConfig())
+	h.pve.addTemplate(10009, 1)
+	h.gh.releaseBlock = make(chan struct{})
+	h.want(1)
+
+	done := make(chan error, 1)
+	go func() { done <- h.c.reconcile(context.Background()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("reconcile waited for the release lookup")
+	}
+	// A lookup is already in flight, so the next pass doesn't start another.
+	if err := h.c.reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	close(h.gh.releaseBlock)
+	h.c.ops.Wait()
+	if h.gh.releaseCalls != 1 {
+		t.Errorf("release lookups = %d, want 1", h.gh.releaseCalls)
+	}
+	if n := len(h.readyWorkers()); n != 1 {
+		t.Errorf("%d ready workers, want 1 created while the lookup was pending", n)
 	}
 }
 

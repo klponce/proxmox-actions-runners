@@ -30,19 +30,31 @@ type RunnerRelease struct {
 	PublishedAt time.Time
 }
 
+// defaultAPIBase is GitHub's REST API.
+const defaultAPIBase = "https://api.github.com"
+
 // LatestRunnerRelease returns the latest release of actions/runner from github.com. Self-hosted runners with
 // automatic updates off, as ours are, must be updated within 30 days of a release, so the controller compares it
-// with the runner in the current template. The request is unauthenticated: the release is public.
+// with the runner in the current template. The release is public, so this needs no credentials.
+func LatestRunnerRelease(ctx context.Context) (RunnerRelease, error) {
+	return latestRunnerRelease(ctx, &http.Client{Timeout: restTimeout}, defaultAPIBase)
+}
+
+// LatestRunnerRelease is the package-level LatestRunnerRelease, through the client's HTTP client.
 func (c *Client) LatestRunnerRelease(ctx context.Context) (RunnerRelease, error) {
+	return latestRunnerRelease(ctx, c.http, c.apiBase)
+}
+
+func latestRunnerRelease(ctx context.Context, client *http.Client, apiBase string) (RunnerRelease, error) {
 	const path = "/repos/actions/runner/releases/latest"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiBase+path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+path, nil)
 	if err != nil {
 		return RunnerRelease{}, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("User-Agent", systemName)
-	resp, err := c.http.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return RunnerRelease{}, fmt.Errorf("latest runner release: %w", err)
 	}
@@ -64,17 +76,45 @@ func (c *Client) LatestRunnerRelease(ctx context.Context) (RunnerRelease, error)
 	return RunnerRelease{Version: version, PublishedAt: out.PublishedAt}, nil
 }
 
-// NewerThan reports whether the release is newer than version, such as the runner version a template contains. A
-// version that can't be parsed counts as older, so it gets reported rather than silently accepted.
+// Staleness is how far a runner is behind the latest release.
+type Staleness int
+
+const (
+	// Current means the runner is the latest release or newer.
+	Current Staleness = iota
+	// Behind means a newer release came out less than RunnerUpdateWarnAfter ago.
+	Behind
+	// BehindWarn means a newer release came out at least RunnerUpdateWarnAfter ago.
+	BehindWarn
+	// BehindError means a newer release came out at least RunnerUpdateErrorAfter ago: install a new runner image
+	// before RunnerUpdateDeadline.
+	BehindError
+)
+
+// Staleness says how far a runner of version have, such as the one a template contains, is behind the release at
+// now. The controller and parcon check template both judge by it.
+func (r RunnerRelease) Staleness(have string, now time.Time) Staleness {
+	if !r.NewerThan(have) {
+		return Current
+	}
+	switch age := now.Sub(r.PublishedAt); {
+	case age >= RunnerUpdateErrorAfter:
+		return BehindError
+	case age >= RunnerUpdateWarnAfter:
+		return BehindWarn
+	default:
+		return Behind
+	}
+}
+
+// NewerThan reports whether the release is newer than version. A version that can't be parsed counts as older, so it
+// gets reported rather than silently accepted. The release's own version is valid: LatestRunnerRelease checks it.
 func (r RunnerRelease) NewerThan(version string) bool {
 	have, ok := parseVersion(version)
 	if !ok {
 		return true
 	}
-	latest, ok := parseVersion(r.Version)
-	if !ok {
-		return false
-	}
+	latest, _ := parseVersion(r.Version)
 	for i := range latest {
 		if latest[i] != have[i] {
 			return latest[i] > have[i]
