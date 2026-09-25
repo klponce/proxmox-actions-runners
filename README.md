@@ -259,7 +259,7 @@ These are deliberate. The project supports exactly the setup the installer creat
 ## Repository layout (planned)
 
 ```
-cmd/parcon/            `parcon` binary: controller service, `check`, `github app` setup
+cmd/parcon/            `parcon` binary: controller service, `check`, `github app` setup, `github scaleset delete`
 internal/config/       config loading, defaults, validation
 internal/github/       scale set listener, JIT configs, GitHub App auth
 internal/proxmox/      Proxmox API client (clone, configure, start, destroy, list)

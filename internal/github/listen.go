@@ -111,6 +111,8 @@ func (c *Client) listenOnce(ctx context.Context, opts ListenOptions, h Handler) 
 	if err != nil {
 		return fmt.Errorf("open session: %w", err)
 	}
+	// The installer's smoke test waits for this line.
+	c.logger.InfoContext(ctx, "scale set session opened", slog.Int("scaleSetId", opts.ScaleSetID))
 	defer func() {
 		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)
 		defer cancel()
