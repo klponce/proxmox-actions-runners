@@ -138,7 +138,7 @@ func (c *Controller) retire(ctx context.Context, vmid int, running bool, runnerN
 // the VM isn't listed anymore. A VM the token can't list is outside the pool, and not the controller's to touch.
 func (c *Controller) destroy(ctx context.Context, vmid int) error {
 	err := c.pve.Destroy(ctx, vmid)
-	if err == nil || proxmox.IsNotFound(err) {
+	if err == nil {
 		return nil
 	}
 	if proxmox.IsForbidden(err) {
