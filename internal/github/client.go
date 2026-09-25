@@ -62,7 +62,7 @@ func New(opts Options) (*Client, error) {
 	case opts.InstallationID <= 0:
 		return nil, errors.New("github: App installation ID is required")
 	}
-	if err := checkPrivateKey(opts.PrivateKeyPEM); err != nil {
+	if err := CheckPrivateKey(opts.PrivateKeyPEM); err != nil {
 		return nil, err
 	}
 	logger := opts.Logger
@@ -93,9 +93,9 @@ func New(opts Options) (*Client, error) {
 	return c, nil
 }
 
-// checkPrivateKey confirms that key is a PEM-encoded RSA private key, the kind GitHub issues for Apps, so a bad key
+// CheckPrivateKey confirms that key is a PEM-encoded RSA private key, the kind GitHub issues for Apps, so a bad key
 // fails at startup rather than on the first request. Errors never include the key.
-func checkPrivateKey(key string) error {
+func CheckPrivateKey(key string) error {
 	block, _ := pem.Decode([]byte(strings.TrimSpace(key)))
 	if block == nil {
 		return errors.New("github: App private key is not PEM-encoded")

@@ -33,6 +33,11 @@ const (
 	testQueueToken     = "message_queue_token"
 	testSessionID      = "5a1b2c3d-0000-4000-8000-000000000001"
 	testJITConfig      = "ZW5jb2RlZC1qaXQtY29uZmlnLXNlY3JldA=="
+	testAppID          = 123456
+	testAppSlug        = "par-my-org-a1b2c3"
+	testManifestCode   = "a1b2c3d4e5f6a1b2c3d4"
+	testClientSecret   = "client_secret_value"
+	testWebhookSecret  = "webhook_secret_value"
 )
 
 // testKey is an RSA key generated once for all tests.
@@ -76,6 +81,8 @@ type fakeGitHub struct {
 	failAccessToken bool
 	// runnerRelease is the latest actions/runner release; nil means none is published.
 	runnerRelease map[string]any
+	// installed is whether the App is installed on my-org and my-org/my-repo.
+	installed bool
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
@@ -102,15 +109,20 @@ func (f *fakeGitHub) client() *Client {
 			scaleset.WithRetryMax(0),
 			scaleset.WithTimeout(10 * time.Second),
 		},
-		httpClient: &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{RootCAs: f.certPool(), MinVersion: tls.VersionTLS12},
-		}},
+		httpClient: f.httpClient(),
 		apiBaseURL: f.srv.URL,
 	})
 	if err != nil {
 		f.t.Fatalf("New: %v", err)
 	}
 	return c
+}
+
+// httpClient returns an HTTP client that trusts the fake, for the REST calls this package makes itself.
+func (f *fakeGitHub) httpClient() *http.Client {
+	return &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: f.certPool(), MinVersion: tls.VersionTLS12},
+	}}
 }
 
 func (f *fakeGitHub) certPool() *x509.CertPool {
@@ -148,6 +160,20 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, f.runnerRelease)
+	case route == "POST /app-manifests/"+testManifestCode+"/conversions":
+		writeJSON(w, http.StatusCreated, map[string]any{"id": testAppID, "slug": testAppSlug, "client_id": testClientID,
+			"pem": testKeyPEM(), "client_secret": testClientSecret, "webhook_secret": testWebhookSecret})
+	case strings.HasPrefix(route, "POST /app-manifests/"):
+		writeJSON(w, http.StatusNotFound, map[string]any{"message": "Not Found"})
+	case route == "GET /orgs/my-org/installation", route == "GET /repos/my-org/my-repo/installation":
+		switch {
+		case !f.validAppJWT(strings.TrimPrefix(auth, "Bearer ")):
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "A JSON web token could not be decoded"})
+		case !f.installed:
+			writeJSON(w, http.StatusNotFound, map[string]any{"message": "Not Found"})
+		default:
+			writeJSON(w, http.StatusOK, map[string]any{"id": testInstallationID, "app_slug": testAppSlug})
+		}
 	case route == "POST /api/v3/orgs/my-org/actions/runners/registration-token":
 		if auth != "Bearer "+testInstallToken {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "Bad credentials"})
@@ -271,7 +297,8 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// validAppJWT checks that token is an RS256 JWT signed with the test key and issued by the test App.
+// validAppJWT checks that token is an RS256 JWT signed with the test key, issued by the test App, and valid now
+// for at most ten minutes, as GitHub requires.
 func (f *fakeGitHub) validAppJWT(token string) bool {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
@@ -291,9 +318,12 @@ func (f *fakeGitHub) validAppJWT(token string) bool {
 	}
 	var claims struct {
 		Iss string `json:"iss"`
+		Iat int64  `json:"iat"`
 		Exp int64  `json:"exp"`
 	}
-	return json.Unmarshal(payload, &claims) == nil && claims.Iss == testClientID && claims.Exp > time.Now().Unix()
+	now := time.Now().Unix()
+	return json.Unmarshal(payload, &claims) == nil && claims.Iss == testClientID && claims.Iat <= now &&
+		claims.Exp > now && claims.Exp <= now+600
 }
 
 // adminToken returns an unsigned JWT with an expiry; actions/scaleset only reads its claims.

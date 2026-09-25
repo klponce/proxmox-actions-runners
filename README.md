@@ -123,8 +123,8 @@ proxmox:
 
 github:
   configUrl: https://github.com/my-org
-  app:
-    clientId: Iv23liEXAMPLE0000000   # written by the installer's App setup
+  app:                             # left out until the installer has created the App
+    clientId: Iv23liEXAMPLE0000000
     installationId: 7890123
     privateKeyFile: /etc/proxmox-actions-runners/github-app.pem
 
@@ -199,8 +199,8 @@ has been behind for 7 days and an error after 21. `parcon check template` shows 
   line in `/etc/network/interfaces`).
 - **A GitHub organization or repository** where you can create and install a GitHub App. The installer creates the
   App with only the permission it needs:
-  - organization runners need **Self-hosted runners: read & write**
-  - repository runners need **Administration: read & write**
+  - organization runners need **Self-hosted runners: write** (write includes read)
+  - repository runners need **Administration: write**
 - **A browser on any device** for the one-time App creation step.
 
 The installer creates a privilege-separated API token `par@pve!controller`. Its role, `PARController`, is granted
@@ -245,7 +245,7 @@ These are deliberate. The project supports exactly the setup the installer creat
 ## Repository layout (planned)
 
 ```
-cmd/parcon/            `parcon` binary: controller service, `check`
+cmd/parcon/            `parcon` binary: controller service, `check`, `github app` setup
 internal/config/       config loading, defaults, validation
 internal/github/       scale set listener, JIT configs, GitHub App auth
 internal/proxmox/      Proxmox API client (clone, configure, start, destroy, list)

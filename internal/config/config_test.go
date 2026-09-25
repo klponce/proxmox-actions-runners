@@ -271,8 +271,7 @@ func TestParseInvalid(t *testing.T) {
 		{"GitHub Enterprise Server", "github.configUrl", "https://ghes.example.com/my-org", "https://github.com/<org>"},
 		{"too deep GitHub URL", "github.configUrl", "https://github.com/a/b/c", "https://github.com/<org>"},
 		{"GitHub URL without owner", "github.configUrl", "https://github.com/", "https://github.com/<org>"},
-		{"missing client ID", "github.app.clientId", nil, "github.app.clientId: is required"},
-		{"missing installation ID", "github.app.installationId", nil, "github.app.installationId"},
+		{"negative installation ID", "github.app.installationId", -1, "github.app.installationId: must be positive"},
 		{"relative private key", "github.app.privateKeyFile", "key.pem", "must be an absolute path"},
 
 		{"metrics on the LAN", "metrics.listen", "0.0.0.0:9465", "must be a loopback address"},
@@ -305,6 +304,39 @@ func TestParseInvalid(t *testing.T) {
 				t.Errorf("error does not mention %q:\n%v", tt.want, err)
 			}
 		})
+	}
+}
+
+func TestRequireGitHubApp(t *testing.T) {
+	c, err := parseDoc(t, validDoc())
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if err := c.RequireGitHubApp(); err != nil {
+		t.Errorf("RequireGitHubApp with an App = %v", err)
+	}
+
+	// Before the installer creates the App, the config has no App at all.
+	doc := validDoc()
+	set(t, doc, "github.app", nil)
+	c, err = parseDoc(t, doc)
+	if err != nil {
+		t.Fatalf("Parse without an App: %v", err)
+	}
+	want := "the GitHub App isn't set up yet: missing github.app.clientId, github.app.installationId, " +
+		"github.app.privateKeyFile"
+	if err := c.RequireGitHubApp(); err == nil || err.Error() != want {
+		t.Errorf("RequireGitHubApp without an App = %v, want %q", err, want)
+	}
+
+	doc = validDoc()
+	set(t, doc, "github.app.installationId", nil)
+	c, err = parseDoc(t, doc)
+	if err != nil {
+		t.Fatalf("Parse without an installation: %v", err)
+	}
+	if err := c.RequireGitHubApp(); err == nil || !strings.HasSuffix(err.Error(), "missing github.app.installationId") {
+		t.Errorf("RequireGitHubApp without an installation = %v", err)
 	}
 }
 

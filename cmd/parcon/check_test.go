@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/klponce/proxmox-actions-runners/internal/github"
 )
 
 // fakeProxmox serves canned JSON for the endpoints check proxmox calls.
@@ -193,6 +197,43 @@ func TestCheckProxmox(t *testing.T) {
 				t.Error("output leaks the token secret")
 			}
 		})
+	}
+}
+
+// TestWithoutGitHubApp covers the config the installer writes before it creates the GitHub App.
+func TestWithoutGitHubApp(t *testing.T) {
+	old := latestRunnerRelease
+	t.Cleanup(func() { latestRunnerRelease = old })
+	latestRunnerRelease = func(context.Context) (github.RunnerRelease, error) {
+		return github.RunnerRelease{Version: "2.337.0", PublishedAt: time.Now()}, nil
+	}
+	responses := healthyResponses()
+	responses["/cluster/resources"] = []map[string]any{{"type": "qemu", "vmid": 10999, "node": "pve1",
+		"pool": "par-runners", "template": 1, "tags": "par-managed;par-template;par-tv-1700000000;par-rv-2.337.0"}}
+	path := writeCheckConfig(t, fakeProxmox(t, responses), 0o600)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.Replace(string(data),
+		"  app: {clientId: Iv23liEXAMPLE0000000, installationId: 1, privateKeyFile: /etc/key.pem}\n", "", 1))
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{{"check", "config"}, {"check", "proxmox"}, {"check", "template"}} {
+		var stdout, stderr bytes.Buffer
+		if err := run(append(args, "-config", path), &stdout, &stderr); err != nil {
+			t.Errorf("%v without an App: %v\n%s", args, err, stdout.String())
+		}
+	}
+	const want = "the GitHub App isn't set up yet: missing github.app.clientId"
+	for _, args := range [][]string{{"run"}, {"check", "github"}} {
+		var stdout, stderr bytes.Buffer
+		err := run(append(args, "-config", path), &stdout, &stderr)
+		if outcomeOf(err) != failed || !strings.Contains(err.Error(), want) {
+			t.Errorf("%v without an App: error = %v, want it to mention %q", args, err, want)
+		}
 	}
 }
 

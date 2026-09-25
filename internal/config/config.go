@@ -109,7 +109,8 @@ func (g GitHub) IsRepository() bool {
 	return strings.Count(strings.Trim(u.Path, "/"), "/") == 1
 }
 
-// GitHubApp holds the GitHub App credentials. The installer's App setup writes them.
+// GitHubApp holds the GitHub App credentials. The installer writes them once it has created the App; until then
+// they are empty (see RequireGitHubApp).
 type GitHubApp struct {
 	ClientID       string `yaml:"clientId"`
 	InstallationID int64  `yaml:"installationId"`
@@ -119,7 +120,7 @@ type GitHubApp struct {
 
 // Metrics configures the metrics and health endpoint.
 type Metrics struct {
-	// Listen is the loopback address to serve on. nginx publishes it on the LAN over HTTPS.
+	// Listen is the address to serve on: loopback only; the metrics endpoint is deferred past v0.1.
 	Listen string `yaml:"listen"`
 }
 

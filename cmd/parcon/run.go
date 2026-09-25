@@ -44,6 +44,9 @@ func runController(args []string, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if err := cfg.RequireGitHubApp(); err != nil {
+		return err
+	}
 	c, err := newController(cfg, logger)
 	if err != nil {
 		return err

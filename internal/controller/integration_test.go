@@ -88,7 +88,7 @@ func TestIntegrationTemplatePruning(t *testing.T) {
 	h := newLive(t, "PAR_PVE_POOL")
 	newest := h.envInt("PAR_PVE_TEMPLATE_VMID")
 	// Templates live in the reserved VMIDs at the end of the range (AGENTS.md, template guidelines).
-	old := h.cfg.Proxmox.VMIDRange.Reserved().End
+	old := h.cfg.Proxmox.VMIDRange.End
 	t.Cleanup(func() { h.destroyIfPresent(old) })
 
 	if err := h.pve.Clone(h.ctx, proxmox.CloneOptions{SourceVMID: newest, NewVMID: old, Name: "par-it-old-template",
