@@ -1,0 +1,25 @@
+# The controller's unit in the controller VM (images/controller/). The image installs it but doesn't enable it: the
+# installer enables it once the config holds the GitHub App's credentials.
+[Unit]
+Description=proxmox-actions-runners controller
+Documentation=https://github.com/klponce/proxmox-actions-runners
+Wants=network-online.target
+# GitHub App tokens need a correct clock.
+After=network-online.target time-sync.target
+ConditionPathExists=/etc/proxmox-actions-runners/config.yaml
+
+[Service]
+Type=exec
+User=parcon
+Group=parcon
+ExecStart=/usr/local/bin/parcon run
+Restart=on-failure
+RestartSec=10s
+# Room for the work in flight to finish after SIGTERM.
+TimeoutStopSec=5min
+NoNewPrivileges=yes
+ProtectSystem=strict
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
