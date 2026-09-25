@@ -28,6 +28,11 @@ readonly TAG_BUILD=par-build RELEASE_TAG_PREFIX=par-release-
 # The controller VM (docs/install.md, "Controller VM contract").
 readonly ETC=/etc/proxmox-actions-runners
 readonly KEY_FILE=$ETC/github-app.pem
+# A copy of the node's CA, which the controller verifies the API's certificate against.
+readonly CA_FILE=$ETC/pve-ca.pem
+
+# Where Proxmox keeps the node's certificates. Tests point it elsewhere.
+PVE_DIR=/etc/pve
 
 # The token's role: exactly what internal/proxmox/access.go requires, on the runner pool, the storage, and the VNet.
 # A Go test keeps this list in sync with it.
@@ -327,11 +332,55 @@ pve_address() {
 	fi
 }
 
-# tls_fingerprint prints the SHA-256 fingerprint of the certificate the API serves, which the controller pins.
-tls_fingerprint() {
-	local cert=/etc/pve/local/pve-ssl.pem
-	[[ -e /etc/pve/local/pveproxy-ssl.pem ]] && cert=/etc/pve/local/pveproxy-ssl.pem
-	openssl x509 -noout -fingerprint -sha256 -in "$cert" | cut -d= -f2
+# served_cert prints the certificate file the API serves: a custom or ACME certificate if one is installed, otherwise
+# the node's own, which the node's CA signs.
+served_cert() {
+	if [[ -e $PVE_DIR/local/pveproxy-ssl.pem ]]; then
+		echo "$PVE_DIR/local/pveproxy-ssl.pem"
+	else
+		echo "$PVE_DIR/local/pve-ssl.pem"
+	fi
+}
+
+# tls_mode prints how the controller verifies the API's certificate. Each way keeps working when the certificate is
+# renewed, except pin:
+#   ca      the node's own certificate, against the node's CA (pve-root-ca.pem), which renewals keep
+#   system  a custom or ACME certificate that the system CAs trust
+#   pin     a certificate from a CA the system doesn't trust: its fingerprint is pinned
+tls_mode() {
+	local cert
+	cert=$(served_cert)
+	if [[ $cert == */pve-ssl.pem ]]; then
+		echo ca
+	elif openssl verify -untrusted "$cert" "$cert" >/dev/null 2>&1; then
+		echo system
+	else
+		echo pin
+	fi
+}
+
+# tls_server_name prints a DNS name the served certificate is issued for, other than localhost. The controller
+# connects by IP address and checks the certificate against this name.
+tls_server_name() {
+	openssl x509 -noout -ext subjectAltName -in "$(served_cert)" 2>/dev/null | tr ',' '\n' |
+		sed -n 's/^[[:space:]]*DNS://p' | grep -vx localhost | head -n 1 || true
+}
+
+# tls_fingerprint prints the SHA-256 fingerprint of the served certificate, for tls_mode pin.
+tls_fingerprint() { openssl x509 -noout -fingerprint -sha256 -in "$(served_cert)" | cut -d= -f2; }
+
+# tls_config prints the proxmox: lines of the controller config that say how to verify the API.
+tls_config() {
+	local name
+	case $(tls_mode) in
+	ca) printf '  caCertFile: %s\n' "$CA_FILE" ;;
+	pin)
+		printf '  tlsFingerprint: "%s"\n' "$(tls_fingerprint)"
+		return
+		;;
+	esac
+	name=$(tls_server_name)
+	[[ -z $name ]] || printf '  tlsServerName: %s\n' "$name"
 }
 
 # vms_with_tag prints the VMIDs in a pool that carry a tag, one per line.
@@ -582,6 +631,19 @@ installed_controller() {
 	vms_with_tag "$SYSTEM_POOL" "$TAG_CONTROLLER" | head -n 1
 }
 
+# check_tls reports how the controller will verify the API's certificate. Only a pinned certificate needs attention.
+check_tls() {
+	case $(tls_mode) in
+	ca) echo "the node's own certificate, verified against the node's CA" ;;
+	system) echo "a certificate the system CAs trust, verified as $(tls_server_name)" ;;
+	pin)
+		echo "a certificate from a CA the host doesn't trust: the controller pins it, and after it is renewed the" \
+			"controller's config needs its new fingerprint"
+		return 1
+		;;
+	esac
+}
+
 check_names() {
 	ours && { echo "found an earlier install; continuing it" && return 0; }
 	local taken=()
@@ -631,6 +693,7 @@ preflight() {
 	check hard "free space on $PAR_STORAGE" check_free_space
 	check warn "memory" check_memory
 	check hard "LAN bridge $PAR_BRIDGE" check_bridge
+	check warn "API certificate" check_tls
 	check hard "SDN available" check_sdn
 	check hard "worker subnet $PAR_WORKER_SUBNET free" check_worker_subnet
 	check hard "names free" check_names
@@ -911,7 +974,7 @@ proxmox:
   url: https://$(pve_address):8006/api2/json
   tokenId: $PVE_USER!$TOKEN
   tokenSecretFile: $ETC/pve-token
-  tlsFingerprint: "$(tls_fingerprint)"
+$(tls_config)
   node: $(node_name)
   pool: $RUNNER_POOL
   storage: $PAR_STORAGE
@@ -945,6 +1008,9 @@ configure_controller() {
 	((DRY_RUN)) && return 0
 	local vmid=$CONTROLLER_VMID client_id installation_id
 	read -r client_id installation_id <<<"$(read_existing_app)" || true
+	if [[ $(tls_mode) == ca ]]; then
+		write_controller_file "$vmid" "$CA_FILE" <"$PVE_DIR/pve-root-ca.pem" || die "writing the node's CA failed"
+	fi
 	render_config "$client_id" "$installation_id" | write_controller_file "$vmid" "$ETC/config.yaml" ||
 		die "writing the config failed"
 

@@ -148,6 +148,7 @@ include the agent avoids both changes to the host.
 | Free space | controller and gateway disks + template + `maxRunners` × (`freeDiskGiB`, or template size + `freeDiskGiB` if not linked) + image download | hard |
 | Free memory and CPU | host RAM and threads against `maxRunners` × worker size plus existing VMs | warn |
 | LAN bridge | the bridge for the controller and gateway VMs exists. VLAN tag valid if set | hard |
+| API certificate | how the controller will verify it: the node's CA, the system CAs, or a pinned fingerprint for a certificate from a CA the host doesn't trust | warn if pinned |
 | SDN available | `ifupdown2` installed and `/etc/network/interfaces` sources `/etc/network/interfaces.d/*`, so applying SDN works | hard |
 | Worker subnet free | the worker subnet doesn't overlap any route or address on the host, or the LAN subnet given for the gateway | hard |
 | SDN names free | zone `parzone` and VNet `parnet` are unused, or already ours (upgrade) | hard |
@@ -206,10 +207,16 @@ The controller image and the installer agree on this layout:
    `par-managed,par-controller`, and start it.
 10. **Configure the controller** through the guest agent once it responds. Secrets go through
     `qm guest exec --pass-stdin`, so they never appear on a command line or on the host's disk:
-    - `/etc/proxmox-actions-runners/config.yaml` with the settings and the Proxmox host's pinned TLS fingerprint,
-      but no `github.app` yet (see *Controller VM contract*)
+    - `/etc/proxmox-actions-runners/config.yaml` with the settings, but no `github.app` yet (see *Controller VM
+      contract*)
     - the Proxmox token in `/etc/proxmox-actions-runners/pve-token`
-    Both files are owned by `parcon` with mode `0600`. The installer then runs `parcon check proxmox` in the VM as
+    - with Proxmox's own certificate, a copy of the node's CA (`/etc/pve/pve-root-ca.pem`) in
+      `/etc/proxmox-actions-runners/pve-ca.pem`
+    The files are owned by `parcon` with mode `0600`. The controller connects to the API by IP and verifies its
+    certificate against a DNS name the certificate lists (`tlsServerName`), so renewals don't break it. It verifies
+    Proxmox's own certificate against the node's CA (`caCertFile`), and a custom or ACME certificate the host's
+    system CAs trust against the controller's system CAs. Only a certificate from a CA the host doesn't trust is
+    pinned by fingerprint (`tlsFingerprint`), which preflight warns about: its renewal needs a config edit. The installer then runs `parcon check proxmox` in the VM as
     `parcon`. It confirms the Proxmox VE version, that the token has every privilege it needs on the pool, storage,
     and VNet, and that the storage accepts VM disks.
 11. **Create the GitHub App** with the manifest flow described under *GitHub App setup*. The code the user pastes is

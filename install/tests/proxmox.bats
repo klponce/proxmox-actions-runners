@@ -142,7 +142,7 @@ EOF
 
 @test "render_config writes the App only once there is one" {
 	stub ip "echo '2: vmbr0    inet 192.0.2.5/24 brd 192.0.2.255 scope global vmbr0'"
-	stub openssl "echo 'sha256 Fingerprint=AA:BB'"
+	stub openssl "exit 1"
 	stub pvesh "case \"\$*\" in
 		'get /nodes --output-format json') echo '[{\"node\":\"pve1\"}]' ;;
 		*status*) echo '{\"type\":\"lvmthin\"}' ;;
@@ -151,7 +151,9 @@ EOF
 	PAR_LABELS=a,b
 	run render_config
 	[[ $output == *"url: https://192.0.2.5:8006/api2/json"* ]]
-	[[ $output == *'tlsFingerprint: "AA:BB"'* ]]
+	# No certificates in this test: the node's own certificate is assumed, verified against the node's CA.
+	[[ $output == *"caCertFile: /etc/proxmox-actions-runners/pve-ca.pem"* ]]
+	[[ $output != *tlsFingerprint* ]]
 	[[ $output == *"node: pve1"* ]]
 	[[ $output == *"linkedClone: true"* ]]
 	[[ $output == *"labels: [a, b]"* ]]
