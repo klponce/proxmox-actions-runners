@@ -2,12 +2,12 @@
 <!--
   GitHub App helper for the proxmox-actions-runners installer (docs/install.md, "GitHub App setup").
 
-  The installer links here with the target and a random state:
-    ?org=<org>&state=<state>                  organization runners
-    ?org=<org>&repo=<repo>&state=<state>      repository runners, repository owned by an organization
-    ?user=<user>&repo=<repo>&state=<state>    repository runners, repository owned by a personal account
-  The page posts an App manifest to GitHub. GitHub redirects back with ?code=<code>&state=<state>, and the page shows
-  "<state>.<code>" for the user to paste into the installer.
+  The installer links here with one parameter, a random state of 32 bytes in unpadded base64url (43 characters):
+    ?state=<state>
+  The user chooses whether the runners serve an organization or a repository in their personal account, and the page
+  posts an App manifest to GitHub, which creates the App in that account. GitHub redirects back with
+  ?code=<code>&state=<state>, and the page shows "<state>.<code>" for the user to paste into the installer. The
+  installer learns the organization or repository from where the user then installs the App.
 
   The path is versioned: a change to the manifest or the query parameters goes in a new /app/vN/ so that older
   installers keep working. No third-party scripts, and the Content-Security-Policy lets the page send nothing except
@@ -20,7 +20,7 @@
 <meta name="referrer" content="no-referrer">
 <meta http-equiv="Content-Security-Policy"
       content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; form-action https://github.com; base-uri 'none'">
-<title>Create the GitHub App</title>
+<title>Create your GitHub App</title>
 <style>
   :root {
     --bg: #ffffff;
@@ -56,7 +56,7 @@
     color: var(--fg);
     font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   }
-  main { max-width: 42rem; margin: 0 auto; padding: 2rem 1rem; }
+  main { max-width: 40rem; margin: 0 auto; padding: 2rem 1rem; }
   h1 { font-size: 1.5rem; margin: 0 0 1rem; }
   code, pre { font: 0.875rem/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   code { background: var(--code-bg); padding: 0.1em 0.3em; border-radius: 4px; overflow-wrap: anywhere; }
@@ -68,6 +68,21 @@
     overflow-x: auto;
   }
   #copy-string { white-space: pre-wrap; word-break: break-all; user-select: all; font-size: 1rem; }
+  fieldset { border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem 1rem; margin: 0 0 1rem; }
+  legend { font-weight: 600; padding: 0 0.25rem; }
+  label { display: block; margin: 0.25rem 0; }
+  .hint { display: block; margin-left: 1.6rem; color: var(--muted); font-size: 0.875rem; }
+  input[type="text"] {
+    font: inherit;
+    color: inherit;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.25rem 0.5rem;
+    margin: 0.25rem 0 0.25rem 1.6rem;
+    width: 16rem;
+    max-width: calc(100% - 2rem);
+  }
   button {
     font: inherit;
     font-weight: 600;
@@ -78,6 +93,7 @@
     padding: 0.5rem 1rem;
     cursor: pointer;
   }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
   .note { border-left: 4px solid; border-radius: 6px; padding: 0.5rem 0.75rem; }
   .warning { background: var(--warn-bg); border-color: var(--warn-border); }
   .error { background: var(--error-bg); border-color: var(--error-border); }
@@ -88,26 +104,33 @@
 </head>
 <body>
 <main>
-  <h1>Create the GitHub App for proxmox-actions-runners</h1>
+  <h1>Create your GitHub App</h1>
   <noscript><p class="note error">This page needs JavaScript to build the App manifest.</p></noscript>
 
   <p id="error" class="note error" hidden></p>
 
   <section id="create" hidden>
     <p>
-      This creates a private GitHub App named <code id="app-name"></code>, owned by <strong id="owner"></strong>, for
-      the controller that runs your self-hosted runners on <strong id="target"></strong>. It asks for one permission,
-      <strong id="permission"></strong>, and has no webhook and no events.
+      The proxmox-actions-runners installer sent you here. It needs a GitHub App to register your self-hosted runners.
+      The App is yours: private, owned by the account you choose, with one permission, and no webhook. Its private key
+      goes straight to the controller on your Proxmox node.
     </p>
-    <p id="user-note" hidden>Sign in to GitHub as <strong id="user"></strong> before you continue.</p>
     <form id="form" method="post">
+      <fieldset>
+        <legend>Where should the runners work?</legend>
+        <label><input type="radio" name="kind" value="org" checked> An organization</label>
+        <input type="text" id="org" autocomplete="off" spellcheck="false" aria-label="Organization name"
+               placeholder="organization name">
+        <span class="hint">For all of its repositories. You need to be an owner of the organization.</span>
+        <label><input type="radio" name="kind" value="user"> My personal account</label>
+        <span class="hint">For one of your repositories, which you choose when you install the App. Sign in to GitHub
+          as that account.</span>
+      </fieldset>
       <input type="hidden" name="manifest" id="manifest-input">
-      <button type="submit">Create the App on GitHub</button>
+      <button type="submit" id="submit">Create GitHub App</button>
     </form>
-    <p class="muted">
-      GitHub shows the App before it creates it. After you click <em>Create GitHub App</em> there, GitHub sends you back
-      to this page with a code for the installer.
-    </p>
+    <p class="muted">GitHub shows you the App before it creates it. Then it sends you back here with a line for the
+      installer.</p>
     <details>
       <summary>What is sent to GitHub</summary>
       <p>A form <code>POST</code> to <code id="action"></code> with this manifest:</p>
@@ -116,11 +139,12 @@
   </section>
 
   <section id="done" hidden>
-    <p>The App was created. Copy this line and paste it into the installer:</p>
+    <p>Your App was created. Copy this line and paste it into the installer:</p>
     <pre id="copy-string"></pre>
     <p><button id="copy" type="button">Copy</button></p>
+    <p>The installer then gives you a link to install the App on your organization or repository.</p>
     <p class="note warning">
-      Keep it private. Until the installer uses it, and for up to an hour, anyone who has this line can get the App's
+      Keep the line private. Until the installer uses it, and for up to an hour, anyone who has it can get the App's
       private key. Close this page once you have pasted it.
     </p>
   </section>
@@ -130,12 +154,11 @@
 "use strict";
 
 const project = "https://github.com/klponce/proxmox-actions-runners";
-const ownerPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
-const repoPattern = /^[A-Za-z0-9._-]{1,100}$/;
-// The state and the code are joined with a ".", so neither may contain one.
-const tokenPattern = /^[A-Za-z0-9_-]{1,128}$/;
-// GitHub limits App names to 34 characters: "par-" + owner + "-" + 6 random hex digits.
-const maxOwnerInName = 34 - "par-".length - "-".length - 6;
+const orgPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+// The installer's state: 32 random bytes, unpadded base64url. The state and the code are joined with a ".", so
+// neither may contain one.
+const statePattern = /^[A-Za-z0-9_-]{43}$/;
+const codePattern = /^[A-Za-z0-9_-]{1,128}$/;
 
 const $ = (id) => document.getElementById(id);
 
@@ -148,10 +171,9 @@ function randomHex(bytes) {
   return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-// showCode shows the string the user copies into the installer, and removes the code from the address bar and
-// history.
+// showCode shows the line the user copies into the installer, and removes the code from the address bar and history.
 function showCode(state, code) {
-  if (!tokenPattern.test(code)) {
+  if (!codePattern.test(code)) {
     fail("GitHub sent back a code this page doesn't recognize. Run the installer's App step again.");
     return;
   }
@@ -169,67 +191,67 @@ function showCode(state, code) {
   $("done").hidden = false;
 }
 
-// showCreate builds the manifest for the target in the query string and the form that posts it to GitHub.
-function showCreate(params, state) {
-  const org = params.get("org");
-  const user = params.get("user");
-  const repo = params.get("repo");
-  let owner;
-  if (org !== null && user === null) {
-    owner = org;
-  } else if (user !== null && org === null && repo !== null) {
-    owner = user;
-  } else {
-    fail("The link has no valid target. It needs org=<org>, org=<org>&repo=<repo>, or user=<user>&repo=<repo>. " +
-      "Open the link the installer printed.");
-    return;
+// manifestFor builds the App manifest and the address it is posted to for the chosen account, or returns null while
+// the organization name isn't valid.
+function manifestFor(kind, org, state, name) {
+  if (kind === "org" && !orgPattern.test(org)) {
+    return null;
   }
-  if (!ownerPattern.test(owner) || (repo !== null && !repoPattern.test(repo))) {
-    fail("The link has an invalid organization, user, or repository name. Open the link the installer printed.");
-    return;
-  }
-
   const manifest = {
-    name: "par-" + owner.toLowerCase().slice(0, maxOwnerInName) + "-" + randomHex(3),
+    name,
     url: project,
     hook_attributes: { url: project, active: false },
     redirect_url: location.origin + location.pathname,
     public: false,
-    default_permissions: repo === null
+    // Organization runners need the organization's self-hosted runners; a personal account can only have
+    // repository runners, which need the repository's administration.
+    default_permissions: kind === "org"
       ? { organization_self_hosted_runners: "write" }
       : { administration: "write" },
     default_events: [],
   };
-  const action = (org !== null
+  const action = (kind === "org"
     ? "https://github.com/organizations/" + encodeURIComponent(org) + "/settings/apps/new"
     : "https://github.com/settings/apps/new") + "?state=" + encodeURIComponent(state);
+  return { manifest, action };
+}
 
-  $("app-name").textContent = manifest.name;
-  $("owner").textContent = org !== null ? "the organization " + org : "the account " + user;
-  $("target").textContent = "github.com/" + owner + (repo !== null ? "/" + repo : "");
-  $("permission").textContent = repo === null ? "Self-hosted runners: write" : "Administration: write";
-  if (user !== null) {
-    $("user").textContent = user;
-    $("user-note").hidden = false;
-  }
-  $("form").action = action;
-  $("manifest-input").value = JSON.stringify(manifest);
-  $("action").textContent = action;
-  $("manifest").textContent = JSON.stringify(manifest, null, 2);
+function showCreate(state) {
+  // App names are unique across GitHub and at most 34 characters. The name stays the same while the user types.
+  const name = "par-runners-" + randomHex(4);
+  const update = () => {
+    const kind = document.querySelector('input[name="kind"]:checked').value;
+    const org = $("org").value.trim();
+    $("org").disabled = kind !== "org";
+    const built = manifestFor(kind, org, state, name);
+    $("submit").disabled = built === null;
+    if (built === null) {
+      $("action").textContent = "(enter the organization's name)";
+      $("manifest").textContent = "";
+      return;
+    }
+    $("form").action = built.action;
+    $("manifest-input").value = JSON.stringify(built.manifest);
+    $("action").textContent = built.action;
+    $("manifest").textContent = JSON.stringify(built.manifest, null, 2);
+  };
+  document.querySelectorAll('input[name="kind"]').forEach((r) => r.addEventListener("change", update));
+  $("org").addEventListener("input", update);
+  update();
   $("create").hidden = false;
 }
 
 function main() {
   const params = new URLSearchParams(location.search);
   const state = params.get("state");
-  if (state === null || !tokenPattern.test(state)) {
-    fail("The link has no valid state. Open the link the installer printed.");
+  if (state === null || !statePattern.test(state)) {
+    fail("Open this page from the link the installer printed on your Proxmox node. The page only works with it.");
     return;
   }
   if (params.has("code")) {
     showCode(state, params.get("code"));
   } else {
-    showCreate(params, state);
+    showCreate(state);
   }
 }
 
