@@ -110,7 +110,7 @@ func (g GitHub) validate(v *validator) {
 	// The App is optional here: the installer checks Proxmox before it creates the App. RequireGitHubApp checks
 	// that it is complete.
 	if g.App.InstallationID < 0 {
-		v.addf("github.app.installationId", "must be positive")
+		v.addf("github.app.installationId", "must not be negative")
 	}
 	if g.App.PrivateKeyFile != "" {
 		v.absPath("github.app.privateKeyFile", g.App.PrivateKeyFile)

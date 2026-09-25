@@ -292,7 +292,7 @@ func TestParseInvalid(t *testing.T) {
 		{"GitHub Enterprise Server", "github.configUrl", "https://ghes.example.com/my-org", "https://github.com/<org>"},
 		{"too deep GitHub URL", "github.configUrl", "https://github.com/a/b/c", "https://github.com/<org>"},
 		{"GitHub URL without owner", "github.configUrl", "https://github.com/", "https://github.com/<org>"},
-		{"negative installation ID", "github.app.installationId", -1, "github.app.installationId: must be positive"},
+		{"negative installation ID", "github.app.installationId", -1, "github.app.installationId: must not be negative"},
 		{"relative private key", "github.app.privateKeyFile", "key.pem", "must be an absolute path"},
 
 		{"controller memory in GiB by mistake", "worker.memoryMiB", 8, "worker.memoryMiB"},
