@@ -156,7 +156,8 @@ EOF
 	[[ $output != *tlsFingerprint* ]]
 	[[ $output == *"node: pve1"* ]]
 	[[ $output == *"linkedClone: true"* ]]
-	[[ $output == *"labels: [a, b]"* ]]
+	[[ $output == *'labels: ["a", "b"]'* ]]
+	[[ $output == *'name: "proxmox-ubuntu-26.04"'* ]]
 	[[ $output != *"app:"* ]]
 
 	run render_config Iv23liEXAMPLE0000000
@@ -166,6 +167,20 @@ EOF
 
 	run render_config Iv23liEXAMPLE0000000 7890123
 	[[ $output == *"installationId: 7890123"* ]]
+}
+
+@test "render_config keeps labels that look like YAML values strings" {
+	stub ip "echo '2: vmbr0    inet 192.0.2.5/24 brd 192.0.2.255 scope global vmbr0'"
+	stub openssl "exit 1"
+	stub pvesh "case \"\$*\" in
+		'get /nodes --output-format json') echo '[{\"node\":\"pve1\"}]' ;;
+		*status*) echo '{\"type\":\"lvmthin\"}' ;;
+	esac"
+	settings_ok
+	PAR_LABELS=null,true,1.5
+	validate_settings
+	run render_config
+	[[ $output == *'labels: ["null", "true", "1.5"]'* ]]
 }
 
 @test "app_query tells organizations and personal accounts apart" {

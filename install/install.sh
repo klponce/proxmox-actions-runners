@@ -973,9 +973,10 @@ create_controller() {
 }
 
 # render_config prints the controller's config.yaml. With a Client ID, it names the GitHub App; the installation ID
-# follows once the App is installed.
+# follows once the App is installed. The scale set name and labels are quoted, so a label such as null or true stays
+# a string; validate_settings keeps them to characters that are safe in double quotes.
 render_config() {
-	local client_id=${1:-} installation_id=${2:-} labels=${PAR_LABELS//,/, }
+	local client_id=${1:-} installation_id=${2:-} labels="\"${PAR_LABELS//,/\", \"}\""
 	cat <<EOF
 # Written by install.sh. Rewritten on install; upgrade keeps it.
 proxmox:
@@ -1002,7 +1003,7 @@ EOF
 	cat <<EOF
 
 scaleSets:
-  - name: $PAR_SCALE_SET
+  - name: "$PAR_SCALE_SET"
     labels: [$labels]
     runnerGroup: "$PAR_RUNNER_GROUP"
     minRunners: $PAR_MIN_RUNNERS
