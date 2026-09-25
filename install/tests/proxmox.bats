@@ -210,6 +210,47 @@ EOF
 	check_root() { true; }
 	run do_uninstall
 	[ "$status" -eq 0 ]
-	[[ $output == *"destroy VMs: 101 10099"* ]]
+	[[ $output == *"now: 101 10099"* ]]
 	run ! grep -Eq '^(qm (stop|destroy)|pveum (pool|user|role) (delete|remove)|pvesh (delete|set))' "$CALLS"
+}
+
+@test "uninstall lists the VMs again once the controller has stopped" {
+	# At the plan, worker 10000 exists. While the controller stops, it destroys 10000 and creates 10001.
+	resources <<'EOF'
+[{"vmid":101,"pool":"par-system","tags":"par-managed;par-controller"},
+ {"vmid":10000,"pool":"par-runners","tags":"par-managed;par-worker"},
+ {"vmid":10099,"pool":"par-runners","template":1,"tags":"par-managed;par-template"}]
+EOF
+	stub pveum "echo '[{\"poolid\":\"par-system\",\"comment\":\"proxmox-actions-runners\"}]'"
+	stub qm "case \"\$*\" in
+		'status 101') echo 'status: running' ;;
+		'status '*) echo 'status: stopped' ;;
+		'guest exec 101 '*systemctl*)
+			cat >'$BATS_TEST_TMPDIR/resources.json' <<'JSON'
+[{\"vmid\":101,\"pool\":\"par-system\",\"tags\":\"par-managed;par-controller\"},
+ {\"vmid\":10001,\"pool\":\"par-runners\",\"tags\":\"par-managed;par-worker\"},
+ {\"vmid\":10099,\"pool\":\"par-runners\",\"template\":1,\"tags\":\"par-managed;par-template\"}]
+JSON
+			echo '{\"exited\":1,\"exitcode\":0}' ;;
+		'guest exec '*) echo '{\"exited\":1,\"exitcode\":0}' ;;
+	esac"
+	ASSUME_YES=1
+	check_root() { true; }
+	run do_uninstall
+	[ "$status" -eq 0 ]
+	grep -qx 'qm destroy 10001 --purge 1' "$CALLS"
+	run ! grep -qx 'qm destroy 10000 --purge 1' "$CALLS"
+	grep -qx 'qm destroy 101 --purge 1' "$CALLS"
+	grep -qx 'qm destroy 10099 --purge 1' "$CALLS"
+}
+
+@test "destroy_vm counts a VM that is already gone as destroyed" {
+	stub qm "exit 2" # Proxmox: Configuration file '...' does not exist
+	run destroy_vm 10000
+	[ "$status" -eq 0 ]
+
+	stub qm "case \"\$1\" in status) echo 'status: stopped' ;; *) exit 1 ;; esac"
+	run destroy_vm 10000
+	[ "$status" -eq 1 ]
+	[[ $output == *"destroying VM 10000 failed"* ]]
 }

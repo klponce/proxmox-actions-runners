@@ -1334,6 +1334,16 @@ managed_vms() {
 	' "$SYSTEM_POOL" "$RUNNER_POOL"
 }
 
+# destroy_vm stops and destroys a VM. One that is already gone counts as destroyed.
+destroy_vm() {
+	local vmid=$1
+	if qm status "$vmid" 2>/dev/null | grep -q running; then
+		change qm stop "$vmid" --skiplock 1 || true
+	fi
+	change qm destroy "$vmid" --purge 1 && return 0
+	! qm status "$vmid" >/dev/null 2>&1 || die "destroying VM $vmid failed"
+}
+
 # user_acls prints "path type ugid role" for every ACL of our user and its tokens.
 user_acls() {
 	pveum acl list --output-format json | json '
@@ -1351,7 +1361,7 @@ do_uninstall() {
 	step "Plan"
 	say "Remove proxmox-actions-runners from node $(node_name):"
 	[[ -z $controller ]] || say "  stop the controller and delete its scale sets in GitHub (the App itself stays)"
-	say "  destroy VMs: ${vms:-none}"
+	say "  destroy the VMs tagged $TAG_MANAGED in $SYSTEM_POOL and $RUNNER_POOL, now: ${vms:-none}"
 	say "  remove pools $SYSTEM_POOL and $RUNNER_POOL, role $ROLE, user $PVE_USER with its token and ACLs"
 	say "  remove SDN VNet $VNET and zone $ZONE, then apply the SDN config"
 	((DRY_RUN)) && return 0
@@ -1367,12 +1377,10 @@ do_uninstall() {
 	fi
 
 	step "Destroy VMs"
+	# Listed again: until it stopped, the controller kept creating and destroying workers.
 	local vmid
-	for vmid in $vms; do
-		if qm status "$vmid" | grep -q running; then
-			change qm stop "$vmid" --skiplock 1
-		fi
-		change qm destroy "$vmid" --purge 1
+	for vmid in $(managed_vms); do
+		destroy_vm "$vmid"
 	done
 
 	step "Proxmox access objects"
