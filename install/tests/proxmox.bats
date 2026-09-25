@@ -189,6 +189,20 @@ EOF
 	[[ $output == *'labels: ["null", "true", "1.5"]'* ]]
 }
 
+@test "downloads need room where they go, not on the VM storage" {
+	stub df "printf '%s\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on' \
+		'/dev/mapper/pve-root 98559220 90000000 3145728 97% /'" # 3 GiB free
+	run check_download_space
+	[ "$status" -eq 1 ]
+	[[ $output == "3 GiB free, 6 GiB needed" ]]
+	grep -qx 'df -Pk /var/tmp' "$CALLS"
+
+	stub df "printf '%s\n' 'Filesystem 1024-blocks Used Available Capacity Mounted on' \
+		'/dev/mapper/pve-root 98559220 50000000 41943040 55% /'" # 40 GiB free
+	run check_download_space
+	[ "$status" -eq 0 ]
+}
+
 @test "pending SDN changes other than ours stop the install" {
 	stub pvesh "case \"\$*\" in
 		'get /cluster/sdn/zones --pending 1'*) echo '[{\"zone\":\"parzone\",\"state\":\"new\"},{\"zone\":\"lab\"},{\"zone\":\"dmz\",\"state\":\"changed\"}]' ;;

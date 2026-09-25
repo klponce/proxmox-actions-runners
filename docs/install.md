@@ -145,7 +145,8 @@ include the agent avoids both changes to the host.
 | Outbound HTTPS | `github.com`, `api.github.com`, and the release asset hosts (`objects.githubusercontent.com`, `release-assets.githubusercontent.com`) | hard |
 | Target storage | exists, active, and accepts `images` content | hard |
 | Linked-clone support | storage type is `lvmthin`, `zfspool`, `rbd`, or file-based with qcow2. Otherwise `linkedClone: false` | warn |
-| Free space | controller and gateway disks + template + `maxRunners` × (`freeDiskGiB`, or template size + `freeDiskGiB` if not linked) + image download | hard |
+| Free space | controller and gateway disks + template + `maxRunners` × (`freeDiskGiB`, or template size + `freeDiskGiB` if not linked) | hard |
+| Download space | 6 GiB free in `/var/tmp`, on the host's root filesystem, where the images are downloaded before they are imported | hard |
 | Free memory and CPU | host RAM and threads against `maxRunners` × worker size plus existing VMs | warn |
 | LAN bridge | the bridge for the controller and gateway VMs exists. VLAN tag valid if set | hard |
 | API certificate | how the controller will verify it: the node's CA, the system CAs, or a pinned fingerprint for a certificate from a CA the host doesn't trust | warn if pinned |

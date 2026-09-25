@@ -49,7 +49,10 @@ readonly PRIVILEGES=(
 # ReservedVMIDs in internal/config: the IDs at the end of the range that hold templates and smoke-test clones.
 readonly RESERVED_VMIDS=4
 # Disk sizes in GiB: the images' disks and the controller VM's, which the installer grows.
-readonly TEMPLATE_GIB=10 GATEWAY_GIB=8 CONTROLLER_GIB=20 DOWNLOAD_GIB=4
+readonly TEMPLATE_GIB=10 GATEWAY_GIB=8 CONTROLLER_GIB=20
+# The images are downloaded here, on the host's root filesystem, before they are imported: about 4 GiB for the three,
+# with room to grow.
+readonly DOWNLOAD_DIR=/var/tmp DOWNLOAD_GIB=6
 readonly WORKER_MEMORY_MIB=8192
 # How long to wait, in seconds, for parcon.service to stop or restart: longer than its TimeoutStopSec in
 # deploy/parcon.service, since the controller finishes retirements in flight first. A test keeps the two in step.
@@ -584,9 +587,16 @@ check_free_space() {
 	local avail need per_worker=$((14))
 	avail=$(storage_json | json 'print int(($d->{avail} // 0) / 2**30)')
 	linked_clones_supported >/dev/null || per_worker=$((TEMPLATE_GIB + 14))
-	need=$((GATEWAY_GIB + CONTROLLER_GIB + TEMPLATE_GIB + PAR_MAX_RUNNERS * per_worker + DOWNLOAD_GIB))
+	need=$((GATEWAY_GIB + CONTROLLER_GIB + TEMPLATE_GIB + PAR_MAX_RUNNERS * per_worker))
 	echo "$avail GiB free, about $need GiB needed"
 	((avail >= need))
+}
+
+check_download_space() {
+	local avail
+	avail=$(df -Pk "$DOWNLOAD_DIR" | awk 'NR == 2 {print int($4 / 1048576)}')
+	echo "$avail GiB free, $DOWNLOAD_GIB GiB needed"
+	((avail >= DOWNLOAD_GIB))
 }
 
 check_memory() {
@@ -715,6 +725,7 @@ preflight() {
 	check hard "storage $PAR_STORAGE" check_storage
 	check warn "linked clones on $PAR_STORAGE" check_linked_clones
 	check hard "free space on $PAR_STORAGE" check_free_space
+	check hard "free space for downloads in $DOWNLOAD_DIR" check_download_space
 	check warn "memory" check_memory
 	check hard "LAN bridge $PAR_BRIDGE" check_bridge
 	check warn "API certificate" check_tls
@@ -754,7 +765,7 @@ download() {
 }
 
 make_work_dir() {
-	WORK_DIR=$(mktemp -d /var/tmp/par-install.XXXXXX)
+	WORK_DIR=$(mktemp -d "$DOWNLOAD_DIR/par-install.XXXXXX")
 	trap 'rm -rf "$WORK_DIR"' EXIT
 }
 
