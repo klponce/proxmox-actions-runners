@@ -102,8 +102,8 @@ and refuses a file that doesn't match.
 | Asset | Contents | Built by |
 | ----- | -------- | -------- |
 | `install.sh` | The installer | Release workflow |
-| `parcon-<ver>.qcow2` | Ubuntu 26.04 minimal, `qemu-guest-agent`, the controller binary and unit, nginx for the metrics endpoint | Packer `qemu` builder in CI |
-| `par-gateway-<ver>.qcow2` | Ubuntu 26.04 minimal, `qemu-guest-agent`, nftables, dnsmasq, `unattended-upgrades` | Packer `qemu` builder in CI |
+| `parcon-<ver>.qcow2` | The controller VM: Ubuntu 26.04, `qemu-guest-agent`, `unattended-upgrades`, the `parcon` binary, user, and unit | Packer `qemu` builder in CI (`images/controller/`) |
+| `par-gateway-<ver>.qcow2` | The gateway VM: Ubuntu 26.04, `qemu-guest-agent`, `unattended-upgrades`, nftables, dnsmasq, `par-gateway-configure` | Packer `qemu` builder in CI (`images/gateway/`) |
 | `par-runner-<ver>.qcow2` | The runner template: Ubuntu 26.04, `qemu-guest-agent`, the `runner` user, a pinned `actions/runner`, Docker, and a few basics | Packer `qemu` builder in CI (`images/runner/`) |
 | `par-runner-<ver>.json` | The runner image's build manifest, including its `actions/runner` version | Packer `qemu` builder in CI |
 | `SHA256SUMS` | Checksums of the above | Release workflow |
@@ -176,43 +176,94 @@ The controller image and the installer agree on this layout:
    the SDN config (`pvesh set /cluster/sdn`).
 6. **Download and verify images** into a temporary directory under `/var/tmp`, which is deleted on exit, including
    on failure.
-7. **Import the runner template** in `par-runners` from `par-runner.qcow2` into the first free VMID of the reserved
-   IDs at the end of the range (`qm create` + `qm set --scsi0 <storage>:0,import-from=<file>`), with a cloud-init
-   drive and the guest agent enabled. Tag it `par-managed`, `par-template`, `par-tv-<import time in Unix seconds>`,
-   and `par-rv-<actions/runner version>` (from the image's manifest), and convert it to a template. See
-   *Runner image*.
-8. **Create the gateway VM** in `par-system` from `par-gateway.qcow2`: 1 vCPU, 1 GiB RAM, 8 GiB disk, `net0` on the
-   LAN bridge and `net1` on `parnet`. Use the built-in cloud-init drive for hostname and the LAN address only, tag
-   it `par-managed,par-gateway`, and start it. Once the guest agent responds, push the worker subnet and the LAN
-   ranges to block through `qm guest exec --pass-stdin`, then check that it serves DHCP on `parnet` and reaches the
-   internet.
-9. **Create the controller VM** in `par-system` from `parcon.qcow2`: 2 vCPU, 2 GiB RAM, 20 GiB disk. Use
-   Proxmox's built-in cloud-init drive for hostname and network only (no user data, no snippets), tag it
+7. **Import the runner template** in `par-runners` from `par-runner-<ver>.qcow2` into the first free VMID of the
+   reserved IDs at the end of the range (`qm create` + `qm set --scsi0 <storage>:0,import-from=<file>`), with a
+   cloud-init drive and the guest agent enabled. Tag it `par-managed`, `par-template`,
+   `par-tv-<import time in Unix seconds>`, and `par-rv-<actions/runner version>` (from the image's manifest), and
+   convert it to a template. See *Runner image*.
+8. **Create the gateway VM** in `par-system` from `par-gateway-<ver>.qcow2`: 1 vCPU, 1 GiB RAM, an 8 GiB disk (the
+   image's size), `net0` on the LAN bridge, and `net1` on `parnet`. Use the built-in cloud-init drive for hostname
+   and the LAN address only, tag it `par-managed,par-gateway`, and start it. Once the guest agent responds, pipe
+   the worker subnet and the ranges to block (the LAN, the host, and the controller VM) into
+   `par-gateway-configure` through `qm guest exec --pass-stdin` (see *Gateway and controller images*), then check
+   that it serves DHCP on `parnet` and reaches the internet.
+9. **Create the controller VM** in `par-system` from `parcon-<ver>.qcow2`: 2 vCPU, 2 GiB RAM, the disk grown to
+   20 GiB. Use Proxmox's built-in cloud-init drive for hostname and network only (no user data, no snippets), tag it
    `par-managed,par-controller`, and start it.
 10. **Configure the controller** through the guest agent once it responds. Secrets go through
     `qm guest exec --pass-stdin`, so they never appear on a command line or on the host's disk:
     - `/etc/proxmox-actions-runners/config.yaml` with the settings and the Proxmox host's pinned TLS fingerprint,
       but no `github.app` yet (see *Controller VM contract*)
-    - the Proxmox token as `/etc/proxmox-actions-runners/pve-token`
-    The installer then runs `parcon check proxmox` in the VM. It confirms the Proxmox VE version, that the token has
-    every privilege it needs on the pool, storage, and VNet, and that the storage accepts VM disks.
+    - the Proxmox token in `/etc/proxmox-actions-runners/pve-token`
+    Both files are owned by `parcon` with mode `0600`. The installer then runs `parcon check proxmox` in the VM as
+    `parcon`. It confirms the Proxmox VE version, that the token has every privilege it needs on the pool, storage,
+    and VNet, and that the storage accepts VM disks.
 11. **Create the GitHub App** with the manifest flow described under *GitHub App setup*. The code the user pastes is
     passed to `parcon github app create` in the controller VM, so the App's private key goes straight from GitHub
     into the controller VM and never passes through the host. The installer then waits for the user to install the
-    App (`parcon github app wait-installation`) and writes the App's fields into `config.yaml`. A re-run skips this
-    step if the controller VM already holds working App credentials. The installer then runs `parcon check github`
-    in the VM. This confirms that the App credentials produce an installation token and can reach the org or repo.
-    The service is enabled and started after that.
+    App (`parcon github app wait-installation`) and writes the App's Client ID and installation ID into
+    `config.yaml`. A re-run skips this step if the controller VM already holds working App credentials. The
+    installer then runs `parcon check github` in the VM. This confirms that the App credentials produce an
+    installation token and can reach the org or repo. It then enables and starts `parcon.service`.
 12. **Smoke test.** The installer clones one worker from the template into a reserved VMID, tagged
     `par-managed,par-build` so the reconcile loop leaves it alone, confirms the guest agent responds, and confirms
     through `qm guest exec` that the worker got a DHCP lease, reaches GitHub, and can't reach the Proxmox API or the
     controller VM. It then destroys the clone and confirms that the controller registered the scale set and holds a
     listener session. A re-run first destroys a clone a failed run left.
-13. **Summary.** Print the `runs-on:` label, the controller and gateway VMs' IDs and IPs, the metrics URL and its
-    certificate's SHA-256 fingerprint, and the upgrade and uninstall commands.
+13. **Summary.** Print the `runs-on:` label, the controller and gateway VMs' IDs and IPs, and the upgrade and
+    uninstall commands. (The metrics URL and its certificate's fingerprint come with the metrics endpoint, which is
+    deferred.)
 
 If any step fails, the installer stops and prints what it already created, so a re-run can continue from there.
 Each step checks for existing objects before it creates anything.
+
+## Gateway and controller images
+
+Both images start from the same pinned Ubuntu 26.04 cloud image as the runner image, turn on `unattended-upgrades`,
+and include `qemu-guest-agent`, which is how the installer configures them. Both disks are 8 GiB: the gateway
+VM's size, which the installer grows to 20 GiB for the controller VM.
+
+### Gateway
+
+The gateway runs dnsmasq for DHCP and DNS on `net1` and nftables for NAT and the firewall. The worker NIC is always
+called `net1` inside the VM: the image names it by the PCI slot Proxmox gives `net1`, so nothing depends on MACs.
+
+The installer configures it by piping `KEY=value` lines into `/usr/local/sbin/par-gateway-configure` through
+`qm guest exec --pass-stdin`:
+
+```
+WORKER_SUBNET=10.251.0.0/22
+BLOCK=192.0.2.0/24 192.0.2.10 192.0.2.11
+```
+
+| Key | Default | Meaning |
+| --- | ------- | ------- |
+| `WORKER_SUBNET` | `10.251.0.0/22` | The worker network's IPv4 subnet, a `/8` to a `/29` |
+| `BLOCK` | empty | Space-separated IPv4 addresses and CIDRs workers must not reach: the LAN, the Proxmox host, and the controller VM |
+
+The command saves the settings to `/etc/par-gateway/config`, renders the config below from them, and reloads
+dnsmasq and nftables. Each run replaces the previous settings, so a key that is left out gets its default, and a
+second run with the same input changes nothing. Invalid input is refused before anything changes. The image ships
+configured with the defaults.
+
+- `net1` gets the subnet's first address. dnsmasq hands out the rest of the subnet with 1-hour leases and forwards
+  DNS to the gateway's own upstream resolvers. It binds only to `net1`, so it doesn't clash with systemd-resolved.
+- nftables (`/etc/nftables.conf`, loaded at boot):
+  - forwards only new IPv4 connections from `net1` out of the LAN NIC, masqueraded
+  - drops forwarded traffic to RFC 1918, CGNAT (`100.64.0.0/10`), link-local, and the `BLOCK` ranges
+  - accepts only DHCP and DNS from `net1` to the gateway itself
+  - forwards no IPv6, and IPv6 forwarding is off
+
+### Controller
+
+The controller image follows the *Controller VM contract*. On top of it:
+
+- `parcon` is statically linked and baked into the image at `/usr/local/bin/parcon`.
+- The image creates the `parcon` user and `/etc/proxmox-actions-runners`, and installs `parcon.service`
+  ([`deploy/parcon.service`](../deploy/parcon.service)) without enabling it; the installer enables it after step 11.
+  The unit starts only once `/etc/proxmox-actions-runners/config.yaml` exists.
+- The image doesn't enforce the files' modes: the installer writes each one as `parcon` with `umask 077`, for example
+  `runuser -u parcon -- sh -c 'umask 077; cat > FILE'`.
 
 ## GitHub App setup
 
@@ -293,6 +344,8 @@ the code that unlocks the private key.
 
 ## Metrics endpoint
 
+*Deferred past v0.1.* Neither image includes nginx yet, and `parcon` doesn't serve metrics yet. The design:
+
 `parcon` serves `/metrics`, `/healthz`, and `/readyz` as plain HTTP on `127.0.0.1:9465` only. nginx (from Ubuntu
 main, so `unattended-upgrades` patches it) runs in the controller VM and serves them over HTTPS on the LAN at
 `https://<controller-ip>:9464/`.
@@ -356,10 +409,11 @@ stay queued and workers that never register, and `install.sh check` tests it. It
 
 ## Upgrade and uninstall
 
-- **Upgrade** is in place: the new controller binary is pushed through the guest agent, then the service is
-  restarted. Config and secrets stay in the controller VM. The gateway VM holds no state beyond its settings, so it
-  is replaced with a new image and reconfigured. A new runner image is imported as a new template when the release
-  has one, and the controller removes the old template once its workers are gone. The controller VM's OS updates itself with `unattended-upgrades`.
+- **Upgrade** is in place: the new controller binary is pushed through the guest agent to `/usr/local/bin/parcon`,
+  then `parcon.service` is restarted. Config and secrets stay in the controller VM. The gateway VM holds no state
+  beyond its settings, so it is replaced with a new image and reconfigured with `par-gateway-configure`. A new
+  runner image is imported as a new template when the release has one, and the controller removes the old template
+  once its workers are gone. The controller VM's OS updates itself with `unattended-upgrades`.
 - **Uninstall** first stops the controller and deletes the scale set in GitHub. It then destroys every VM tagged
   `par-managed`, removes the ACLs, token, user, role, and pools, and removes the `parzone` zone and `parnet` VNet and
   applies the SDN config. It doesn't touch anything it didn't create.

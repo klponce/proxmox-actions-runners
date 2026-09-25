@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# par-gateway-configure sets up the gateway VM from KEY=value lines on standard input. The installer runs it as root
+# through `qm guest exec --pass-stdin`:
+#
+#   WORKER_SUBNET=10.251.0.0/22     the worker network's IPv4 subnet (the default)
+#   BLOCK=192.0.2.0/24 192.0.2.10   IPv4 addresses and CIDRs workers must not reach, besides the private ranges
+#                                   that are always blocked: the LAN, the Proxmox host, and the controller VM
+#
+# It saves the settings to /etc/par-gateway/config, then renders net1's address (the subnet's first), dnsmasq's DHCP
+# and DNS config, and the nftables rules, and reloads them. Each run replaces the previous settings: a key that is
+# left out gets its default. Installed by images/gateway/scripts/gateway.sh.
+set -euo pipefail
+
+CONFIG=/etc/par-gateway/config
+# Blocked whatever BLOCK says: RFC 1918, CGNAT, and link-local.
+ALWAYS_BLOCKED="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16"
+TMP_DIR=""
+
+main() {
+  local subnet=10.251.0.0/22 block="" line key value
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ -z $line || $line == \#* ]] && continue
+    key=${line%%=*}
+    value=${line#*=}
+    case $key in
+      WORKER_SUBNET) subnet=$value ;;
+      BLOCK) block=$value ;;
+      *) die "unknown setting: $key" ;;
+    esac
+  done
+
+  local net prefix=${subnet#*/}
+  if ! net=$(to_int "${subnet%/*}") || [[ ! $prefix =~ ^[0-9]{1,2}$ ]]; then
+    die "WORKER_SUBNET is not an IPv4 CIDR: $subnet"
+  fi
+  ((prefix >= 8 && prefix <= 29)) || die "WORKER_SUBNET must be a /8 to /29: $subnet"
+  local size=$((1 << (32 - prefix)))
+  ((net % size == 0)) || die "WORKER_SUBNET is not a network address: $subnet"
+
+  local cidr bits
+  for cidr in $block; do
+    bits=32
+    if [[ $cidr == */* ]]; then
+      bits=${cidr#*/}
+    fi
+    if ! to_int "${cidr%/*}" >/dev/null || [[ ! $bits =~ ^[0-9]{1,2}$ ]] || ((bits > 32)); then
+      die "BLOCK entry is not an IPv4 address or CIDR: $cidr"
+    fi
+  done
+
+  TMP_DIR=$(mktemp -d)
+  trap 'rm -rf "$TMP_DIR"' EXIT
+  render_network "$(to_ip $((net + 1)))/$prefix" >"$TMP_DIR/network"
+  render_dnsmasq "$(to_ip $((net + 2)))" "$(to_ip $((net + size - 2)))" "$(to_ip $(((0xffffffff << (32 - prefix)) & 0xffffffff)))" \
+    >"$TMP_DIR/dnsmasq"
+  # shellcheck disable=SC2086 # word splitting builds the element list
+  render_nftables $ALWAYS_BLOCKED $block >"$TMP_DIR/nftables"
+  nft -c -f "$TMP_DIR/nftables"
+  dnsmasq --test -C "$TMP_DIR/dnsmasq"
+
+  install -d -m 0755 /etc/par-gateway
+  printf 'WORKER_SUBNET=%s\nBLOCK=%s\n' "$subnet" "$block" >"$CONFIG"
+  install -m 0644 "$TMP_DIR/network" /etc/systemd/network/10-par-net1.network
+  install -m 0644 "$TMP_DIR/dnsmasq" /etc/dnsmasq.d/par-gateway.conf
+  install -m 0644 "$TMP_DIR/nftables" /etc/nftables.conf
+
+  networkctl reload
+  if [[ -e /sys/class/net/net1 ]]; then
+    networkctl reconfigure net1
+  fi
+  # A reload applies the new rules in one transaction; a restart would flush them first.
+  systemctl reload-or-restart nftables.service
+  systemctl restart dnsmasq.service
+  echo "par-gateway: worker subnet $subnet, blocked: $ALWAYS_BLOCKED${block:+ $block}"
+}
+
+# render_network ADDRESS: net1's static address. No IPv6: the gateway only routes IPv4.
+render_network() {
+  cat <<EOF
+# Written by par-gateway-configure from $CONFIG. Don't edit: the next run replaces it.
+[Match]
+Name=net1
+
+[Link]
+RequiredForOnline=no
+
+[Network]
+Address=$1
+ConfigureWithoutCarrier=yes
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+EOF
+}
+
+# render_dnsmasq FIRST LAST NETMASK: DHCP and DNS on net1 only. Binding only there keeps dnsmasq clear of
+# systemd-resolved, whose upstream resolvers it forwards to.
+render_dnsmasq() {
+  cat <<EOF
+# Written by par-gateway-configure from $CONFIG. Don't edit: the next run replaces it.
+interface=net1
+except-interface=lo
+bind-dynamic
+no-hosts
+domain-needed
+bogus-priv
+resolv-file=/run/systemd/resolve/resolv.conf
+dhcp-range=$1,$2,$3,1h
+dhcp-authoritative
+EOF
+}
+
+# render_nftables CIDR...: from net1, only DHCP and DNS to the gateway itself, and new IPv4 connections out of the
+# other NIC, masqueraded, except to the given ranges. Everything else, including all forwarded IPv6, is dropped.
+render_nftables() {
+  local elements
+  elements=$(printf '%s, ' "$@")
+  cat <<EOF
+#!/usr/sbin/nft -f
+# Written by par-gateway-configure from $CONFIG. Don't edit: the next run replaces it.
+flush ruleset
+
+table inet par-gateway {
+	set blocked {
+		type ipv4_addr
+		flags interval
+		auto-merge
+		elements = { ${elements%, } }
+	}
+
+	chain input {
+		type filter hook input priority filter; policy accept;
+		iifname "net1" jump from_workers
+	}
+
+	chain from_workers {
+		udp dport { 53, 67 } accept
+		tcp dport 53 accept
+		drop
+	}
+
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+		iifname "net1" ip daddr @blocked drop
+		ct state established,related accept
+		iifname "net1" oifname != "net1" meta nfproto ipv4 ct state new accept
+	}
+
+	chain postrouting {
+		type nat hook postrouting priority srcnat; policy accept;
+		iifname "net1" oifname != "net1" masquerade
+	}
+}
+EOF
+}
+
+# to_int ADDRESS prints an IPv4 address as a number, or fails if it isn't one.
+to_int() {
+  local IFS=. octet n=0
+  [[ $1 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+  for octet in $1; do
+    ((10#$octet <= 255)) || return 1
+    n=$((n * 256 + 10#$octet))
+  done
+  echo "$n"
+}
+
+to_ip() {
+  echo "$(($1 >> 24 & 255)).$(($1 >> 16 & 255)).$(($1 >> 8 & 255)).$(($1 & 255))"
+}
+
+die() {
+  echo "par-gateway-configure: $*" >&2
+  exit 1
+}
+
+main "$@"
