@@ -332,6 +332,9 @@ node_name() { pvesh get /nodes --output-format json | json 'print $d->[0]{node}'
 # bridge_cidrs prints the host's IPv4 addresses with prefixes on the LAN bridge.
 bridge_cidrs() { ip -4 -o addr show dev "$PAR_BRIDGE" 2>/dev/null | awk '{print $4}'; }
 
+# host_cidrs prints the host's IPv4 addresses with prefixes on every interface.
+host_cidrs() { ip -4 -o addr show 2>/dev/null | awk '{print $4}'; }
+
 pve_address() {
 	if [[ -n $PAR_PVE_ADDRESS ]]; then
 		echo "$PAR_PVE_ADDRESS"
@@ -931,12 +934,16 @@ create_gateway() {
 	configure_gateway "$vmid"
 }
 
-# gateway_block prints what workers must not reach: the host's networks on the LAN bridge, the API address, and the
-# controller VM once it has one. RFC 1918, CGNAT, and link-local ranges are always blocked by the gateway itself.
+# gateway_block prints what workers must not reach: the host's networks on the LAN bridge, every address the host
+# has on any interface (the API listens on all of them), and the controller VM once it has one. RFC 1918, CGNAT, and
+# link-local ranges are always blocked by the gateway itself.
 gateway_block() {
 	local cidr block=()
 	for cidr in $(bridge_cidrs); do
 		block+=("$(network_of "$cidr")")
+	done
+	for cidr in $(host_cidrs); do
+		[[ $cidr == 127.* ]] || block+=("${cidr%/*}")
 	done
 	block+=("$(pve_address)")
 	[[ -z ${CONTROLLER_ADDRESS:-} ]] || block+=("$CONTROLLER_ADDRESS")

@@ -199,9 +199,9 @@ The controller image and the installer agree on this layout:
 8. **Create the gateway VM** in `par-system` from `par-gateway-<ver>.qcow2`: 1 vCPU, 1 GiB RAM, an 8 GiB disk (the
    image's size), `net0` on the LAN bridge, and `net1` on `parnet`. Use the built-in cloud-init drive for hostname
    and the LAN address only, tag it `par-managed,par-gateway`, and start it. Once the guest agent responds, pipe
-   the worker subnet and the ranges to block (the LAN, the host, and the controller VM) into
-   `par-gateway-configure` through `qm guest exec --pass-stdin` (see *Gateway and controller images*), then check
-   that it serves DHCP on `parnet` and reaches the internet.
+   the worker subnet and the ranges to block (the LAN bridge's networks, every address the host has on any
+   interface, and the controller VM) into `par-gateway-configure` through `qm guest exec --pass-stdin` (see
+   *Gateway and controller images*), then check that it serves DHCP on `parnet` and reaches the internet.
 9. **Create the controller VM** in `par-system` from `parcon-<ver>.qcow2`: 2 vCPU, 2 GiB RAM, the disk grown to
    20 GiB. Use Proxmox's built-in cloud-init drive for hostname and network only (no user data, no snippets), tag it
    `par-managed,par-controller`, and start it.
@@ -262,7 +262,7 @@ BLOCK=192.0.2.0/24 192.0.2.10 192.0.2.11
 | Key | Default | Meaning |
 | --- | ------- | ------- |
 | `WORKER_SUBNET` | `10.251.0.0/22` | The worker network's IPv4 subnet, a `/8` to a `/29` |
-| `BLOCK` | empty | Space-separated IPv4 addresses and CIDRs workers must not reach: the LAN, the Proxmox host, and the controller VM |
+| `BLOCK` | empty | Space-separated IPv4 addresses and CIDRs workers must not reach: the LAN, every address of the Proxmox host, and the controller VM |
 
 The command saves the settings to `/etc/par-gateway/config`, renders the config below from them, and reloads
 dnsmasq and nftables. Each run replaces the previous settings, so a key that is left out gets its default, and a

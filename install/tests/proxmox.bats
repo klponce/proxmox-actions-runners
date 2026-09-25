@@ -133,11 +133,17 @@ EOF
 	[[ $output == *"VMIDs 10050"* ]]
 }
 
-@test "gateway_block covers the LAN, the API address, and the controller" {
-	stub ip "echo '2: vmbr0    inet 192.0.2.5/24 brd 192.0.2.255 scope global vmbr0'"
+@test "gateway_block covers the LAN, every host address, and the controller" {
+	# The host has a second, public address on another interface; the API listens there too.
+	stub ip "case \"\$*\" in
+		*'dev vmbr0') echo '2: vmbr0    inet 192.0.2.5/24 brd 192.0.2.255 scope global vmbr0' ;;
+		*) printf '%s\n' '1: lo    inet 127.0.0.1/8 scope host lo' \
+			'2: vmbr0    inet 192.0.2.5/24 brd 192.0.2.255 scope global vmbr0' \
+			'3: vmbr1    inet 203.0.113.9/24 brd 203.0.113.255 scope global vmbr1' ;;
+	esac"
 	settings_ok
 	CONTROLLER_ADDRESS=192.0.2.77
-	[ "$(gateway_block)" = "192.0.2.0/24 192.0.2.5 192.0.2.77" ]
+	[ "$(gateway_block)" = "192.0.2.0/24 192.0.2.5 192.0.2.77 203.0.113.9" ]
 }
 
 @test "render_config writes the App only once there is one" {
