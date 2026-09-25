@@ -191,13 +191,6 @@ cmd_setup() {
 	node "qm set $TEMPLATE_VMID --tags 'par-managed;par-template;par-tv-$version;par-rv-$runner' >/dev/null"
 	echo "tagged with actions/runner $runner, the latest release"
 
-	# parcon check template builds the GitHub App client before its unauthenticated release lookup, so it needs a
-	# key that parses. This one belongs to no App and is never sent anywhere.
-	if [[ ! -f $STATE/github-app.pem ]]; then
-		openssl genrsa -out "$STATE/github-app.pem" 2048 2>/dev/null
-		chmod 600 "$STATE/github-app.pem"
-	fi
-
 	[[ -z $RUNNER_IMAGE ]] || import_runner_image
 
 	write_state
@@ -262,8 +255,8 @@ EOF
 	echo "state written to $STATE"
 }
 
-# write_config prints a controller config for the parcon checks, for one pool. The GitHub App is a placeholder:
-# check proxmox ignores it, and check template only needs its key to parse.
+# write_config prints a controller config for the parcon checks, for one pool. It names no GitHub App, like the
+# config the installer writes before it creates one: check proxmox and check template don't need it.
 write_config() {
 	local pool=$1 name=$2 fingerprint=$3
 	cat <<EOF
@@ -280,7 +273,6 @@ proxmox:
   vmidRange: { start: $((TEST_VMID + 1)), end: $((TEST_VMID + 10)) }
 github:
   configUrl: https://github.com/my-org/my-repo
-  app: { clientId: Iv23liEXAMPLE0000000, installationId: 1, privateKeyFile: $STATE/github-app.pem }
 worker:
   memoryMiB: 2048
 scaleSets:
