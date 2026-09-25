@@ -60,6 +60,23 @@ EOF
 	[ "$(system_vmid)" = 101 ]
 }
 
+@test "replace_gateway keeps the old gateway's NICs and address, with the gateway's hardware" {
+	stub qm "case \"\$*\" in
+		'config 105') printf '%s\n' 'net0: virtio=BC:24:11:00:00:01,bridge=vmbr0' \
+			'net1: virtio=BC:24:11:00:00:02,bridge=parnet' 'ipconfig0: ip=192.0.2.10/24,gw=192.0.2.1' ;;
+		'guest exec 105 '*) echo '{\"exited\":1,\"exitcode\":0,\"out-data\":\"WORKER_SUBNET=10.251.0.0/22\\n\"}' ;;
+	esac"
+	PAR_VERSION=0.1.0
+	PAR_STORAGE=local-lvm
+	WORK_DIR=/var/tmp/par-install.test
+	GATEWAY_VMID=105
+	run replace_gateway
+	[ "$status" -eq 0 ]
+	grep -qx 'qm create 105 --name par-gateway --pool par-system --memory 1024 --cores 1 --cpu host --ostype l26 --scsihw virtio-scsi-single --net0 virtio=BC:24:11:00:00:01,bridge=vmbr0 --agent enabled=1 --onboot 1 --serial0 socket --vga serial0 --tags par-managed;par-gateway;par-release-0.1.0 --net1 virtio=BC:24:11:00:00:02,bridge=parnet' "$CALLS"
+	grep -qx 'qm set 105 --ide2 local-lvm:cloudinit --boot order=scsi0 --ipconfig0 ip=192.0.2.10/24,gw=192.0.2.1 --ciupgrade 0' "$CALLS"
+	grep -qx 'qm start 105' "$CALLS"
+}
+
 @test "guest_exec passes on output and the exit status" {
 	stub qm "echo '{\"exited\":1,\"exitcode\":3,\"out-data\":\"hello\\n\",\"err-data\":\"oops\\n\"}'"
 	run guest_exec 105 30 -- false

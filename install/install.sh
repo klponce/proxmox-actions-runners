@@ -889,18 +889,17 @@ import_template() {
 # release_template prints the VMID of this release's runner template, if it was imported.
 release_template() { vms_with_tag "$RUNNER_POOL" "$(release_tag)" | head -n 1; }
 
-# create_system_vm creates the gateway or controller VM from its image: create_system_vm VMID NAME IMAGE CORES
-# MEMORY_MIB DISK_GIB TAG ADDRESS [NET1]
+# create_system_vm creates the gateway or controller VM from its image and starts it: create_system_vm VMID NAME
+# IMAGE CORES MEMORY_MIB DISK_GIB TAG NET0 IPCONFIG0 [NET1]
 create_system_vm() {
-	local vmid=$1 name=$2 image=$3 cores=$4 memory=$5 disk=$6 tag=$7 address=$8 net1=${9:-}
+	local vmid=$1 name=$2 image=$3 cores=$4 memory=$5 disk=$6 tag=$7 net0=$8 ipconfig0=$9 net1=${10:-}
 	local args=(--name "$name" --pool "$SYSTEM_POOL" --memory "$memory" --cores "$cores" --cpu host --ostype l26
-		--scsihw virtio-scsi-single --net0 "$(net_config)" --agent enabled=1 --onboot 1 --serial0 socket
+		--scsihw virtio-scsi-single --net0 "$net0" --agent enabled=1 --onboot 1 --serial0 socket
 		--vga serial0 --tags "$TAG_MANAGED;$tag")
 	[[ -z $net1 ]] || args+=(--net1 "$net1")
 	change qm create "$vmid" "${args[@]}"
 	change qm set "$vmid" --scsi0 "$PAR_STORAGE:0,import-from=$WORK_DIR/$image"
-	change qm set "$vmid" --ide2 "$PAR_STORAGE:cloudinit" --boot order=scsi0 --ipconfig0 "$(ip_config "$address")" \
-		--ciupgrade 0
+	change qm set "$vmid" --ide2 "$PAR_STORAGE:cloudinit" --boot order=scsi0 --ipconfig0 "$ipconfig0" --ciupgrade 0
 	if ((disk > GATEWAY_GIB)); then
 		change qm disk resize "$vmid" scsi0 "${disk}G"
 	fi
@@ -961,14 +960,20 @@ vm_ipv4() {
 	return 1
 }
 
+# create_gateway_vm creates the gateway VM, the one place its hardware is defined: create_gateway_vm VMID NET0
+# IPCONFIG0 NET1. replace_gateway passes the old VM's NICs, MACs included, and address.
+create_gateway_vm() {
+	create_system_vm "$1" par-gateway "par-gateway-$PAR_VERSION.qcow2" 1 1024 "$GATEWAY_GIB" \
+		"$TAG_GATEWAY;$(release_tag)" "$2" "$3" "$4"
+}
+
 create_gateway() {
 	step "Gateway VM"
 	local vmid
 	vmid=$(system_vm "$TAG_GATEWAY")
 	if [[ -z $vmid ]]; then
 		vmid=$(system_vmid)
-		create_system_vm "$vmid" par-gateway "par-gateway-$PAR_VERSION.qcow2" 1 1024 "$GATEWAY_GIB" \
-			"$TAG_GATEWAY;$(release_tag)" "$PAR_GATEWAY_IP" "virtio,bridge=$VNET"
+		create_gateway_vm "$vmid" "$(net_config)" "$(ip_config "$PAR_GATEWAY_IP")" "virtio,bridge=$VNET"
 	fi
 	GATEWAY_VMID=$vmid
 	wait_agent "$vmid"
@@ -1009,7 +1014,7 @@ create_controller() {
 	if [[ -z $vmid ]]; then
 		vmid=$(system_vmid)
 		create_system_vm "$vmid" par-controller "parcon-$PAR_VERSION.qcow2" 2 2048 "$CONTROLLER_GIB" \
-			"$TAG_CONTROLLER" "$PAR_CONTROLLER_IP"
+			"$TAG_CONTROLLER" "$(net_config)" "$(ip_config "$PAR_CONTROLLER_IP")"
 	fi
 	CONTROLLER_VMID=$vmid
 	wait_agent "$vmid"
@@ -1307,12 +1312,7 @@ replace_gateway() {
 	settings=$(guest_exec "$vmid" 30 -- cat /etc/par-gateway/config) || die "can't read the gateway's settings"
 	change qm stop "$vmid"
 	change qm destroy "$vmid" --purge 1
-	change qm create "$vmid" --name par-gateway --pool "$SYSTEM_POOL" --memory 1024 --cores 1 --cpu host --ostype l26 \
-		--scsihw virtio-scsi-single --net0 "$net0" --net1 "$net1" --agent enabled=1 --onboot 1 --serial0 socket \
-		--vga serial0 --tags "$TAG_MANAGED;$TAG_GATEWAY;$(release_tag)"
-	change qm set "$vmid" --scsi0 "$PAR_STORAGE:0,import-from=$WORK_DIR/par-gateway-$PAR_VERSION.qcow2"
-	change qm set "$vmid" --ide2 "$PAR_STORAGE:cloudinit" --boot order=scsi0 --ipconfig0 "$ipconfig0" --ciupgrade 0
-	change qm start "$vmid"
+	create_gateway_vm "$vmid" "$net0" "$ipconfig0" "$net1"
 	wait_agent "$vmid"
 	guest_exec "$vmid" 60 --stdin -- /usr/local/sbin/par-gateway-configure <<<"$settings" >/dev/null ||
 		die "configuring the new gateway failed"
