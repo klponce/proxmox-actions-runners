@@ -295,10 +295,28 @@ EOF
 	[ "$a" != "$b" ]
 }
 
-@test "existing_github reads what an earlier run learned" {
+@test "load_existing_github reads what an earlier run learned" {
 	stub qm "echo '{\"exited\":1,\"exitcode\":0,\"out-data\":\"github:\\n  app:\\n    clientId: Iv23liEXAMPLE0000000\\n    privateKeyFile: /etc/k\\n\"}'"
 	CONTROLLER_VMID=105
-	[ "$(existing_github)" = "- Iv23liEXAMPLE0000000 - " ]
+	load_existing_github
+	[ "$EXISTING_URL" = "" ]
+	[ "$EXISTING_CLIENT_ID" = Iv23liEXAMPLE0000000 ]
+	[ "$EXISTING_INSTALLATION_ID" = "" ]
+}
+
+@test "load_existing_github finds nothing before the controller has a config" {
+	stub qm "echo '{\"exited\":1,\"exitcode\":1,\"err-data\":\"cat: no such file\\n\"}'"
+	CONTROLLER_VMID=105
+	load_existing_github
+	[ -z "$EXISTING_URL$EXISTING_CLIENT_ID$EXISTING_INSTALLATION_ID" ]
+}
+
+@test "load_existing_github ignores values that aren't valid" {
+	# A config an earlier, broken run wrote: a "-" placeholder for each value.
+	stub qm "echo '{\"exited\":1,\"exitcode\":0,\"out-data\":\"github:\\n  configUrl: -\\n  app:\\n    clientId: -\\n    installationId: -\\n\"}'"
+	CONTROLLER_VMID=105
+	load_existing_github
+	[ -z "$EXISTING_URL$EXISTING_CLIENT_ID$EXISTING_INSTALLATION_ID" ]
 }
 
 @test "download checks each image against the embedded checksum" {

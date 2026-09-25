@@ -1,37 +1,67 @@
-# Builds a release: the three VM images (each built with Packer and boot-tested on KVM), the parcon binary, and
-# install.sh with the release's version and checksums written in. A tag vX.Y.Z publishes a release; a tag with a
-# pre-release suffix, such as v0.1.0-rc.1, publishes a pre-release, which the installer's "latest" links skip. Running
-# the workflow by hand builds and checks everything and keeps the files as workflow artifacts, without publishing.
+# Checks and releases, in one pipeline: check → images → release.
+#
+# Every push to main (a merged pull request) checks the code, builds the three VM images (each built with Packer and
+# boot-tested on KVM), and publishes release v<run number>, numbered by GitHub's per-workflow run counter. Each
+# release has the images, the parcon binary, and install.sh with the release number and checksums written in. Running
+# the workflow by hand checks and builds everything and keeps the files as workflow artifacts, without publishing.
+# Pull requests start no workflow: main is checked when a pull request is merged, before anything is released.
 name: release
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# One run at a time, so releases publish in order. A newer push waiting replaces an older one that hasn't started;
+# the newer release includes its changes.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
-env:
-  # A tag's version, or a throwaway one for a run by hand.
-  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('0.0.0-dev.{0}', github.run_number) }}
-
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Choose the release number
+        id: version
+        env:
+          EVENT: ${{ github.event_name }}
+          RUN: ${{ github.run_number }}
+        run: |
+          publish=false
+          [[ $EVENT != push ]] || publish=true
+          echo "version=$RUN" >>"$GITHUB_OUTPUT"
+          echo "publish=$publish" >>"$GITHUB_OUTPUT"
+          echo "::notice::release $RUN, publish: $publish"
+      - name: Build the dev container image
+        run: |
+          docker build --build-arg USER_UID="$(id -u)" --build-arg USER_GID="$(id -g)" -t par-dev .devcontainer
+      - name: Check
+        env:
+          # packer init downloads its plugin through GitHub's API, whose anonymous rate limit runners share.
+          PACKER_GITHUB_API_TOKEN: ${{ github.token }}
+        run: docker run --rm -e PACKER_GITHUB_API_TOKEN -v "$PWD:$PWD" -w "$PWD" par-dev .github/scripts/check.sh
+
   images:
+    needs: check
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       matrix:
         image: [runner, gateway, controller]
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
     steps:
-      - name: Check the version
-        run: |
-          [[ ${VERSION#v} =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9a-z.]+)?$ ]] ||
-            { echo "::error::$VERSION isn't vX.Y.Z or vX.Y.Z-pre" && exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -50,7 +80,7 @@ jobs:
           PACKER_GITHUB_API_TOKEN: ${{ github.token }}
         run: |
           docker run --rm --device /dev/kvm -e PACKER_GITHUB_API_TOKEN -v "$PWD:$PWD" -w "$PWD" par-dev \
-            .github/scripts/build-image.sh "${{ matrix.image }}" "${VERSION#v}"
+            .github/scripts/build-image.sh "${{ matrix.image }}" "$VERSION"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: image-${{ matrix.image }}
@@ -62,11 +92,13 @@ jobs:
           retention-days: 7
 
   release:
-    needs: images
+    needs: [check, images]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -81,32 +113,28 @@ jobs:
           docker build --build-arg USER_UID="$(id -u)" --build-arg USER_GID="$(id -g)" -t par-dev .devcontainer
       - name: Assemble the release
         run: |
-          version=${VERSION#v}
           mkdir dist
           find artifacts -type f \( -name '*.qcow2' -o -name 'par-runner-*.json' \) -exec mv {} dist/ \;
           docker run --rm -v "$PWD:$PWD" -w "$PWD" -e CGO_ENABLED=0 par-dev go build -trimpath \
-            -ldflags "-s -w -X main.version=$version" -o "dist/parcon-$version-linux-amd64" ./cmd/parcon
-          for asset in "par-runner-$version.qcow2" "par-runner-$version.json" "par-gateway-$version.qcow2" \
-            "parcon-$version.qcow2" "parcon-$version-linux-amd64"; do
+            -ldflags "-s -w -X main.version=$VERSION" -o "dist/parcon-$VERSION-linux-amd64" ./cmd/parcon
+          for asset in "par-runner-$VERSION.qcow2" "par-runner-$VERSION.json" "par-gateway-$VERSION.qcow2" \
+            "parcon-$VERSION.qcow2" "parcon-$VERSION-linux-amd64"; do
             test -s "dist/$asset" || { echo "missing $asset" >&2; exit 1; }
           done
           (cd dist && sha256sum -- *) >assets.sha256
-          install/fill-release.sh "$version" assets.sha256 >dist/install.sh
+          install/fill-release.sh "$VERSION" assets.sha256 >dist/install.sh
           chmod +x dist/install.sh
           (cd dist && sha256sum -- *) >SHA256SUMS
           mv SHA256SUMS dist/
           ls -l dist
           cat dist/SHA256SUMS
       - name: Publish
-        if: github.ref_type == 'tag'
+        if: needs.check.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          prerelease=()
-          [[ $VERSION != *-* ]] || prerelease=(--prerelease)
-          gh release create "$VERSION" dist/* --verify-tag --generate-notes --title "$VERSION" "${prerelease[@]}"
+        run: gh release create "v$VERSION" dist/* --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes
       - name: Keep the files of a run by hand
-        if: github.ref_type != 'tag'
+        if: needs.check.outputs.publish != 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-${{ env.VERSION }}
