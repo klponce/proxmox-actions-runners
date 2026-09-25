@@ -6,6 +6,8 @@ ARG GOLANGCI_LINT_VERSION=2.13.2
 ARG GOLANGCI_LINT_SHA256=2277d43b98ec0054280f2ac26b53268bae97682444678a59a657dd565da021d6
 ARG PACKER_VERSION=1.16.1
 ARG PACKER_SHA256=af38a9e93e4ed1b9ca68206ae969c64c300c82a3dde46a780dfa629f0867f651
+ARG ACTIONLINT_VERSION=1.7.12
+ARG ACTIONLINT_SHA256=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
 ARG USERNAME=dev
 ARG USER_UID=1000
 ARG USER_GID=1000
@@ -38,9 +40,14 @@ RUN set -eux; \
         "https://releases.hashicorp.com/packer/${PACKER_VERSION}/packer_${PACKER_VERSION}_linux_amd64.zip"; \
     echo "${PACKER_SHA256}  packer.zip" | sha256sum -c -; \
     unzip -o packer.zip packer -d /usr/local/bin; \
-    rm -f golangci-lint.tar.gz packer.zip; \
+    curl -fsSLo actionlint.tar.gz \
+        "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"; \
+    echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum -c -; \
+    tar -xzf actionlint.tar.gz -C /usr/local/bin actionlint; \
+    rm -f golangci-lint.tar.gz packer.zip actionlint.tar.gz; \
     golangci-lint version; \
-    packer version
+    packer version; \
+    actionlint -version
 
 RUN groupadd --gid "${USER_GID}" "${USERNAME}" \
     && useradd --uid "${USER_UID}" --gid "${USER_GID}" --create-home --shell /bin/bash "${USERNAME}" \
