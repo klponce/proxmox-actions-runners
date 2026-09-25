@@ -5,7 +5,6 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"time"
 )
@@ -104,7 +103,9 @@ func (p Proxmox) validate(v *validator) {
 
 func (g GitHub) validate(v *validator) {
 	if v.required("github.configUrl", g.ConfigURL) {
-		validateGitHubConfigURL(v, g.ConfigURL)
+		if _, _, err := ParseGitHubURL(g.ConfigURL); err != nil {
+			v.addf("github.configUrl", "%v", err)
+		}
 	}
 	// The App is optional here: the installer checks Proxmox before it creates the App. RequireGitHubApp checks
 	// that it is complete.
@@ -135,21 +136,6 @@ func (c *Config) RequireGitHubApp() error {
 		return fmt.Errorf("the GitHub App isn't set up yet: missing %s", strings.Join(missing, ", "))
 	}
 	return nil
-}
-
-// validateGitHubConfigURL accepts https://github.com/<org> and https://github.com/<owner>/<repo>, the shapes
-// IsRepository tells apart. GitHub Enterprise Server and enterprise-level scale sets are out of scope (README,
-// "Limitations").
-func validateGitHubConfigURL(v *validator, raw string) {
-	u, err := url.Parse(raw)
-	var parts []string
-	if err == nil {
-		parts = strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
-	}
-	if err != nil || u.Scheme != "https" || u.Host != "github.com" || u.RawQuery != "" || u.Fragment != "" ||
-		u.User != nil || len(parts) > 2 || slices.Contains(parts, "") {
-		v.addf("github.configUrl", "%q must be https://github.com/<org> or https://github.com/<owner>/<repo>", raw)
-	}
 }
 
 func (w Worker) validate(v *validator, prefix string) {

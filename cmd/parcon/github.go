@@ -131,6 +131,11 @@ func appWaitInstallation(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintln(stderr, "-client-id and -target are required")
 		return errUsage
 	}
+	owner, repo, err := config.ParseGitHubURL(*target)
+	if err != nil {
+		fmt.Fprintf(stderr, "-target: %v\n", err)
+		return errUsage
+	}
 	key, err := config.ReadSecretFile(*keyFile)
 	if err != nil {
 		return fmt.Errorf("GitHub App key: %w", err)
@@ -142,7 +147,7 @@ func appWaitInstallation(args []string, stdout, stderr io.Writer) error {
 	// new error is shown right away, and the last one is repeated if the wait times out.
 	var lastErr error
 	for {
-		id, err := findInstallation(ctx, *clientID, key, *target)
+		id, err := findInstallation(ctx, *clientID, key, owner, repo)
 		if id != 0 {
 			fmt.Fprintln(stdout, id)
 			return nil

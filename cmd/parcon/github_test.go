@@ -212,14 +212,17 @@ func TestGitHubAppWaitInstallation(t *testing.T) {
 			wantMsgs: "must not be accessible to group or others"},
 		{name: "no target", args: []string{"-target", ""}, want: usageError,
 			wantMsgs: "-client-id and -target are required"},
+		{name: "target not on GitHub", args: []string{"-target", "https://example.com/my-org"}, want: usageError,
+			wantMsgs: "must be https://github.com/<org> or https://github.com/<owner>/<repo>"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			polls := 0
-			findInstallation = func(_ context.Context, clientID, keyPEM, target string) (int64, error) {
+			findInstallation = func(_ context.Context, clientID, keyPEM, owner, repo string) (int64, error) {
 				polls++
-				if clientID != testClientID || keyPEM != strings.TrimSpace(testKeyPEM) || target != testTarget {
-					t.Errorf("findInstallation(%q, <key>, %q) got the wrong arguments", clientID, target)
+				if clientID != testClientID || keyPEM != strings.TrimSpace(testKeyPEM) || owner != "my-org" ||
+					repo != "" {
+					t.Errorf("findInstallation(%q, <key>, %q, %q) got the wrong arguments", clientID, owner, repo)
 				}
 				if tt.pollsTo != 0 && polls >= tt.pollsTo {
 					return 7890123, nil

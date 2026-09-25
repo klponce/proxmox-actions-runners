@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v4"
@@ -51,18 +50,18 @@ func convertManifest(ctx context.Context, client *http.Client, apiBase, code str
 	return App{ID: out.ID, Slug: out.Slug, ClientID: out.ClientID}, out.PEM, nil
 }
 
-// FindInstallation returns the ID of the App's installation on target, an organization or repository URL such as
-// https://github.com/my-org or https://github.com/my-org/my-repo. It returns 0 if the App isn't installed there
-// yet. It authenticates as the App with a JWT signed by keyPEM.
-func FindInstallation(ctx context.Context, clientID, keyPEM, target string) (int64, error) {
-	return findInstallation(ctx, &http.Client{Timeout: restTimeout}, defaultAPIBase, clientID, keyPEM, target)
+// FindInstallation returns the ID of the App's installation on the organization owner, or on the repository
+// owner/repo if repo isn't empty (see config.ParseGitHubURL). It returns 0 if the App isn't installed there yet. It
+// authenticates as the App with a JWT signed by keyPEM.
+func FindInstallation(ctx context.Context, clientID, keyPEM, owner, repo string) (int64, error) {
+	return findInstallation(ctx, &http.Client{Timeout: restTimeout}, defaultAPIBase, clientID, keyPEM, owner, repo)
 }
 
-func findInstallation(ctx context.Context, client *http.Client, apiBase, clientID, keyPEM, target string) (int64,
+func findInstallation(ctx context.Context, client *http.Client, apiBase, clientID, keyPEM, owner, repo string) (int64,
 	error) {
-	path, err := installationPath(target)
-	if err != nil {
-		return 0, err
+	path := "/orgs/" + url.PathEscape(owner) + "/installation"
+	if repo != "" {
+		path = "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/installation"
 	}
 	token, err := appJWT(clientID, keyPEM, time.Now())
 	if err != nil {
@@ -82,20 +81,6 @@ func findInstallation(ctx context.Context, client *http.Client, apiBase, clientI
 			http.StatusText(status))
 	}
 	return out.ID, nil
-}
-
-// installationPath returns the REST API path of the App's installation on target.
-func installationPath(target string) (string, error) {
-	u, err := url.Parse(target)
-	if err == nil && u.Host == "github.com" {
-		switch parts := strings.Split(strings.Trim(u.Path, "/"), "/"); {
-		case len(parts) == 1 && parts[0] != "":
-			return "/orgs/" + url.PathEscape(parts[0]) + "/installation", nil
-		case len(parts) == 2 && parts[0] != "" && parts[1] != "":
-			return "/repos/" + url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1]) + "/installation", nil
-		}
-	}
-	return "", fmt.Errorf("github: %q must be https://github.com/<org> or https://github.com/<owner>/<repo>", target)
 }
 
 // appJWT returns a JWT that authenticates as the App for a few minutes. It is backdated a minute to allow for clock

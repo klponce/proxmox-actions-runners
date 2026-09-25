@@ -67,26 +67,24 @@ func TestFindInstallation(t *testing.T) {
 	otherPEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY",
 		Bytes: x509.MarshalPKCS1PrivateKey(otherKey)}))
 
+	// Which URLs name an organization or a repository is config.ParseGitHubURL's job, tested there.
 	tests := []struct {
-		name      string
-		target    string
-		key       string
-		installed bool
-		want      int64
-		wantErr   string
-		wantRoute string
+		name        string
+		owner, repo string
+		key         string
+		installed   bool
+		want        int64
+		wantErr     string
+		wantRoute   string
 	}{
-		{name: "organization", target: "https://github.com/my-org", installed: true, want: testInstallationID,
+		{name: "organization", owner: "my-org", installed: true, want: testInstallationID,
 			wantRoute: "GET /orgs/my-org/installation"},
-		{name: "repository", target: "https://github.com/my-org/my-repo/", installed: true, want: testInstallationID,
+		{name: "repository", owner: "my-org", repo: "my-repo", installed: true, want: testInstallationID,
 			wantRoute: "GET /repos/my-org/my-repo/installation"},
-		{name: "not installed yet", target: "https://github.com/my-org", wantRoute: "GET /orgs/my-org/installation"},
-		{name: "wrong key", target: "https://github.com/my-org", key: otherPEM, installed: true, wantErr: "401",
+		{name: "not installed yet", owner: "my-org", wantRoute: "GET /orgs/my-org/installation"},
+		{name: "wrong key", owner: "my-org", key: otherPEM, installed: true, wantErr: "401",
 			wantRoute: "GET /orgs/my-org/installation"},
-		{name: "key not PEM", target: "https://github.com/my-org", key: "not a key", wantErr: "not a valid RSA key"},
-		{name: "not a GitHub URL", target: "https://example.com/my-org", wantErr: "must be https://github.com/<org>"},
-		{name: "too deep", target: "https://github.com/a/b/c", wantErr: "must be https://github.com/<org>"},
-		{name: "no owner", target: "https://github.com/", wantErr: "must be https://github.com/<org>"},
+		{name: "key not PEM", owner: "my-org", key: "not a key", wantErr: "not a valid RSA key"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -96,7 +94,8 @@ func TestFindInstallation(t *testing.T) {
 			if key == "" {
 				key = testKeyPEM()
 			}
-			got, err := findInstallation(context.Background(), f.httpClient(), f.srv.URL, testClientID, key, tt.target)
+			got, err := findInstallation(context.Background(), f.httpClient(), f.srv.URL, testClientID, key, tt.owner,
+				tt.repo)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("FindInstallation error = %v, want it to mention %q", err, tt.wantErr)

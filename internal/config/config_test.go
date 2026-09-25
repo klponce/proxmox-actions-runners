@@ -144,6 +144,32 @@ func TestParseDefaults(t *testing.T) {
 	}
 }
 
+func TestParseGitHubURL(t *testing.T) {
+	tests := []struct {
+		raw         string
+		owner, repo string
+		ok          bool
+	}{
+		{"https://github.com/my-org", "my-org", "", true},
+		{"https://github.com/my-org/", "my-org", "", true},
+		{"https://github.com/my-org/my-repo", "my-org", "my-repo", true},
+		{"https://github.com/my-org/my-repo/", "my-org", "my-repo", true},
+		{"https://github.com/", "", "", false},
+		{"https://github.com/a/b/c", "", "", false},
+		{"https://github.com/a//b", "", "", false},
+		{"http://github.com/my-org", "", "", false},
+		{"https://example.com/my-org", "", "", false},
+		{"https://github.com/my-org?x=1", "", "", false},
+	}
+	for _, tt := range tests {
+		owner, repo, err := ParseGitHubURL(tt.raw)
+		if (err == nil) != tt.ok || owner != tt.owner || repo != tt.repo {
+			t.Errorf("ParseGitHubURL(%q) = %q, %q, %v; want %q, %q, ok %v", tt.raw, owner, repo, err, tt.owner, tt.repo,
+				tt.ok)
+		}
+	}
+}
+
 func TestParseNormalizes(t *testing.T) {
 	tests := []struct {
 		name  string
