@@ -325,8 +325,9 @@ never logged or printed:
   reads its private key, and pipes the key to `import`. `import` checks that it is a PEM-encoded RSA private key.
 - `wait-installation` authenticates as the App with a JWT and polls `GET /orgs/{org}/installation` or
   `GET /repos/{owner}/{repo}/installation` every 5 seconds until the App is installed on `-target`
-  (`https://github.com/<org>` or `https://github.com/<owner>/<repo>`, the same as `github.configUrl`). It fails
-  after `-timeout`, or at once if GitHub rejects the App's credentials.
+  (`https://github.com/<org>` or `https://github.com/<owner>/<repo>`, the same as `github.configUrl`). Errors don't
+  end the wait, because a network blip, a GitHub error, or a newly created App that GitHub doesn't know yet all
+  pass. It prints each new error as it happens and fails after `-timeout` with the last one.
 
 About the helper page:
 

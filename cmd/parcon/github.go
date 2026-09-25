@@ -138,6 +138,9 @@ func appWaitInstallation(args []string, stdout, stderr io.Writer) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
+	// Errors don't end the wait: a network blip, a GitHub 5xx, or a new App GitHub doesn't know yet all pass. Each
+	// new error is shown right away, and the last one is repeated if the wait times out.
+	var lastErr error
 	for {
 		id, err := findInstallation(ctx, *clientID, key, *target)
 		if id != 0 {
@@ -146,10 +149,17 @@ func appWaitInstallation(args []string, stdout, stderr io.Writer) error {
 		}
 		// An error after the deadline is just the deadline.
 		if err != nil && ctx.Err() == nil {
-			return err
+			if lastErr == nil || err.Error() != lastErr.Error() {
+				fmt.Fprintf(stderr, "%v; still waiting\n", err)
+			}
+			lastErr = err
 		}
 		select {
 		case <-ctx.Done():
+			if lastErr != nil {
+				return fmt.Errorf("the GitHub App isn't installed on %s after %s; last error: %w", *target, *timeout,
+					lastErr)
+			}
 			return fmt.Errorf("the GitHub App isn't installed on %s after %s", *target, *timeout)
 		case <-time.After(installationPollInterval):
 		}
