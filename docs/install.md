@@ -201,14 +201,15 @@ The controller image and the installer agree on this layout:
    convert it to a template. See *Runner image*.
 8. **Create the gateway VM** in `par-system` from `par-gateway-<ver>.qcow2`: 1 vCPU, 1 GiB RAM, a 6 GiB disk (the
    image's size), `net0` on the LAN bridge, and `net1` on `parnet`. Use the built-in cloud-init drive for hostname
-   and the LAN address only, tag it `par-managed,par-gateway`, and start it. Once the guest agent responds, pipe
+   and the LAN address only, tag it `par-managed,par-gateway`, and start it. Once it has finished booting (the guest agent
+   answers and `systemctl is-system-running --wait` returns), pipe
    the worker subnet and the ranges to block (the LAN bridge's networks, every address the host has on any
    interface, and the controller VM) into `par-gateway-configure` through `qm guest exec --pass-stdin` (see
    *Gateway and controller images*), then check that it serves DHCP on `parnet` and reaches the internet.
 9. **Create the controller VM** in `par-system` from `parcon-<ver>.qcow2`: 2 vCPU, 2 GiB RAM, a 6 GiB disk (the
    image's size). Use Proxmox's built-in cloud-init drive for hostname and network only (no user data, no
    snippets), tag it `par-managed,par-controller`, and start it.
-10. **Configure the controller** through the guest agent once it responds. Secrets go through
+10. **Configure the controller** through the guest agent once it has finished booting. Secrets go through
     `qm guest exec --pass-stdin`, so they never appear on a command line or on the host's disk:
     - `/etc/proxmox-actions-runners/config.yaml` with the settings, but no `github.app` yet (see *Controller VM
       contract*)
@@ -231,7 +232,7 @@ The controller image and the installer agree on this layout:
     credentials produce an installation token and can reach the org or repo. It then enables and starts
     `parcon.service`.
 12. **Smoke test.** The installer clones one worker from the template into a reserved VMID, tagged
-    `par-managed,par-build` so the reconcile loop leaves it alone, confirms the guest agent responds, and confirms
+    `par-managed,par-build` so the reconcile loop leaves it alone, waits for it to finish booting, and confirms
     through `qm guest exec` that the worker got a DHCP lease, reaches GitHub, and can't reach the Proxmox API or the
     controller VM. It then destroys the clone and waits for the controller to log `scale set session opened`, which
     it does once the scale set is registered and its listener session is open. A re-run first destroys a clone a

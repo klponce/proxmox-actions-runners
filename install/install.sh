@@ -97,6 +97,13 @@ change() {
 	((DRY_RUN)) || "$@"
 }
 
+# change_quiet is change for a command whose progress output would drown the log, such as a disk import's hundred
+# "transferred" lines: its output is dropped, and its errors still show.
+change_quiet() {
+	printf '    $ %s\n' "$*"
+	((DRY_RUN)) || "$@" >/dev/null
+}
+
 # confirm asks a yes/no question on the terminal. --yes answers yes.
 confirm() {
 	((ASSUME_YES)) && return 0
@@ -454,6 +461,20 @@ wait_agent() {
 		sleep 2
 	done
 	die "VM $vmid's guest agent didn't answer within 5 minutes"
+}
+
+# wait_booted waits until a new VM has finished booting. Its guest agent answers early in boot, while cloud-init and
+# units waiting for the network are still starting, and a service restarted then waits behind them. A unit that
+# failed to start ("degraded") doesn't stop the install; the steps that follow check what they need.
+wait_booted() {
+	local vmid=$1 state
+	wait_agent "$vmid"
+	state=$(guest_exec "$vmid" 600 -- systemctl is-system-running --wait) || true
+	case $state in
+	running) ;;
+	degraded) warn "VM $vmid finished booting with a failed unit; see systemctl --failed in it" ;;
+	*) die "VM $vmid didn't finish booting within 10 minutes (state: ${state:-unknown})" ;;
+	esac
 }
 
 # guest_exec runs a command in a VM through the guest agent: guest_exec VMID TIMEOUT [--stdin] -- COMMAND...
@@ -886,7 +907,7 @@ import_template() {
 	change qm create "$vmid" --name "par-runner-${PAR_VERSION//./-}" --pool "$RUNNER_POOL" --memory 2048 --cores 2 \
 		--cpu host --ostype l26 --scsihw virtio-scsi-single --net0 "virtio,bridge=$VNET" --agent enabled=1 \
 		--serial0 socket --vga serial0 --tags "$tags"
-	change qm set "$vmid" --scsi0 "$PAR_STORAGE:0,import-from=$WORK_DIR/par-runner-$PAR_VERSION.qcow2"
+	change_quiet qm set "$vmid" --scsi0 "$PAR_STORAGE:0,import-from=$WORK_DIR/par-runner-$PAR_VERSION.qcow2"
 	change qm set "$vmid" --ide2 "$PAR_STORAGE:cloudinit" --boot order=scsi0 --ipconfig0 ip=dhcp
 	change qm template "$vmid"
 }
@@ -903,7 +924,7 @@ create_system_vm() {
 		--vga serial0 --tags "$TAG_MANAGED;$tag")
 	[[ -z $net1 ]] || args+=(--net1 "$net1")
 	change qm create "$vmid" "${args[@]}"
-	change qm set "$vmid" --scsi0 "$PAR_STORAGE:0,import-from=$WORK_DIR/$image"
+	change_quiet qm set "$vmid" --scsi0 "$PAR_STORAGE:0,import-from=$WORK_DIR/$image"
 	change qm set "$vmid" --ide2 "$PAR_STORAGE:cloudinit" --boot order=scsi0 --ipconfig0 "$ipconfig0" --ciupgrade 0
 	if ((disk > GATEWAY_GIB)); then
 		change qm disk resize "$vmid" scsi0 "${disk}G"
@@ -981,7 +1002,7 @@ create_gateway() {
 		create_gateway_vm "$vmid" "$(net_config)" "$(ip_config "$PAR_GATEWAY_IP")" "virtio,bridge=$VNET"
 	fi
 	GATEWAY_VMID=$vmid
-	wait_agent "$vmid"
+	wait_booted "$vmid"
 	configure_gateway "$vmid"
 }
 
@@ -1006,7 +1027,7 @@ configure_gateway() {
 	local vmid=$1
 	say "    configuring gateway $vmid: worker subnet $PAR_WORKER_SUBNET, blocking $(gateway_block)"
 	printf 'WORKER_SUBNET=%s\nBLOCK=%s\n' "$PAR_WORKER_SUBNET" "$(gateway_block)" |
-		guest_exec "$vmid" 60 --stdin -- /usr/local/sbin/par-gateway-configure >/dev/null ||
+		guest_exec "$vmid" 180 --stdin -- /usr/local/sbin/par-gateway-configure >/dev/null ||
 		die "configuring the gateway failed"
 	guest_exec "$vmid" 30 -- curl -sS -o /dev/null --max-time 10 https://api.github.com/ ||
 		die "the gateway VM can't reach GitHub"
@@ -1022,7 +1043,7 @@ create_controller() {
 			"$TAG_CONTROLLER" "$(net_config)" "$(ip_config "$PAR_CONTROLLER_IP")"
 	fi
 	CONTROLLER_VMID=$vmid
-	wait_agent "$vmid"
+	wait_booted "$vmid"
 	CONTROLLER_ADDRESS=$(vm_ipv4 "$vmid") || die "the controller VM got no IPv4 address"
 	say "    controller $vmid at $CONTROLLER_ADDRESS"
 	# The gateway was configured before the controller had an address; block it now.
@@ -1280,7 +1301,7 @@ smoke_test() {
 	change qm clone "$template" "$vmid" --name par-smoke-test --pool "$RUNNER_POOL"
 	change qm set "$vmid" --tags "$TAG_MANAGED;$TAG_BUILD" --ciupgrade 0
 	change qm start "$vmid"
-	wait_agent "$vmid"
+	wait_booted "$vmid"
 	local failures=()
 	vm_ipv4 "$vmid" >/dev/null || failures+=("the worker got no DHCP lease")
 	guest_exec "$vmid" 30 -- curl -sS -o /dev/null --max-time 15 https://api.github.com/ ||
@@ -1381,8 +1402,8 @@ replace_gateway() {
 	change qm stop "$vmid"
 	change qm destroy "$vmid" --purge 1
 	create_gateway_vm "$vmid" "$net0" "$ipconfig0" "$net1"
-	wait_agent "$vmid"
-	guest_exec "$vmid" 60 --stdin -- /usr/local/sbin/par-gateway-configure <<<"$settings" >/dev/null ||
+	wait_booted "$vmid"
+	guest_exec "$vmid" 180 --stdin -- /usr/local/sbin/par-gateway-configure <<<"$settings" >/dev/null ||
 		die "configuring the new gateway failed"
 }
 

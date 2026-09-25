@@ -7,7 +7,7 @@ cd "$(dirname "$0")/../.."
 
 main() {
 	local image=${1:?usage: build-image.sh IMAGE VERSION} version=${2:?usage: build-image.sh IMAGE VERSION}
-	local args=(-var "version=$version") name expect=()
+	local args=(-var "version=$version") name expect=() nics=1
 	case $image in
 	runner)
 		name=par-runner-$version
@@ -16,6 +16,7 @@ main() {
 	gateway)
 		name=par-gateway-$version
 		expect=('Finished.*nftables.service' 'Started.*dnsmasq.service')
+		nics=2
 		;;
 	controller)
 		name=parcon-$version
@@ -32,7 +33,7 @@ main() {
 	rm -rf "output-$image"
 	packer init "images/$image"
 	packer build -color=false "${args[@]}" "images/$image"
-	images/common/boot-test.sh "output-$image/$name.qcow2" "${expect[@]}"
+	NICS=$nics images/common/boot-test.sh "output-$image/$name.qcow2" "${expect[@]}"
 	ls -l "output-$image"
 }
 
