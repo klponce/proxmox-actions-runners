@@ -81,8 +81,9 @@ type fakeGitHub struct {
 	failAccessToken bool
 	// runnerRelease is the latest actions/runner release; nil means none is published.
 	runnerRelease map[string]any
-	// installed is whether the App is installed on my-org and my-org/my-repo.
-	installed bool
+	// installedOn is the type of account the App is installed on: "Organization" (my-org), "User" (octocat, on the
+	// repositories hello and world), or "" for not installed.
+	installedOn string
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
@@ -162,18 +163,35 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, f.runnerRelease)
 	case route == "POST /app-manifests/"+testManifestCode+"/conversions":
 		writeJSON(w, http.StatusCreated, map[string]any{"id": testAppID, "slug": testAppSlug, "client_id": testClientID,
-			"pem": testKeyPEM(), "client_secret": testClientSecret, "webhook_secret": testWebhookSecret})
+			"pem": testKeyPEM(), "client_secret": testClientSecret, "webhook_secret": testWebhookSecret,
+			"owner": map[string]any{"login": "my-org", "type": "Organization"}})
 	case strings.HasPrefix(route, "POST /app-manifests/"):
 		writeJSON(w, http.StatusNotFound, map[string]any{"message": "Not Found"})
-	case route == "GET /orgs/my-org/installation", route == "GET /repos/my-org/my-repo/installation":
-		switch {
-		case !f.validAppJWT(strings.TrimPrefix(auth, "Bearer ")):
+	case route == "GET /app/installations":
+		if !f.validAppJWT(strings.TrimPrefix(auth, "Bearer ")) {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "A JSON web token could not be decoded"})
-		case !f.installed:
-			writeJSON(w, http.StatusNotFound, map[string]any{"message": "Not Found"})
-		default:
-			writeJSON(w, http.StatusOK, map[string]any{"id": testInstallationID, "app_slug": testAppSlug})
+			return
 		}
+		login := map[string]string{"Organization": "my-org", "User": "octocat"}[f.installedOn]
+		installations := []map[string]any{}
+		if f.installedOn != "" {
+			installations = append(installations, map[string]any{"id": testInstallationID,
+				"account": map[string]any{"login": login, "type": f.installedOn}})
+		}
+		writeJSON(w, http.StatusOK, installations)
+	case route == fmt.Sprintf("POST /app/installations/%d/access_tokens", testInstallationID):
+		if !f.validAppJWT(strings.TrimPrefix(auth, "Bearer ")) {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "A JSON web token could not be decoded"})
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{"token": testInstallToken})
+	case route == "GET /installation/repositories":
+		if auth != "Bearer "+testInstallToken {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "Bad credentials"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"total_count": 2,
+			"repositories": []map[string]any{{"name": "hello"}, {"name": "world"}}})
 	case route == "POST /api/v3/orgs/my-org/actions/runners/registration-token":
 		if auth != "Bearer "+testInstallToken {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"message": "Bad credentials"})

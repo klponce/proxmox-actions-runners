@@ -109,13 +109,14 @@ func (p Proxmox) validate(v *validator) {
 }
 
 func (g GitHub) validate(v *validator) {
-	if v.required("github.configUrl", g.ConfigURL) {
+	// The target and the App are optional here: the installer checks Proxmox before the user creates the App, and it
+	// learns the organization or repository from where the App is installed. RequireGitHubApp checks that they are
+	// complete.
+	if g.ConfigURL != "" {
 		if _, _, err := ParseGitHubURL(g.ConfigURL); err != nil {
 			v.addf("github.configUrl", "%v", err)
 		}
 	}
-	// The App is optional here: the installer checks Proxmox before it creates the App. RequireGitHubApp checks
-	// that it is complete.
 	if g.App.InstallationID < 0 {
 		v.addf("github.app.installationId", "must not be negative")
 	}
@@ -124,12 +125,16 @@ func (g GitHub) validate(v *validator) {
 	}
 }
 
-// RequireGitHubApp returns an error unless the config names a GitHub App: its Client ID, installation ID, and
-// private key file. Parse accepts a config without one, because the installer writes the config and checks Proxmox
-// before it creates the App; only the commands that talk to GitHub as the App need it.
+// RequireGitHubApp returns an error unless the config names the GitHub target and App: the organization or repository
+// URL, and the App's Client ID, installation ID, and private key file. Parse accepts a config without them, because
+// the installer writes the config and checks Proxmox before the App exists; only the commands that talk to GitHub as
+// the App need them.
 func (c *Config) RequireGitHubApp() error {
 	a := c.GitHub.App
 	var missing []string
+	if c.GitHub.ConfigURL == "" {
+		missing = append(missing, "github.configUrl")
+	}
 	if a.ClientID == "" {
 		missing = append(missing, "github.app.clientId")
 	}

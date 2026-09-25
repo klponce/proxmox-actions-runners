@@ -16,6 +16,10 @@ type App struct {
 	ID       int64
 	Slug     string
 	ClientID string
+	// Owner is the account the App belongs to, and OwnerType is "Organization" or "User". A private App can only be
+	// installed on its owner.
+	Owner     string
+	OwnerType string
 }
 
 // ConvertManifest exchanges the code GitHub hands back after the user creates an App from a manifest for the App
@@ -28,10 +32,11 @@ func ConvertManifest(ctx context.Context, code string) (App, string, error) {
 
 func convertManifest(ctx context.Context, client *http.Client, apiBase, code string) (App, string, error) {
 	var out struct {
-		ID       int64  `json:"id"`
-		Slug     string `json:"slug"`
-		ClientID string `json:"client_id"`
-		PEM      string `json:"pem"`
+		ID       int64   `json:"id"`
+		Slug     string  `json:"slug"`
+		ClientID string  `json:"client_id"`
+		PEM      string  `json:"pem"`
+		Owner    account `json:"owner"`
 	}
 	status, err := restCall(ctx, client, apiBase, http.MethodPost, "/app-manifests/"+url.PathEscape(code)+"/conversions",
 		"", &out)
@@ -47,40 +52,93 @@ func convertManifest(ctx context.Context, client *http.Client, apiBase, code str
 	if err := CheckPrivateKey(out.PEM); err != nil {
 		return App{}, "", err
 	}
-	return App{ID: out.ID, Slug: out.Slug, ClientID: out.ClientID}, out.PEM, nil
+	return App{ID: out.ID, Slug: out.Slug, ClientID: out.ClientID, Owner: out.Owner.Login,
+		OwnerType: out.Owner.Type}, out.PEM, nil
 }
 
-// FindInstallation returns the ID of the App's installation on the organization owner, or on the repository
-// owner/repo if repo isn't empty (see config.ParseGitHubURL). It returns 0 if the App isn't installed there yet. It
-// authenticates as the App with a JWT signed by keyPEM.
-func FindInstallation(ctx context.Context, clientID, keyPEM, owner, repo string) (int64, error) {
-	return findInstallation(ctx, &http.Client{Timeout: restTimeout}, defaultAPIBase, clientID, keyPEM, owner, repo)
+type account struct {
+	Login string `json:"login"`
+	Type  string `json:"type"`
 }
 
-func findInstallation(ctx context.Context, client *http.Client, apiBase, clientID, keyPEM, owner, repo string) (int64,
+// Installation is where a GitHub App is installed.
+type Installation struct {
+	ID int64
+	// Account is the organization or personal account, and AccountType is "Organization" or "User".
+	Account     string
+	AccountType string
+	// Repositories are the names of the repositories an installation on a personal account can reach. GitHub allows
+	// self-hosted runners on a personal account only per repository, so the installer picks one of them. They aren't
+	// listed for an organization, whose runners serve the whole organization.
+	Repositories []string
+}
+
+// FindInstallation returns the App's installation, or a zero Installation if the App isn't installed yet. A private
+// App can only be installed on the account that owns it, so it has at most one. It authenticates as the App with a
+// JWT signed by keyPEM.
+func FindInstallation(ctx context.Context, clientID, keyPEM string) (Installation, error) {
+	return findInstallation(ctx, &http.Client{Timeout: restTimeout}, defaultAPIBase, clientID, keyPEM)
+}
+
+func findInstallation(ctx context.Context, client *http.Client, apiBase, clientID, keyPEM string) (Installation,
 	error) {
-	path := "/orgs/" + url.PathEscape(owner) + "/installation"
-	if repo != "" {
-		path = "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo) + "/installation"
-	}
-	token, err := appJWT(clientID, keyPEM, time.Now())
+	jwt, err := appJWT(clientID, keyPEM, time.Now())
 	if err != nil {
-		return 0, err
+		return Installation{}, err
 	}
-	var out struct {
-		ID int64 `json:"id"`
+	var installations []struct {
+		ID      int64   `json:"id"`
+		Account account `json:"account"`
 	}
-	status, err := restCall(ctx, client, apiBase, http.MethodGet, path, token, &out)
+	if err := restGet(ctx, client, apiBase, "/app/installations", jwt, &installations); err != nil {
+		return Installation{}, fmt.Errorf("github: find the App's installation: %w", err)
+	}
+	if len(installations) == 0 {
+		return Installation{}, nil
+	}
+	in := installations[0]
+	found := Installation{ID: in.ID, Account: in.Account.Login, AccountType: in.Account.Type}
+	if found.AccountType != "User" {
+		return found, nil
+	}
+
+	var token struct {
+		Token string `json:"token"`
+	}
+	path := fmt.Sprintf("/app/installations/%d/access_tokens", in.ID)
+	status, err := restCall(ctx, client, apiBase, http.MethodPost, path, jwt, &token)
 	switch {
 	case err != nil:
-		return 0, fmt.Errorf("github: find the App's installation: %w", err)
-	case status == http.StatusNotFound:
-		return 0, nil
-	case status != http.StatusOK:
-		return 0, fmt.Errorf("github: find the App's installation: GET %s: %d %s", path, status,
+		return Installation{}, fmt.Errorf("github: list the installation's repositories: %w", err)
+	case status != http.StatusCreated:
+		return Installation{}, fmt.Errorf("github: list the installation's repositories: POST %s: %d %s", path, status,
 			http.StatusText(status))
 	}
-	return out.ID, nil
+	var repos struct {
+		Repositories []struct {
+			Name string `json:"name"`
+		} `json:"repositories"`
+	}
+	if err := restGet(ctx, client, apiBase, "/installation/repositories?per_page=100", token.Token,
+		&repos); err != nil {
+		return Installation{}, fmt.Errorf("github: list the installation's repositories: %w", err)
+	}
+	for _, r := range repos.Repositories {
+		found.Repositories = append(found.Repositories, r.Name)
+	}
+	return found, nil
+}
+
+// restGet is a GET that must answer 200.
+func restGet(ctx context.Context, client *http.Client, apiBase, path, token string, out any) error {
+	status, err := restCall(ctx, client, apiBase, http.MethodGet, path, token, out)
+	switch {
+	case err != nil:
+		return err
+	case status != http.StatusOK:
+		return fmt.Errorf("GET %s: %d %s", path, status, http.StatusText(status))
+	}
+	return nil
 }
 
 // appJWT returns a JWT that authenticates as the App for a few minutes. It is backdated a minute to allow for clock

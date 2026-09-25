@@ -291,7 +291,6 @@ func TestParseInvalid(t *testing.T) {
 		{"VMID range backwards", "proxmox.vmidRange", map[string]any{"start": 2000, "end": 1000}, "is after end"},
 		{"VMID range too small", "proxmox.vmidRange", map[string]any{"start": 100, "end": 105}, "needs at least 7"},
 
-		{"missing GitHub URL", "github.configUrl", nil, "github.configUrl: is required"},
 		{"GitHub Enterprise Server", "github.configUrl", "https://ghes.example.com/my-org", "https://github.com/<org>"},
 		{"too deep GitHub URL", "github.configUrl", "https://github.com/a/b/c", "https://github.com/<org>"},
 		{"GitHub URL without owner", "github.configUrl", "https://github.com/", "https://github.com/<org>"},
@@ -358,6 +357,20 @@ func TestRequireGitHubApp(t *testing.T) {
 	}
 	if err := c.RequireGitHubApp(); err == nil || !strings.HasSuffix(err.Error(), "missing github.app.installationId") {
 		t.Errorf("RequireGitHubApp without an installation = %v", err)
+	}
+
+	// The installer learns the organization or repository from the App's installation, so at first the config has
+	// no GitHub section at all.
+	doc = validDoc()
+	set(t, doc, "github", nil)
+	c, err = parseDoc(t, doc)
+	if err != nil {
+		t.Fatalf("Parse without a GitHub section: %v", err)
+	}
+	want = "the GitHub App isn't set up yet: missing github.configUrl, github.app.clientId, " +
+		"github.app.installationId, github.app.privateKeyFile"
+	if err := c.RequireGitHubApp(); err == nil || err.Error() != want {
+		t.Errorf("RequireGitHubApp without a GitHub section = %v, want %q", err, want)
 	}
 }
 

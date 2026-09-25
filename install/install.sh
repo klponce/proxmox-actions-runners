@@ -138,7 +138,9 @@ EOF
 settings_help() {
 	cat <<'EOF'
 settings (answers file keys):
-  PAR_GITHUB_URL            organization or repository, https://github.com/<org> or https://github.com/<owner>/<repo>
+  PAR_GITHUB_URL            optional: the organization or repository the App must be installed on, as
+                            https://github.com/<org> or https://github.com/<owner>/<repo>. Normally you choose
+                            it on GitHub when you create and install the App.
   PAR_GITHUB_APP            manifest (create a new App in the browser, the default) or manual (use an existing App)
   PAR_GITHUB_APP_CLIENT_ID  the existing App's Client ID, for manual
   PAR_SCALE_SET             scale set name in lowercase, used in runs-on (default proxmox-ubuntu-26.04)
@@ -229,13 +231,9 @@ apply_defaults() {
 	: "${PAR_VMID_END:=10099}"
 }
 
-# prompt_settings asks for the settings that have no default, on the terminal.
+# prompt_settings asks for the settings that have no default, on the terminal. The GitHub organization or repository
+# isn't one of them: the user chooses it on GitHub, and the installer learns it from the App's installation.
 prompt_settings() {
-	if [[ -z $PAR_GITHUB_URL ]]; then
-		[[ -r /dev/tty ]] || die "PAR_GITHUB_URL is required; set it in the answers file"
-		read -r -p "GitHub organization or repository URL (https://github.com/<org> or <owner>/<repo>): " \
-			PAR_GITHUB_URL </dev/tty
-	fi
 	PAR_GITHUB_URL=${PAR_GITHUB_URL%/}
 	if [[ $PAR_GITHUB_APP == manual && -z $PAR_GITHUB_APP_CLIENT_ID ]]; then
 		[[ -r /dev/tty ]] || die "PAR_GITHUB_APP_CLIENT_ID is required with PAR_GITHUB_APP=manual"
@@ -247,7 +245,7 @@ prompt_settings() {
 # pattern.
 validate_settings() {
 	local errors=()
-	[[ $PAR_GITHUB_URL =~ ^https://github\.com/[A-Za-z0-9-]+(/[A-Za-z0-9._-]+)?$ ]] ||
+	[[ -z $PAR_GITHUB_URL || $PAR_GITHUB_URL =~ $GITHUB_URL_PATTERN ]] ||
 		errors+=("PAR_GITHUB_URL must be https://github.com/<org> or https://github.com/<owner>/<repo>")
 	[[ $PAR_GITHUB_APP == manifest || $PAR_GITHUB_APP == manual ]] ||
 		errors+=("PAR_GITHUB_APP must be manifest or manual")
@@ -291,6 +289,9 @@ validate_settings() {
 }
 
 is_repository() { [[ ${PAR_GITHUB_URL#https://github.com/} == */* ]]; }
+
+# An organization or repository on github.com. Its names end up in the config, so they are kept to safe characters.
+readonly GITHUB_URL_PATTERN='^https://github\.com/[A-Za-z0-9-]+(/[A-Za-z0-9._-]+)?$'
 
 # ---------------------------------------------------------------------------------------------------------------
 # IPv4 arithmetic
@@ -791,7 +792,8 @@ Proxmox objects on node $(node_name):
   gateway VM in $SYSTEM_POOL: 1 vCPU, 1 GiB, ${GATEWAY_GIB} GiB disk, LAN $PAR_BRIDGE${PAR_VLAN:+ VLAN $PAR_VLAN} ($PAR_GATEWAY_IP), $VNET
   controller VM in $SYSTEM_POOL: 2 vCPU, 2 GiB, ${CONTROLLER_GIB} GiB disk, LAN $PAR_BRIDGE${PAR_VLAN:+ VLAN $PAR_VLAN} ($PAR_CONTROLLER_IP)
 Workers: VMIDs $PAR_VMID_START-$((PAR_VMID_END - RESERVED_VMIDS)) on $VNET ($PAR_WORKER_SUBNET), at most $PAR_MAX_RUNNERS
-GitHub: scale set $PAR_SCALE_SET (runs-on: $PAR_LABELS) for $PAR_GITHUB_URL, $PAR_GITHUB_APP App
+GitHub: scale set $PAR_SCALE_SET (runs-on: $PAR_LABELS) for ${PAR_GITHUB_URL:-the organization or repository you
+  choose when you create and install the GitHub App}
 EOF
 	if ((${#WARNINGS[@]} > 0)); then
 		say "Warnings:"
@@ -1027,8 +1029,9 @@ create_controller() {
 	configure_gateway "$GATEWAY_VMID"
 }
 
-# render_config prints the controller's config.yaml. With a Client ID, it names the GitHub App; the installation ID
-# follows once the App is installed. The scale set name and labels are quoted, so a label such as null or true stays
+# render_config prints the controller's config.yaml. The GitHub section comes once there is something in it: the
+# Client ID as soon as the App's key is in the controller, and the organization or repository and the installation ID
+# once the App is installed. The scale set name and labels are quoted, so a label such as null or true stays
 # a string; validate_settings keeps them to characters that are safe in double quotes.
 render_config() {
 	local client_id=${1:-} installation_id=${2:-} labels="\"${PAR_LABELS//,/\", \"}\""
@@ -1046,14 +1049,15 @@ $(tls_config)
   vnet: $VNET
   vmidRange: { start: $PAR_VMID_START, end: $PAR_VMID_END }
   linkedClone: $(linked_clones_supported >/dev/null && echo true || echo false)
-
-github:
-  configUrl: $PAR_GITHUB_URL
 EOF
-	if [[ -n $client_id ]]; then
-		printf '  app:\n    clientId: %s\n' "$client_id"
-		[[ -z $installation_id ]] || printf '    installationId: %s\n' "$installation_id"
-		printf '    privateKeyFile: %s\n' "$KEY_FILE"
+	if [[ -n $PAR_GITHUB_URL || -n $client_id ]]; then
+		printf '\ngithub:\n'
+		[[ -z $PAR_GITHUB_URL ]] || printf '  configUrl: %s\n' "$PAR_GITHUB_URL"
+		if [[ -n $client_id ]]; then
+			printf '  app:\n    clientId: %s\n' "$client_id"
+			[[ -z $installation_id ]] || printf '    installationId: %s\n' "$installation_id"
+			printf '    privateKeyFile: %s\n' "$KEY_FILE"
+		fi
 	fi
 	cat <<EOF
 
@@ -1069,8 +1073,9 @@ EOF
 # configure_controller writes the config without the App and the API token, then checks Proxmox from the VM.
 configure_controller() {
 	step "Configure the controller"
-	local vmid=$CONTROLLER_VMID client_id installation_id
-	read -r client_id installation_id <<<"$(read_existing_app)" || true
+	local vmid=$CONTROLLER_VMID url client_id installation_id
+	read -r url client_id installation_id <<<"$(existing_github)"
+	[[ -n $PAR_GITHUB_URL ]] || PAR_GITHUB_URL=$url
 	if [[ $(tls_mode) == ca ]]; then
 		write_controller_file "$vmid" "$CA_FILE" <"$PVE_DIR/pve-root-ca.pem" || die "writing the node's CA failed"
 	fi
@@ -1097,50 +1102,53 @@ configure_controller() {
 	as_parcon "$vmid" 60 parcon check proxmox || die "parcon check proxmox failed in the controller VM"
 }
 
-# app_query prints the helper page's query string for the target, without the state.
-app_query() {
-	local path=${PAR_GITHUB_URL#https://github.com/} owner repo type
-	owner=${path%%/*}
-	if [[ $path != */* ]]; then
-		echo "org=$owner"
-		return
-	fi
-	repo=${path#*/}
-	type=$(curl -fsSL --max-time 15 -H 'Accept: application/vnd.github+json' "https://api.github.com/users/$owner" |
-		json 'print $d->{type} // ""') || die "can't look up $owner on GitHub"
-	if [[ $type == Organization ]]; then
-		echo "org=$owner&repo=$repo"
-	else
-		echo "user=$owner&repo=$repo"
-	fi
+# existing_github prints the organization or repository, Client ID, and installation ID in the controller's config,
+# each "-" when it isn't set yet, so that `read` keeps them apart.
+existing_github() {
+	local config key value
+	config=$(as_parcon "$CONTROLLER_VMID" 30 cat "$ETC/config.yaml" 2>/dev/null) || true
+	for key in configUrl clientId installationId; do
+		value=$(sed -n "s/^ *$key: *//p" <<<"$config" | head -n 1)
+		printf '%s ' "${value:--}"
+	done
+	echo
 }
 
-# read_existing_app prints the Client ID and installation ID already in the controller's config, if any.
-read_existing_app() {
-	as_parcon "$CONTROLLER_VMID" 30 cat "$ETC/config.yaml" 2>/dev/null |
-		sed -n 's/^ *\(clientId\|installationId\): *//p' | tr '\n' ' '
-}
-
-# setup_app creates or imports the GitHub App and waits for its installation. The Client ID goes into the config as
-# soon as the key is in the controller, so a re-run after a failure continues with the same App instead of creating
-# another.
+# setup_app creates or imports the GitHub App, waits for the user to install it, and learns from the installation
+# which organization or repository the runners serve. The Client ID goes into the config as soon as the key is in the
+# controller, so a re-run after a failure continues with the same App instead of creating another.
 setup_app() {
 	step "GitHub App"
-	local vmid=$CONTROLLER_VMID client_id="" installation_id=""
-	read -r client_id installation_id <<<"$(read_existing_app)" || true
+	local vmid=$CONTROLLER_VMID url client_id installation_id out target
+	read -r url client_id installation_id <<<"$(existing_github)"
+	[[ $url == - ]] && url=""
+	[[ $client_id == - ]] && client_id=""
+	[[ $installation_id == - ]] && installation_id=""
+	[[ -n $PAR_GITHUB_URL ]] || PAR_GITHUB_URL=$url
 	if [[ -z $client_id ]]; then
 		if [[ $PAR_GITHUB_APP == manual ]]; then
 			client_id=$PAR_GITHUB_APP_CLIENT_ID
 			import_app_key "$vmid"
+			say "    Install the App on your organization or repository if it isn't already."
 		else
 			client_id=$(create_app "$vmid") || die "creating the GitHub App failed"
 		fi
 		render_config "$client_id" | write_controller_file "$vmid" "$ETC/config.yaml" || die "writing the config failed"
 	fi
 	if [[ -z $installation_id ]]; then
-		say "    waiting for App $client_id to be installed on $PAR_GITHUB_URL (up to 15 minutes)"
-		installation_id=$(as_parcon "$vmid" 960 parcon github app wait-installation -client-id "$client_id" \
-			-target "$PAR_GITHUB_URL") || die "the App wasn't installed on $PAR_GITHUB_URL; run install again to keep waiting"
+		say "    waiting for App $client_id to be installed (up to 15 minutes)"
+		out=$(as_parcon "$vmid" 960 parcon github app wait-installation -client-id "$client_id") ||
+			die "the App wasn't installed; run install again to keep waiting"
+		installation_id=$(json 'print $d->{installationId}' <<<"$out")
+		target=$(installation_target "$out") || exit 1
+		if [[ -n $PAR_GITHUB_URL && $PAR_GITHUB_URL != "$target" ]]; then
+			die "the App is installed for $target, but PAR_GITHUB_URL is $PAR_GITHUB_URL"
+		fi
+		PAR_GITHUB_URL=$target
+		if is_repository && [[ $PAR_RUNNER_GROUP != default ]]; then
+			die "repository runners must use the runner group default, but PAR_RUNNER_GROUP is $PAR_RUNNER_GROUP"
+		fi
+		say "    the App is installed; the runners serve $PAR_GITHUB_URL"
 		render_config "$client_id" "$installation_id" | write_controller_file "$vmid" "$ETC/config.yaml" ||
 			die "writing the config failed"
 	fi
@@ -1149,18 +1157,71 @@ setup_app() {
 			"uninstall and install again"
 }
 
+# installation_target prints the organization or repository URL the runners serve, from wait-installation's JSON. An
+# organization's runners serve the organization. A personal account can only have repository runners: with one
+# repository, that's the one; with several, PAR_GITHUB_URL or the user picks.
+installation_target() {
+	local account type repos=() repo i choice
+	account=$(json 'print $d->{account}' <<<"$1")
+	type=$(json 'print $d->{accountType}' <<<"$1")
+	if [[ $type == Organization ]]; then
+		echo "https://github.com/$account"
+		return 0
+	fi
+	mapfile -t repos < <(json 'print "$_\n" for @{$d->{repositories} // []}' <<<"$1")
+	case ${#repos[@]} in
+	0)
+		echo "error: the App is installed on $account's personal account without a repository; add one under" \
+			"the App's installation settings and run install again" >&2
+		return 1
+		;;
+	1)
+		echo "https://github.com/$account/${repos[0]}"
+		return 0
+		;;
+	esac
+	for repo in "${repos[@]}"; do
+		if [[ $PAR_GITHUB_URL == "https://github.com/$account/$repo" ]]; then
+			echo "$PAR_GITHUB_URL"
+			return 0
+		fi
+	done
+	# /dev/tty exists without a terminal too; only opening it tells.
+	if ! { : </dev/tty; } 2>/dev/null; then
+		echo "error: the App can reach several of $account's repositories (${repos[*]}); set PAR_GITHUB_URL to" \
+			"https://github.com/$account/<repo> for the one the runners serve" >&2
+		return 1
+	fi
+	echo "    The App can reach several of $account's repositories. Which one do the runners serve?" >&2
+	for i in "${!repos[@]}"; do
+		printf '      %d) %s\n' "$((i + 1))" "${repos[i]}" >&2
+	done
+	while :; do
+		read -r -p "    Number: " choice </dev/tty || return 1
+		if [[ $choice =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#repos[@]})); then
+			echo "https://github.com/$account/${repos[choice - 1]}"
+			return 0
+		fi
+	done
+}
+
+# new_state prints a random state for the helper page's link: 32 bytes from the kernel's cryptographic random
+# source, in unpadded base64url (43 characters), so nobody can guess the line the installer will accept.
+new_state() { head -c 32 /dev/urandom | base64 -w 0 | tr '+/' '-_' | tr -d '='; }
+
 # create_app runs the manifest flow and prints the new App's Client ID. The code the user pastes goes only into the
 # controller VM, on stdin.
 create_app() {
-	local vmid=$1 state line code out slug client_id
-	state=$(head -c 18 /dev/urandom | base64 | tr '+/' '-_')
+	local vmid=$1 state line code out slug owner client_id
+	state=$(new_state)
 	cat >&2 <<EOF
 
-    Create the GitHub App in a browser on any device:
+    Create your GitHub App in a browser on any device:
 
-      $HELPER_URL?$(app_query)&state=$state
+      $HELPER_URL?state=$state
 
-    Review the App on GitHub and create it. The page then shows one line to copy. Paste it here.
+    Choose your organization or your personal account there, then create the App on GitHub. The page then shows
+    one line to copy. Paste it here.
 
 EOF
 	read -r -p "    Line from the page: " line </dev/tty
@@ -1171,11 +1232,15 @@ EOF
 	code=""
 	client_id=$(json 'print $d->{clientId}' <<<"$out")
 	slug=$(json 'print $d->{slug}' <<<"$out")
+	owner=$(json 'print $d->{owner}' <<<"$out")
 	cat >&2 <<EOF
 
-    Created GitHub App $slug. Install it on $PAR_GITHUB_URL:
+    Created GitHub App $slug, owned by $owner. Install it:
 
       https://github.com/apps/$slug/installations/new
+
+    On an organization, install it for all repositories. On your personal account, choose the repository the
+    runners serve.
 
 EOF
 	echo "$client_id"
@@ -1245,7 +1310,7 @@ finish_install() {
 	change qm set "$CONTROLLER_VMID" --tags "$TAG_MANAGED;$TAG_CONTROLLER;$(release_tag)"
 	step "Done"
 	cat <<EOF
-Use the runners in a workflow:
+Use the runners in a workflow in $PAR_GITHUB_URL:
 
   runs-on: $PAR_LABELS
 
@@ -1487,8 +1552,6 @@ do_uninstall() {
 do_check() {
 	[[ -z $ANSWERS ]] || load_answers "$ANSWERS"
 	apply_defaults
-	# The checks don't use the GitHub target.
-	[[ -n $PAR_GITHUB_URL ]] || PAR_GITHUB_URL=https://github.com/example
 	validate_settings
 	preflight
 	say "All checks passed."
