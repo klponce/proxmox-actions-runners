@@ -48,8 +48,13 @@ readonly PRIVILEGES=(
 
 # ReservedVMIDs in internal/config: the IDs at the end of the range that hold templates and smoke-test clones.
 readonly RESERVED_VMIDS=4
-# Disk sizes in GiB: the images' disks and the controller VM's, which the installer grows.
-readonly TEMPLATE_GIB=10 GATEWAY_GIB=8 CONTROLLER_GIB=20
+# Disk sizes in GiB: the gateway and controller images' and VMs' (images/*/*.pkr.hcl). Each image holds about 2.5 GiB
+# when built, but a kernel update (unattended-upgrades) briefly needs two kernels and a new initramfs, which doesn't fit
+# in 4 GiB.
+readonly GATEWAY_GIB=6 CONTROLLER_GIB=6
+# The free space the VM storage needs for the default install: the gateway, controller, and template disks, and room
+# for a worker. Sizing the node for more workers is up to the user after the install.
+readonly FREE_GIB=50
 # The images are downloaded here, on the host's root filesystem, before they are imported: about 4 GiB for the three,
 # with room to grow.
 readonly DOWNLOAD_DIR=/var/tmp DOWNLOAD_GIB=6
@@ -140,7 +145,7 @@ settings (answers file keys):
   PAR_LABELS                comma-separated runs-on labels (default: the scale set name)
   PAR_RUNNER_GROUP          GitHub runner group (default default; repositories must use default)
   PAR_MIN_RUNNERS           idle workers to keep booted (default 0)
-  PAR_MAX_RUNNERS           most workers at once (default 2)
+  PAR_MAX_RUNNERS           most workers at once (default 1)
   PAR_STORAGE               storage for VM disks (default local-lvm)
   PAR_BRIDGE                LAN bridge for the controller and gateway VMs (default vmbr0)
   PAR_VLAN                  VLAN tag on the LAN bridge (default none)
@@ -211,7 +216,7 @@ apply_defaults() {
 	: "${PAR_LABELS:=$PAR_SCALE_SET}"
 	: "${PAR_RUNNER_GROUP:=default}"
 	: "${PAR_MIN_RUNNERS:=0}"
-	: "${PAR_MAX_RUNNERS:=2}"
+	: "${PAR_MAX_RUNNERS:=1}"
 	: "${PAR_STORAGE:=local-lvm}"
 	: "${PAR_BRIDGE:=vmbr0}"
 	: "${PAR_VLAN:=}"
@@ -584,12 +589,10 @@ linked_clones_supported() {
 check_linked_clones() { linked_clones_supported; }
 
 check_free_space() {
-	local avail need per_worker=$((14))
+	local avail
 	avail=$(storage_json | json 'print int(($d->{avail} // 0) / 2**30)')
-	linked_clones_supported >/dev/null || per_worker=$((TEMPLATE_GIB + 14))
-	need=$((GATEWAY_GIB + CONTROLLER_GIB + TEMPLATE_GIB + PAR_MAX_RUNNERS * per_worker))
-	echo "$avail GiB free, about $need GiB needed"
-	((avail >= need))
+	echo "$avail GiB free, $FREE_GIB GiB needed"
+	((avail >= FREE_GIB))
 }
 
 check_download_space() {

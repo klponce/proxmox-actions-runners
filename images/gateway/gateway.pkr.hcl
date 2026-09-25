@@ -19,8 +19,10 @@ locals {
 build {
   source "qemu.ubuntu" {
     name = "gateway"
-    # The gateway VM's disk size, so the installer imports it as is.
-    disk_size = "8G"
+    # The gateway VM's disk size, so the installer imports it as is (install.sh GATEWAY_GIB). The
+    # built image holds about 2.5 GiB, but a kernel update needs room for two kernels and a new initramfs: 4 GiB
+    # runs out during the build's own upgrade.
+    disk_size = "6G"
     memory    = 2048
     cd_content = {
       "meta-data" = "instance-id: par-gateway-build\nlocal-hostname: par-gateway\n"

@@ -281,8 +281,8 @@ See [docs/install.md](docs/install.md) for the full design.
   `images/common/auto-updates.sh` (`unattended-upgrades`) first.
   Unlike workers, these VMs are long-lived and patch themselves. They hold no machine identity either:
   `images/common/cleanup.sh` runs last.
-- Keep their disks small: 8 GiB, the gateway VM's disk size. The installer grows the controller's to its VM size in
-  [docs/install.md](docs/install.md).
+- Keep their disks small: 6 GiB, both VMs' disk size. A built image holds about 2.5 GiB, but a kernel update needs
+  room for two kernels and a new initramfs, which 4 GiB can't hold.
 - The gateway holds no secrets and no state beyond `/etc/par-gateway/config`. `par-gateway-configure` renders
   everything else from it, and running it again with the same input changes nothing. The worker NIC is always
   `net1` (Proxmox's `net1`, named by its PCI slot), so the rules never depend on MACs.

@@ -145,7 +145,7 @@ include the agent avoids both changes to the host.
 | Outbound HTTPS | `github.com`, `api.github.com`, and the release asset hosts (`objects.githubusercontent.com`, `release-assets.githubusercontent.com`) | hard |
 | Target storage | exists, active, and accepts `images` content | hard |
 | Linked-clone support | storage type is `lvmthin`, `zfspool`, `rbd`, or file-based with qcow2. Otherwise `linkedClone: false` | warn |
-| Free space | controller and gateway disks + template + `maxRunners` × (`freeDiskGiB`, or template size + `freeDiskGiB` if not linked) | hard |
+| Free space | 50 GiB free on the VM storage: the gateway, controller, and template disks, and room for one worker | hard |
 | Download space | 6 GiB free in `/var/tmp`, on the host's root filesystem, where the images are downloaded before they are imported | hard |
 | Free memory and CPU | host RAM and threads against `maxRunners` × worker size plus existing VMs | warn |
 | LAN bridge | the bridge for the controller and gateway VMs exists. VLAN tag valid if set | hard |
@@ -197,15 +197,15 @@ The controller image and the installer agree on this layout:
    cloud-init drive and the guest agent enabled. Tag it `par-managed`, `par-template`,
    `par-tv-<import time in Unix seconds>`, and `par-rv-<actions/runner version>` (from the image's manifest), and
    convert it to a template. See *Runner image*.
-8. **Create the gateway VM** in `par-system` from `par-gateway-<ver>.qcow2`: 1 vCPU, 1 GiB RAM, an 8 GiB disk (the
+8. **Create the gateway VM** in `par-system` from `par-gateway-<ver>.qcow2`: 1 vCPU, 1 GiB RAM, a 6 GiB disk (the
    image's size), `net0` on the LAN bridge, and `net1` on `parnet`. Use the built-in cloud-init drive for hostname
    and the LAN address only, tag it `par-managed,par-gateway`, and start it. Once the guest agent responds, pipe
    the worker subnet and the ranges to block (the LAN bridge's networks, every address the host has on any
    interface, and the controller VM) into `par-gateway-configure` through `qm guest exec --pass-stdin` (see
    *Gateway and controller images*), then check that it serves DHCP on `parnet` and reaches the internet.
-9. **Create the controller VM** in `par-system` from `parcon-<ver>.qcow2`: 2 vCPU, 2 GiB RAM, the disk grown to
-   20 GiB. Use Proxmox's built-in cloud-init drive for hostname and network only (no user data, no snippets), tag it
-   `par-managed,par-controller`, and start it.
+9. **Create the controller VM** in `par-system` from `parcon-<ver>.qcow2`: 2 vCPU, 2 GiB RAM, a 6 GiB disk (the
+   image's size). Use Proxmox's built-in cloud-init drive for hostname and network only (no user data, no
+   snippets), tag it `par-managed,par-controller`, and start it.
 10. **Configure the controller** through the guest agent once it responds. Secrets go through
     `qm guest exec --pass-stdin`, so they never appear on a command line or on the host's disk:
     - `/etc/proxmox-actions-runners/config.yaml` with the settings, but no `github.app` yet (see *Controller VM
@@ -244,8 +244,9 @@ Each step checks for existing objects before it creates anything.
 ## Gateway and controller images
 
 Both images start from the same pinned Ubuntu 26.04 cloud image as the runner image, turn on `unattended-upgrades`,
-and include `qemu-guest-agent`, which is how the installer configures them. Both disks are 8 GiB: the gateway
-VM's size, which the installer grows to 20 GiB for the controller VM.
+and include `qemu-guest-agent`, which is how the installer configures them. Both disks are 6 GiB, the VMs'
+size. A built image holds about 2.5 GiB and grows only by logs and OS updates, but a kernel update from
+`unattended-upgrades` briefly needs room for two kernels and a new initramfs, which 4 GiB can't hold.
 
 ### Gateway
 
