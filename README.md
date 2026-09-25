@@ -271,6 +271,7 @@ images/common/         what the image builds share: Ubuntu pin, base and cleanup
 images/controller/     Packer build of the controller VM image with parcon (CI)
 images/gateway/        Packer build of the gateway VM image: DHCP, DNS, NAT, firewall (CI)
 images/runner/         Packer build of the runner template image (CI)
+.github/               CI, the release build, and the daily actions/runner check
 deploy/                example config, systemd unit for the controller VM
 site/                  GitHub Pages helper page for creating the GitHub App
 docs/                  design notes
