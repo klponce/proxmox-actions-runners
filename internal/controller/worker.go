@@ -18,8 +18,8 @@ const (
 	opCreatePrefix = "create:"
 
 	// retireTimeout bounds one retirement. Retirements outlive a canceled controller context so shutdown doesn't
-	// leave a VM half-destroyed, and Run waits this long for them; the controller's systemd unit needs a longer
-	// TimeoutStopSec.
+	// leave a VM half-destroyed, and Run waits this long for them, after up to 30s for the message sessions to close.
+	// deploy/parcon.service's TimeoutStopSec must cover both.
 	retireTimeout = 5 * time.Minute
 	// agentPollInterval is how often a booting worker's guest agent is pinged.
 	agentPollInterval = 2 * time.Second

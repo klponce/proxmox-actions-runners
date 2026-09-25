@@ -15,8 +15,9 @@ Group=parcon
 ExecStart=/usr/local/bin/parcon run
 Restart=on-failure
 RestartSec=10s
-# Room for the work in flight to finish after SIGTERM.
-TimeoutStopSec=5min
+# Room for the work in flight to finish after SIGTERM: up to 30s to close the GitHub message sessions, then up to
+# 5min for retirements (retireTimeout in internal/controller/worker.go).
+TimeoutStopSec=6min
 NoNewPrivileges=yes
 ProtectSystem=strict
 PrivateTmp=yes
