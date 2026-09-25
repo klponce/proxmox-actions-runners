@@ -995,7 +995,6 @@ gateway_block() {
 configure_gateway() {
 	local vmid=$1
 	say "    configuring gateway $vmid: worker subnet $PAR_WORKER_SUBNET, blocking $(gateway_block)"
-	((DRY_RUN)) && return 0
 	printf 'WORKER_SUBNET=%s\nBLOCK=%s\n' "$PAR_WORKER_SUBNET" "$(gateway_block)" |
 		guest_exec "$vmid" 60 --stdin -- /usr/local/sbin/par-gateway-configure >/dev/null ||
 		die "configuring the gateway failed"
@@ -1062,7 +1061,6 @@ EOF
 # configure_controller writes the config without the App and the API token, then checks Proxmox from the VM.
 configure_controller() {
 	step "Configure the controller"
-	((DRY_RUN)) && return 0
 	local vmid=$CONTROLLER_VMID client_id installation_id
 	read -r client_id installation_id <<<"$(read_existing_app)" || true
 	if [[ $(tls_mode) == ca ]]; then
@@ -1120,7 +1118,6 @@ read_existing_app() {
 # another.
 setup_app() {
 	step "GitHub App"
-	((DRY_RUN)) && return 0
 	local vmid=$CONTROLLER_VMID client_id="" installation_id=""
 	read -r client_id installation_id <<<"$(read_existing_app)" || true
 	if [[ -z $client_id ]]; then
@@ -1191,7 +1188,6 @@ import_app_key() {
 
 start_controller() {
 	step "Start the controller"
-	((DRY_RUN)) && return 0
 	SERVICE_STARTED=$(date +%s)
 	guest_exec "$CONTROLLER_VMID" 60 -- systemctl enable --now parcon.service >/dev/null ||
 		die "starting parcon.service failed"
@@ -1201,7 +1197,6 @@ start_controller() {
 # scale set session.
 smoke_test() {
 	step "Smoke test"
-	((DRY_RUN)) && return 0
 	local vmid template
 	for vmid in $(vms_with_tag "$RUNNER_POOL" "$TAG_BUILD"); do
 		change qm stop "$vmid" --skiplock 1 >/dev/null 2>&1 || true
