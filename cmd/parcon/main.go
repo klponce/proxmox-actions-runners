@@ -11,6 +11,7 @@
 //	parcon github app create [-key-file path] < code
 //	parcon github app import [-key-file path] < key.pem
 //	parcon github app wait-installation -client-id id -target url [-key-file path] [-timeout duration]
+//	parcon github scaleset delete [-config path]
 package main
 
 import (
@@ -40,6 +41,8 @@ const usage = `usage:
   parcon github app wait-installation -client-id id -target url [-key-file path] [-timeout duration]
                                         wait until the App is installed on the target and print the
                                         installation ID
+  parcon github scaleset delete [-config path]
+                                        remove the configured scale sets and their runners from GitHub
 `
 
 // errUsage marks a command-line mistake, which exits with status 2 like the flag package does.

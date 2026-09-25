@@ -39,14 +39,22 @@ var appCommands = map[string]func(args []string, stdout, stderr io.Writer) error
 	"wait-installation": appWaitInstallation,
 }
 
-// runGitHub handles "parcon github app <command>". The installer runs these commands to set up the GitHub App
-// before the config names it, so they take their settings from flags and stdin, not from the config file.
+// runGitHub handles "parcon github app <command>" and "parcon github scaleset delete". The installer runs the app
+// commands to set up the GitHub App before the config names it, so they take their settings from flags and stdin,
+// not from the config file.
 func runGitHub(args []string, stdout, stderr io.Writer) error {
-	if len(args) < 2 || args[0] != "app" || appCommands[args[1]] == nil {
+	var cmd func(args []string, stdout, stderr io.Writer) error
+	switch {
+	case len(args) >= 2 && args[0] == "app":
+		cmd = appCommands[args[1]]
+	case len(args) >= 2 && args[0] == "scaleset" && args[1] == "delete":
+		cmd = scaleSetDelete
+	}
+	if cmd == nil {
 		fmt.Fprint(stderr, usage)
 		return errUsage
 	}
-	err := appCommands[args[1]](args[2:], stdout, stderr)
+	err := cmd(args[2:], stdout, stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		return nil
 	}
