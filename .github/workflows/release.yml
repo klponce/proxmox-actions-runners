@@ -1,0 +1,115 @@
+# Builds a release: the three VM images (each built with Packer and boot-tested on KVM), the parcon binary, and
+# install.sh with the release's version and checksums written in. A tag vX.Y.Z publishes a release; a tag with a
+# pre-release suffix, such as v0.1.0-rc.1, publishes a pre-release, which the installer's "latest" links skip. Running
+# the workflow by hand builds and checks everything and keeps the files as workflow artifacts, without publishing.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # A tag's version, or a throwaway one for a run by hand.
+  VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('0.0.0-dev.{0}', github.run_number) }}
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        image: [runner, gateway, controller]
+    steps:
+      - name: Check the version
+        run: |
+          [[ ${VERSION#v} =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9a-z.]+)?$ ]] ||
+            { echo "::error::$VERSION isn't vX.Y.Z or vX.Y.Z-pre" && exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Allow KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Build the dev container image
+        run: |
+          docker build --build-arg USER_UID="$(id -u)" --build-arg USER_GID="$(id -g)" -t par-dev .devcontainer
+      - name: Build and boot-test the ${{ matrix.image }} image
+        env:
+          # packer init downloads its plugin through GitHub's API, whose anonymous rate limit runners share.
+          PACKER_GITHUB_API_TOKEN: ${{ github.token }}
+        run: |
+          docker run --rm --device /dev/kvm -e PACKER_GITHUB_API_TOKEN -v "$PWD:$PWD" -w "$PWD" par-dev \
+            .github/scripts/build-image.sh "${{ matrix.image }}" "${VERSION#v}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-${{ matrix.image }}
+          path: |
+            output-${{ matrix.image }}/*.qcow2
+            output-runner/*.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  release:
+    needs: images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+          pattern: image-*
+          merge-multiple: true
+      - name: Build the dev container image
+        run: |
+          docker build --build-arg USER_UID="$(id -u)" --build-arg USER_GID="$(id -g)" -t par-dev .devcontainer
+      - name: Assemble the release
+        run: |
+          version=${VERSION#v}
+          mkdir dist
+          find artifacts -type f \( -name '*.qcow2' -o -name 'par-runner-*.json' \) -exec mv {} dist/ \;
+          docker run --rm -v "$PWD:$PWD" -w "$PWD" -e CGO_ENABLED=0 par-dev go build -trimpath \
+            -ldflags "-s -w -X main.version=$version" -o "dist/parcon-$version-linux-amd64" ./cmd/parcon
+          for asset in "par-runner-$version.qcow2" "par-runner-$version.json" "par-gateway-$version.qcow2" \
+            "parcon-$version.qcow2" "parcon-$version-linux-amd64"; do
+            test -s "dist/$asset" || { echo "missing $asset" >&2; exit 1; }
+          done
+          (cd dist && sha256sum -- *) >assets.sha256
+          install/fill-release.sh "$version" assets.sha256 >dist/install.sh
+          chmod +x dist/install.sh
+          (cd dist && sha256sum -- *) >SHA256SUMS
+          mv SHA256SUMS dist/
+          ls -l dist
+          cat dist/SHA256SUMS
+      - name: Publish
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=()
+          [[ $VERSION != *-* ]] || prerelease=(--prerelease)
+          gh release create "$VERSION" dist/* --verify-tag --generate-notes --title "$VERSION" "${prerelease[@]}"
+      - name: Keep the files of a run by hand
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ env.VERSION }}
+          path: dist/
+          compression-level: 0
+          retention-days: 7

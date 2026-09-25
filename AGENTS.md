@@ -112,6 +112,8 @@ images/gateway/        Packer (qemu builder): the gateway VM image (nftables, dn
 images/runner/         Packer (qemu builder): the runner template image, shipped as a release asset
 deploy/                example config, systemd unit for the controller VM
 .devcontainer/         development container with every tool below, at pinned versions
+.github/workflows/     CI, releases, the daily actions/runner check, and the helper page on GitHub Pages
+.github/scripts/       what the workflows run: check.sh, build-image.sh, bump-runner.sh, and their bats tests
 site/                  GitHub Pages helper page for the GitHub App manifest flow (static, no third-party scripts)
 docs/                  design notes
 ```
@@ -147,37 +149,23 @@ devcontainer up --workspace-folder . \
 Run these inside the dev container.
 
 ```bash
-go build ./...
-go test ./...
-go vet ./...
-gofmt -l .                                # must print nothing
-golangci-lint run
+.github/scripts/check.sh                  # every check CI runs: Go, lint, shellcheck, bats, Packer, actionlint
 test/integration/run.sh                   # needs SSH to a throwaway Proxmox node; see test/integration/README.md
-packer fmt -check -recursive images
-packer validate images/runner
-packer validate images/gateway
-CGO_ENABLED=0 go build -o bin/parcon ./cmd/parcon && packer validate -var parcon_binary=bin/parcon images/controller
-shellcheck images/common/*.sh images/*/scripts/*.sh images/*/tests/*.sh images/gateway/par-gateway-configure \
-  test/integration/*.sh test/integration/node/*.sh install/install.sh install/tests/helpers.bash
-bats install/tests
 ```
 
-Run the build, test, vet, and format checks before you consider a change done. When you change an image, also
-build it. Each build runs its scripts twice (they must be idempotent) and checks the result; the runner build also
+`check.sh` runs `go build`, `go test -race`, `go vet` (also with `-tags integration`), `gofmt -l`, `golangci-lint`,
+`shellcheck` on every script, `bats install/tests .github/scripts/tests`, `packer fmt -check` and `packer validate`
+for each image, and `actionlint` on the workflows. It must pass before you consider a change done, and CI runs the
+same script in the same image. When you change an image, also build it. Each build runs its scripts twice (they must be idempotent) and checks the result; the runner build also
 runs the one-job flow with a stand-in runner. The boot test then boots the finished image the way Proxmox first
 boots a VM made from it and checks the console for failed units, ordering cycles, and each image's own lines. A
-build needs `/dev/kvm` and 2 to 4 GiB of free memory. Run one build at a time:
+build needs `/dev/kvm` and 2 to 4 GiB of free memory. `build-image.sh` builds one image and boot-tests it, the same
+way the release workflow does; run one build at a time:
 
 ```bash
-packer init images/runner && packer build -var version=dev images/runner
-images/common/boot-test.sh output-runner/par-runner-dev.qcow2 'Started.*par-runner.path'
-
-packer init images/gateway && packer build -var version=dev images/gateway
-images/common/boot-test.sh output-gateway/par-gateway-dev.qcow2 'Finished.*nftables.service' 'Started.*dnsmasq.service'
-
-CGO_ENABLED=0 go build -ldflags "-X main.version=dev" -o bin/parcon ./cmd/parcon
-packer init images/controller && packer build -var version=dev -var parcon_binary=bin/parcon images/controller
-images/common/boot-test.sh output-controller/parcon-dev.qcow2
+.github/scripts/build-image.sh runner dev       # output-runner/par-runner-dev.qcow2
+.github/scripts/build-image.sh gateway dev      # output-gateway/par-gateway-dev.qcow2
+.github/scripts/build-image.sh controller dev   # output-controller/parcon-dev.qcow2, with bin/parcon built first
 ```
 
 Run the integration suite when you change how the controller talks to Proxmox: the fakes only check what the code
@@ -290,6 +278,25 @@ See [docs/install.md](docs/install.md) for the full design.
   [docs/install.md](docs/install.md): the `parcon` user, `/usr/local/bin/parcon`, `parcon.service`
   ([deploy/parcon.service](deploy/parcon.service), installed but not enabled by the image), and the modes of
   `/etc/proxmox-actions-runners` and its files. Change it there, not here.
+
+## Releases and CI (`.github/`)
+
+- **CI** (`ci.yml`) runs `.github/scripts/check.sh` in the dev container's image on every pull request and every
+  push to `main`. Tool versions live only in `.devcontainer/Dockerfile`.
+- **Releases** (`release.yml`): pushing a tag `vX.Y.Z` builds the three images in parallel on KVM, each boot-tested,
+  then publishes a GitHub release with them, `par-runner-<ver>.json`, `parcon-<ver>-linux-amd64`, `install.sh`, and
+  `SHA256SUMS`. `install/fill-release.sh` writes the version and the assets' checksums into `install.sh`, which then
+  refuses any file that doesn't match. A tag with a suffix, such as `v0.2.0-rc.1`, makes a pre-release, which
+  `releases/latest` links skip: use one to test a release on a node before publishing it for everyone. Running the
+  workflow by hand builds and checks everything and keeps the files as workflow artifacts without publishing.
+- To cut a release, from an up-to-date `main` whose CI passed: `git tag v0.1.0 && git push origin v0.1.0`.
+- **actions/runner** (`runner-release.yml`): a daily job opens a pull request that bumps the runner image's pin when
+  a new release is out (`.github/scripts/bump-runner.sh`). Merge it and cut a release within GitHub's 30-day window.
+  Pull requests opened with the workflow's token don't trigger other workflows, so close and reopen one to run CI.
+- Pin every action to a full commit SHA with its version in a comment, and give each workflow and job only the
+  `permissions` it needs.
+- Repository settings the workflows need: Actions may create pull requests (Settings → Actions → General), and
+  Pages publishes from GitHub Actions (Settings → Pages).
 
 ## Change hygiene
 

@@ -106,8 +106,9 @@ Each `install.sh` installs exactly its own release. To install another version, 
 
 ## Release assets
 
-Each release publishes the following files. The installer contains the SHA-256 of every asset for its own version
-and refuses a file that doesn't match.
+Each release publishes the following files, built by `.github/workflows/release.yml` when a `vX.Y.Z` tag is
+pushed. Each image is boot-tested before it is published. The installer contains the SHA-256 of every asset for its
+own version and refuses a file that doesn't match.
 
 | Asset | Contents | Built by |
 | ----- | -------- | -------- |
@@ -117,10 +118,12 @@ and refuses a file that doesn't match.
 | `par-runner-<ver>.qcow2` | The runner template: Ubuntu 26.04, `qemu-guest-agent`, the `runner` user, a pinned `actions/runner`, Docker, and a few basics | Packer `qemu` builder in CI (`images/runner/`) |
 | `par-runner-<ver>.json` | The runner image's build manifest, including its `actions/runner` version | Packer `qemu` builder in CI |
 | `parcon-<ver>-linux-amd64` | The `parcon` binary, which `upgrade` puts in the controller VM | Release workflow |
-| `SHA256SUMS` | Checksums of the above | Release workflow |
+| `SHA256SUMS` | Checksums of all of the above, `install.sh` included | Release workflow |
 
-The release workflow writes the version and the `SHA256SUMS` lines into `install.sh` (its `@PAR_VERSION@` and
-`@PAR_SHA256SUMS@` placeholders), so the script is the trust anchor for every asset it downloads.
+The release workflow writes the version and the other assets' checksums into `install.sh` (its `@PAR_VERSION@` and
+`@PAR_SHA256SUMS@` placeholders, with `install/fill-release.sh`), so the script is the trust anchor for every asset it
+downloads. A tag with a suffix, such as `v0.2.0-rc.1`, publishes a pre-release: its `install.sh` installs it, but the
+`releases/latest` links in *Usage* keep pointing at the latest full release.
 
 **Why prebuilt images instead of stock Ubuntu cloud images:** stock images don't include `qemu-guest-agent`, and the
 only way to add it at first boot is custom cloud-init user data. Proxmox stores that as snippet files, which means
@@ -404,7 +407,9 @@ say which template it came from, so the controller deletes no template while one
 its clones itself, and `uninstall` removes any that remain.
 
 GitHub stops accepting a runner with auto-update disabled 30 days after a newer `actions/runner` release. Each
-runner release therefore ships as a project release with a new runner image, and `install.sh upgrade` imports it.
+runner release therefore ships as a project release with a new runner image, and `install.sh upgrade` imports it. A
+daily workflow (`.github/workflows/runner-release.yml`) opens a pull request that bumps the image's pin as soon as a
+new `actions/runner` release is out.
 The controller logs a warning when the template has been behind the latest release for 7 days and an error after
 21, and `parcon check template` reports the same.
 
