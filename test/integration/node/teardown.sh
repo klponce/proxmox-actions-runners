@@ -1,29 +1,33 @@
 #!/usr/bin/env bash
 # Runs on the test node as root, sent by run.sh. Removes everything the integration suite created: every VM in its
-# pool, the pool, the user (with its token and ACLs), the role, the SDN zone and VNet, the template snippet and
-# image, and the snippets content type it added to the local storage. Missing objects are skipped.
+# pools, the pools, the user (with its token and ACLs), the role, the SDN zone and VNet, the template snippet and
+# images, and the snippets content type it added to the local storage. Missing objects are skipped.
 #
-# Environment: ZONE VNET POOL ROLE USER
+# Environment: ZONE VNET POOLS (space-separated) ROLE USER
 set -euo pipefail
 
 readonly IMG=/var/lib/vz/import/ubuntu-26.04-server-cloudimg-amd64.img
+readonly RUNNER_IMG=/var/lib/vz/import/par-it-runner.qcow2
 readonly SNIPPET=/var/lib/vz/snippets/par-it-agent.yaml
 readonly CONTENT_MARKER=/root/.par-it-local-content
 
 main() {
-	: "${ZONE:?}" "${VNET:?}" "${POOL:?}" "${ROLE:?}" "${USER:?}"
+	: "${ZONE:?}" "${VNET:?}" "${POOLS:?}" "${ROLE:?}" "${USER:?}"
 
-	if pvesh get "/pools/$POOL" >/dev/null 2>&1; then
-		local vmid
-		for vmid in $(pvesh get "/pools/$POOL" --output-format json |
-			perl -MJSON -0777 -ne 'print "$_->{vmid}\n" for grep { $_->{type} eq "qemu" } @{decode_json($_)->{members}}'); do
+	local pool vmid
+	for pool in $POOLS; do
+		pvesh get "/pools/$pool" >/dev/null 2>&1 || continue
+		# Clones first: Proxmox won't destroy a template that linked clones still use.
+		for vmid in $(pvesh get "/pools/$pool" --output-format json | perl -MJSON -e '
+			my @vms = grep { $_->{type} eq "qemu" } @{decode_json(do { local $/; <STDIN> })->{members}};
+			print "$_->{vmid}\n" for sort { ($a->{template} // 0) <=> ($b->{template} // 0) } @vms;'); do
 			echo "== destroy VM $vmid"
 			qm stop "$vmid" >/dev/null 2>&1 || true
 			qm destroy "$vmid" --purge 1
 		done
-		echo "== pool $POOL"
-		pveum pool delete "$POOL"
-	fi
+		echo "== pool $pool"
+		pveum pool delete "$pool"
+	done
 
 	if pveum user list --output-format json | grep -q "\"userid\":\"$USER\""; then
 		# Remove the user's and its tokens' ACLs first: removing a token or user leaves them behind for Proxmox to
@@ -66,7 +70,7 @@ main() {
 	fi
 	[[ $changed == 0 ]] || pvesh set /cluster/sdn >/dev/null
 
-	rm -f "$SNIPPET" "$IMG"
+	rm -f "$SNIPPET" "$IMG" "$RUNNER_IMG"
 	rmdir /var/lib/vz/snippets 2>/dev/null || true # only if the suite's snippet was the last one
 	if [[ -e $CONTENT_MARKER ]]; then
 		echo "== restore local storage content: $(cat "$CONTENT_MARKER")"

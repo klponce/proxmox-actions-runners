@@ -456,6 +456,30 @@ func TestBootTimeoutStartsAtVMStart(t *testing.T) {
 	}
 }
 
+// A VM that is gone by the time it is destroyed, because a retirement raced with another or repeats after a crash,
+// comes back from Proxmox as 403 for the controller's pool-scoped token. That counts as destroyed.
+func TestDestroyingAVMThatIsGoneSucceeds(t *testing.T) {
+	h := newHarness(t, testConfig())
+	if err := h.c.destroy(context.Background(), 10003); err != nil {
+		t.Errorf("destroy of a VM that doesn't exist: %v", err)
+	}
+	if err := h.c.retire(context.Background(), 10003, true, "", true); err != nil {
+		t.Errorf("retire of a VM that doesn't exist: %v", err)
+	}
+}
+
+// A 403 for a VM that is still listed is a real failure: the token lacks a privilege it needs.
+func TestDestroyForbiddenForListedVMFails(t *testing.T) {
+	h := newHarness(t, testConfig())
+	h.pve.add(proxmox.VM{VMID: 10003, Pool: testPool, Tags: []string{vmtags.Managed}})
+	h.pve.fail["destroy"] = &proxmox.APIError{StatusCode: http.StatusForbidden,
+		Message: "Permission check failed (/vms/10003, VM.Allocate)"}
+	err := h.c.destroy(context.Background(), 10003)
+	if !proxmox.IsForbidden(err) {
+		t.Errorf("destroy error = %v, want the 403", err)
+	}
+}
+
 func TestForeignVMIDIsSkipped(t *testing.T) {
 	h := newHarness(t, testConfig())
 	h.pve.addTemplate(testTemplateID, 1)

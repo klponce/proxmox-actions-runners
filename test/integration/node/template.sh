@@ -99,7 +99,9 @@ main() {
 
 	echo "== convert to a template on $VNET"
 	qm shutdown "$VMID" --timeout 180
-	qm set "$VMID" --delete cicustom --net0 "virtio,bridge=$VNET" --tags "par-managed;par-template;par-tv-1" >/dev/null
+	# par-tv is the template's version: its creation time, as the installer records it.
+	qm set "$VMID" --delete cicustom --net0 "virtio,bridge=$VNET" \
+		--tags "par-managed;par-template;par-tv-$(date +%s)" >/dev/null
 	qm template "$VMID"
 
 	# /cluster/resources, which the controller reads, reports the template flag from pvestatd, about 10s late.
