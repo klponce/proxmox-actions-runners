@@ -64,6 +64,7 @@ EOF
 	stub qm "case \"\$*\" in
 		'config 105') printf '%s\n' 'net0: virtio=BC:24:11:00:00:01,bridge=vmbr0' \
 			'net1: virtio=BC:24:11:00:00:02,bridge=parnet' 'ipconfig0: ip=192.0.2.10/24,gw=192.0.2.1' ;;
+		*is-system-running*) echo '{\"exited\":1,\"exitcode\":0,\"out-data\":\"running\\n\"}' ;;
 		'guest exec 105 '*) echo '{\"exited\":1,\"exitcode\":0,\"out-data\":\"WORKER_SUBNET=10.251.0.0/22\\n\"}' ;;
 	esac"
 	PAR_VERSION=0.1.0
@@ -397,4 +398,41 @@ JSON
 	storage_json() { echo '{"avail":53687091199}'; }
 	run ! check_free_space
 	[ "$output" = "49 GiB free, 50 GiB needed" ]
+}
+
+@test "wait_booted waits for the boot to finish and accepts a degraded one" {
+	stub qm 'case "$*" in
+		"guest cmd"*) ;;
+		*) echo "{\"exited\":1,\"exitcode\":0,\"out-data\":\"running\\n\"}" ;;
+	esac'
+	run wait_booted 100
+	[ "$status" -eq 0 ]
+	grep -q '^qm guest exec 100 --timeout 600 -- systemctl is-system-running --wait$' "$CALLS"
+
+	stub qm 'case "$*" in
+		"guest cmd"*) ;;
+		*) echo "{\"exited\":1,\"exitcode\":1,\"out-data\":\"degraded\\n\"}" ;;
+	esac'
+	run wait_booted 100
+	[ "$status" -eq 0 ]
+	[[ $output == *"finished booting with a failed unit"* ]]
+}
+
+@test "wait_booted stops the install when the boot doesn't finish" {
+	stub qm 'case "$*" in
+		"guest cmd"*) ;;
+		*) echo "{\"pid\":42}" ;;
+	esac'
+	run wait_booted 100
+	[ "$status" -eq 1 ]
+	[[ $output == *"didn't finish booting within 10 minutes"* ]]
+}
+
+@test "change_quiet drops a command's output but keeps its errors and the log line" {
+	# The command prints "progress 42", which its own text in the log line doesn't contain.
+	run change_quiet sh -c 'echo progress $((40 + 2)); echo broken >&2; exit 3'
+	[ "$status" -eq 3 ]
+	[[ $output == *'$ sh -c'* ]]
+	[[ $output == *broken* ]]
+	[[ $output != *"progress 42"* ]]
 }
