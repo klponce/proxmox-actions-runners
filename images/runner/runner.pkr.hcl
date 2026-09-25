@@ -4,33 +4,15 @@
 # workers are cloned from. Built in CI and published as par-runner-<version>.qcow2 with a manifest,
 # par-runner-<version>.json, that records the runner version and build time the installer tags the template with.
 #
+# The plugin and Ubuntu image pins are in ubuntu.pkr.hcl, a link to images/common/ubuntu.pkr.hcl.
+#
 #   packer init images/runner
 #   packer build -var version=dev images/runner
-
-packer {
-  required_plugins {
-    qemu = {
-      source  = "github.com/hashicorp/qemu"
-      version = "= 1.1.6"
-    }
-  }
-}
 
 variable "version" {
   type        = string
   default     = "dev"
   description = "Release version, used in the output file names."
-}
-
-variable "ubuntu_release" {
-  type        = string
-  default     = "release-20260918"
-  description = "Dated Ubuntu 26.04 cloud image release. Update together with ubuntu_image_sha256."
-}
-
-variable "ubuntu_image_sha256" {
-  type    = string
-  default = "4908fb59ccd4e87ae4e8e973b7ef56f535448eacb24a87fd787270c0048987bc"
 }
 
 variable "runner_version" {
@@ -48,12 +30,6 @@ variable "runner_sha256" {
 variable "output_directory" {
   type    = string
   default = "output-runner"
-}
-
-variable "accelerator" {
-  type        = string
-  default     = "kvm"
-  description = "QEMU accelerator; use tcg where KVM isn't available (much slower)."
 }
 
 locals {
@@ -88,7 +64,7 @@ source "qemu" "runner" {
   cd_label = "cidata"
   cd_content = {
     "meta-data" = "instance-id: par-runner-build\nlocal-hostname: par-runner\n"
-    "user-data" = templatefile("${local.dir}/user-data.pkrtpl", {
+    "user-data" = templatefile("${local.dir}/../common/user-data.pkrtpl", {
       user     = local.build_user
       password = local.build_password
     })
