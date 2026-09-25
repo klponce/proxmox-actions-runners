@@ -248,6 +248,9 @@ These are deliberate. The project supports exactly the setup the installer creat
   outside its VM. The repository is public, so you are welcome to fork it for other setups.
 - **One worker network.** Every scale set shares the same worker network and runner pool. Keep jobs with different
   trust levels apart with separate scale sets and GitHub runner groups.
+- **Workers can reach each other.** Workers running at the same time share one network segment, so a hostile job
+  can connect to other workers, answer their DHCP, or impersonate the gateway. Isolating workers through the Proxmox
+  firewall is planned. Until then, run jobs that must be protected from untrusted code on a separate node.
 - **amd64 only**, and workers run **Ubuntu 26.04 only**.
 - **A lean runner image, not GitHub's.** Workers don't have the preinstalled toolset of GitHub-hosted runners, which
   is tens of GB. Workflows install what they need with `setup-*` actions, or you extend the Packer build in
