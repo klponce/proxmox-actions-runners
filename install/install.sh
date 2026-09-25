@@ -10,7 +10,7 @@
 # shellcheck disable=SC2016 # Perl code and commands for the VMs are single-quoted on purpose.
 set -euo pipefail
 
-# The release workflow replaces the two placeholders: the version, such as 0.1.0, and the release's SHA256SUMS, one
+# The release workflow replaces the two placeholders: the release number, such as 12, and its SHA256SUMS, one
 # "<sha256>  <asset>" line per asset. A copy from the source tree refuses to install.
 PAR_VERSION="@PAR_VERSION@"
 PAR_SHA256SUMS="@PAR_SHA256SUMS@"

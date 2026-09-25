@@ -106,8 +106,8 @@ Each `install.sh` installs exactly its own release. To install another version, 
 
 ## Release assets
 
-Each release publishes the following files, built by `.github/workflows/release.yml` when a `vX.Y.Z` tag is
-pushed. Each image is boot-tested before it is published. The installer contains the SHA-256 of every asset for its
+Each release publishes the following files, built by `.github/workflows/release.yml` for every push to `main` and
+numbered by that workflow's run number (`v12`, `v13`, ...). Each image is boot-tested before it is published. The installer contains the SHA-256 of every asset for its
 own version and refuses a file that doesn't match.
 
 | Asset | Contents | Built by |
@@ -122,8 +122,8 @@ own version and refuses a file that doesn't match.
 
 The release workflow writes the version and the other assets' checksums into `install.sh` (its `@PAR_VERSION@` and
 `@PAR_SHA256SUMS@` placeholders, with `install/fill-release.sh`), so the script is the trust anchor for every asset it
-downloads. A tag with a suffix, such as `v0.2.0-rc.1`, publishes a pre-release: its `install.sh` installs it, but the
-`releases/latest` links in *Usage* keep pointing at the latest full release.
+downloads. The `releases/latest` links in *Usage* point at the newest release; each release's own `install.sh`
+installs exactly that release.
 
 **Why prebuilt images instead of stock Ubuntu cloud images:** stock images don't include `qemu-guest-agent`, and the
 only way to add it at first boot is custom cloud-init user data. Proxmox stores that as snippet files, which means
