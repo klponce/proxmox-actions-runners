@@ -22,6 +22,11 @@ EOF
 # The gateway routes IPv4 from the worker network and nothing over IPv6.
 net.ipv4.ip_forward = 1
 net.ipv6.conf.all.forwarding = 0
+# Strict reverse-path filtering: a packet is dropped unless its source routes back out the interface it came in on.
+# Workers can't spoof LAN or other outside addresses, and if the worker NIC ever came up without net1's address,
+# nothing from it would get through at all.
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
 EOF
   chmod 0644 /etc/sysctl.d/60-par-gateway.conf
   sysctl -p /etc/sysctl.d/60-par-gateway.conf

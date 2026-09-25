@@ -47,6 +47,7 @@ main() {
     /etc/dnsmasq.d/par-gateway.conf
   check "IPv4 forwarding is on" test "$(sysctl -n net.ipv4.ip_forward)" = 1
   check "IPv6 forwarding is off" test "$(sysctl -n net.ipv6.conf.all.forwarding)" = 0
+  check "reverse-path filtering is strict" test "$(sysctl -n net.ipv4.conf.all.rp_filter)" = 1
   check "dnsmasq is running" systemctl is-active dnsmasq
   check "nftables is enabled" systemctl is-enabled nftables
   check "dnsmasq is enabled" systemctl is-enabled dnsmasq

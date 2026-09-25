@@ -253,6 +253,9 @@ configured with the defaults.
   - drops forwarded traffic to RFC 1918, CGNAT (`100.64.0.0/10`), link-local, and the `BLOCK` ranges
   - accepts only DHCP and DNS from `net1` to the gateway itself
   - forwards no IPv6, and IPv6 forwarding is off
+- Strict reverse-path filtering (`rp_filter = 1`) drops any packet whose source doesn't route back out the NIC it
+  arrived on, so workers can't spoof outside addresses. If the worker NIC ever isn't named `net1`, no `.network`
+  file matches it and it stays down.
 
 ### Controller
 
