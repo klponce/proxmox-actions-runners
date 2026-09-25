@@ -2,10 +2,11 @@
 # controller VM. All values here are placeholders.
 
 proxmox:
-  url: https://pve.example.com:8006/api2/json
+  url: https://192.0.2.1:8006/api2/json
   tokenId: par@pve!controller
   tokenSecretFile: /etc/proxmox-actions-runners/pve-token
-  tlsFingerprint: "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
+  caCertFile: /etc/proxmox-actions-runners/pve-ca.pem  # the node's CA; omit for a certificate the system trusts
+  tlsServerName: pve1.example.com  # a name the API's certificate is issued for, since the URL uses an IP
   node: pve1
   pool: par-runners
   storage: local-lvm

@@ -252,6 +252,8 @@ func TestParseValid(t *testing.T) {
 	}{
 		{"repository scope", "github.configUrl", "https://github.com/my-org/my.repo_1"},
 		{"no TLS fingerprint", "proxmox.tlsFingerprint", nil},
+		{"trusted CA", "proxmox.caCertFile", "/etc/proxmox-actions-runners/pve-ca.pem"},
+		{"server name for the certificate", "proxmox.tlsServerName", "pve1.example.com"},
 		{"warm pool", "scaleSets.0.minRunners", 3},
 		{"several labels", "scaleSets.0.labels", []any{"proxmox", "ubuntu-26.04", "x64"}},
 		{"longest lifetime", "scaleSets.0.maxLifetime", "120h"},
@@ -281,6 +283,7 @@ func TestParseInvalid(t *testing.T) {
 		{"wrong proxmox path", "proxmox.url", "https://pve.example.com:8006/api", "must have the path /api2/json"},
 		{"proxmox URL with query", "proxmox.url", "https://pve.example.com/api2/json?x=1", "must have the path"},
 		{"relative token secret file", "proxmox.tokenSecretFile", "pve-token", "must be an absolute path"},
+		{"relative CA file", "proxmox.caCertFile", "pve-ca.pem", "must be an absolute path"},
 		{"missing token ID", "proxmox.tokenId", nil, "proxmox.tokenId: is required"},
 		{"missing node", "proxmox.node", nil, "proxmox.node: is required"},
 		{"missing VNet", "proxmox.vnet", nil, "proxmox.vnet: is required"},
@@ -374,6 +377,16 @@ func TestParseRepositoryRunnerGroup(t *testing.T) {
 	want := `scaleSets[0].runnerGroup: repository scale sets must use the "default" runner group`
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("Parse error = %v, want it to mention %q", err, want)
+	}
+}
+
+func TestParseCAWithFingerprint(t *testing.T) {
+	doc := validDoc()
+	set(t, doc, "proxmox.caCertFile", "/etc/proxmox-actions-runners/pve-ca.pem")
+	set(t, doc, "proxmox.tlsFingerprint", strings.TrimSuffix(strings.Repeat("AA:", 32), ":"))
+	_, err := parseDoc(t, doc)
+	if err == nil || !strings.Contains(err.Error(), "proxmox.caCertFile: can't be combined with tlsFingerprint") {
+		t.Fatalf("Parse error = %v, want it to refuse a CA and a fingerprint together", err)
 	}
 }
 

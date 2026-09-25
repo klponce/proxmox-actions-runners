@@ -109,10 +109,11 @@ in the controller VM, and `parcon check config` validates it. Example (also in
 
 ```yaml
 proxmox:
-  url: https://pve.example.com:8006/api2/json
+  url: https://192.0.2.1:8006/api2/json
   tokenId: par@pve!controller
   tokenSecretFile: /etc/proxmox-actions-runners/pve-token
-  tlsFingerprint: "AA:BB:...:FF"   # the host's certificate, pinned by the installer
+  caCertFile: /etc/proxmox-actions-runners/pve-ca.pem  # the node's CA; omit for a certificate the system trusts
+  tlsServerName: pve1.example.com  # a name the API's certificate is issued for, since the URL uses an IP
   node: pve1
   pool: par-runners
   storage: local-lvm
