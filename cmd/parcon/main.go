@@ -40,6 +40,12 @@ var version = ""
 const hostUsage = `usage on the Proxmox host, as root:
   parcon install [flags]                install the runners on this node, or continue an install that stopped;
                                         parcon install -h lists the flags
+  parcon status [-json]                 the state of the whole install
+  parcon config get <key>               print a setting
+  parcon config get --all               print every setting, with its default and what it is
+  parcon config set <key> <value>       change a setting; the controller restarts with it
+  parcon config describe [<key>]        which values a setting takes, and when a change applies
+  parcon config apply                   push the settings to the controller again
   parcon uninstall [-yes] [-dry-run]    remove everything parcon created, and parcon itself
   parcon check                          check this node, and after an install, the controller too
   parcon check network                  check the worker network from a throwaway worker
@@ -138,6 +144,10 @@ func runHost(args []string, stdout, stderr io.Writer) error {
 		err = runUninstall(args[1:], stdout, stderr)
 	case "check":
 		err = runHostCheck(args[1:], stdout, stderr)
+	case "status":
+		err = runStatus(args[1:], stdout, stderr)
+	case "config":
+		err = runConfig(args[1:], stdout, stderr)
 	case "run", "github":
 		return fmt.Errorf("parcon %s runs in the controller VM; parcon install sets it up", args[0])
 	default:

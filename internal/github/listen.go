@@ -49,6 +49,13 @@ type StatsRecorder interface {
 	RecordStats(Stats)
 }
 
+// SessionObserver is optionally implemented by a Handler to hear when its message session opens and ends, for the
+// controller's status.
+type SessionObserver interface {
+	SessionOpened()
+	SessionEnded(err error)
+}
+
 // ListenOptions configures Listen.
 type ListenOptions struct {
 	ScaleSetID int
@@ -88,6 +95,9 @@ func (c *Client) Listen(ctx context.Context, opts ListenOptions, h Handler) {
 			// actions/scaleset's listener only returns on failure; this keeps err.Error() below safe regardless.
 			err = errors.New("session ended without an error")
 		}
+		if o, ok := h.(SessionObserver); ok {
+			o.SessionEnded(err)
+		}
 		if time.Since(started) >= healthySession {
 			backoff = minBackoff
 		}
@@ -111,8 +121,11 @@ func (c *Client) listenOnce(ctx context.Context, opts ListenOptions, h Handler) 
 	if err != nil {
 		return fmt.Errorf("open session: %w", err)
 	}
-	// The installer's smoke test waits for this line.
+	// parcon install waits for this line.
 	c.logger.InfoContext(ctx, "scale set session opened", slog.Int("scaleSetId", opts.ScaleSetID))
+	if o, ok := h.(SessionObserver); ok {
+		o.SessionOpened()
+	}
 	defer func() {
 		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)
 		defer cancel()

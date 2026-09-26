@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -8,16 +9,16 @@ import (
 
 // ParseSize parses a memory size in binary units, such as 8GiB, 8 GiB, or 12288MiB, into MiB. The unit is required
 // and case-insensitive. Decimal units (GB, MB) and bare numbers are refused rather than guessed, because Proxmox
-// sizes memory in MiB and 8GB is not 8GiB.
+// sizes memory in MiB and 8GB is not 8GiB. Errors say what is wrong without repeating s, which callers quote.
 func ParseSize(s string) (int, error) {
 	t := strings.TrimSpace(s)
 	i := strings.IndexFunc(t, func(r rune) bool { return r < '0' || r > '9' })
 	if i <= 0 {
-		return 0, fmt.Errorf("%q needs a number and a unit, such as 8GiB or 12288MiB", s)
+		return 0, errors.New("needs a number and a unit, such as 8GiB or 12288MiB")
 	}
 	n, err := strconv.Atoi(t[:i])
 	if err != nil {
-		return 0, fmt.Errorf("%q is too large", s)
+		return 0, errors.New("is too large")
 	}
 	unit := strings.ToLower(strings.TrimSpace(t[i:]))
 	var perUnit int
@@ -27,12 +28,12 @@ func ParseSize(s string) (int, error) {
 	case "mib":
 		perUnit = 1
 	case "gb", "g", "mb", "m", "tb", "t", "tib":
-		return 0, fmt.Errorf("%q: use GiB or MiB, such as 8GiB or 12288MiB", s)
+		return 0, errors.New("use GiB or MiB, such as 8GiB or 12288MiB")
 	default:
-		return 0, fmt.Errorf("%q has an unknown unit %q: use GiB or MiB", s, strings.TrimSpace(t[i:]))
+		return 0, fmt.Errorf("has an unknown unit %q: use GiB or MiB", strings.TrimSpace(t[i:]))
 	}
 	if n > (1<<31-1)/perUnit {
-		return 0, fmt.Errorf("%q is too large", s)
+		return 0, errors.New("is too large")
 	}
 	return n * perUnit, nil
 }

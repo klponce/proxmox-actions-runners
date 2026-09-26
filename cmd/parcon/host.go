@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -255,4 +256,36 @@ func runHostCheck(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprint(stderr, hostUsage)
 		return errUsage
 	}
+}
+
+// runStatus handles "parcon status": the state of the whole install, for people or, with --json, for scripts.
+func runStatus(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	asJSON := fs.Bool("json", false, "print the status as JSON")
+	if err := parseHostFlags(fs, args, stderr); err != nil {
+		return usageOrNil(err)
+	}
+	in, err := newInstaller(stdout, stderr, false)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := hostContext()
+	defer cancel()
+	r, err := in.Status(ctx)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(r); err != nil {
+			return err
+		}
+	} else {
+		r.Render(stdout, in.Now())
+	}
+	if r.Failed() {
+		return installer.ErrChecksFailed
+	}
+	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -443,6 +444,18 @@ func (n *fakeNode) exec(vm *fakeVM, argv []string, stdin []byte) (int, string, s
 		return 0, `{"installationId":7,"account":"my-org","accountType":"Organization"}`, ""
 	case line == "parcon github scaleset delete":
 		return 0, "scale set proxmox-ubuntu-26.04: deleted (ID 3)\n", ""
+	case line == "parcon version":
+		if v := vm.files["parcon-version"]; v != "" {
+			return 0, v + "\n", ""
+		}
+		return 0, "0.2.0\n", ""
+	case strings.HasPrefix(line, "systemctl is-active"), line == "systemctl try-restart parcon.service":
+		return 0, "active\n", ""
+	case argv[0] == "cat":
+		if content, ok := vm.files[argv[1]]; ok {
+			return 0, content, ""
+		}
+		return 1, "", "cat: " + argv[1] + ": No such file or directory"
 	case argv[0] == "journalctl":
 		return 0, "starting\nscale set session opened\n", ""
 	case argv[0] == "curl" && strings.Contains(line, "api.github.com"):
@@ -481,6 +494,15 @@ func (n *fakeNode) vmsTagged(tag string) []int {
 	}
 	sort.Ints(ids)
 	return ids
+}
+
+// fakeSource is a release source with fixed releases and no assets.
+type fakeSource struct{ releases []release.Info }
+
+func (f *fakeSource) Releases(context.Context) ([]release.Info, error) { return f.releases, nil }
+
+func (f *fakeSource) Open(_ context.Context, _ release.Version, asset string) (io.ReadCloser, error) {
+	return nil, fmt.Errorf("download %s: 404 Not Found", asset)
 }
 
 // fakeClock is a clock that Sleep moves forward.
@@ -546,6 +568,7 @@ func newTestInstaller(t *testing.T) *testInstaller {
 		Self:         self,
 		Version:      v,
 		Assets:       assets,
+		Source:       &fakeSource{releases: []release.Info{{Version: v}}},
 		Reach:        func(context.Context, string) error { return nil },
 		Now:          clock.Now,
 		Sleep:        clock.Sleep,

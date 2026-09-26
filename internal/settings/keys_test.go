@@ -102,3 +102,18 @@ func TestWarnings(t *testing.T) {
 		t.Errorf("Warnings = %q", w)
 	}
 }
+
+func TestDescribe(t *testing.T) {
+	s := Default()
+	s.Worker.MemoryMiB = 16384
+	k, _ := Lookup("worker.memory")
+	want := `worker.memory  memory per worker VM
+  allowed:  a size in GiB or MiB from 1GiB to 62GiB (this node's memory), such as 8GiB or 12288MiB; GB and MB aren't accepted, because Proxmox sizes memory in binary units
+  default:  8GiB, like GitHub's ubuntu-latest for private repositories
+  current:  16GiB
+  applies:  to new workers; the controller restarts, and running workers keep going
+`
+	if got := Describe(k, &s, testLimits); got != want {
+		t.Errorf("Describe =\n%s\nwant\n%s", got, want)
+	}
+}

@@ -196,3 +196,11 @@ func Warnings(s *Settings, l Limits) []string {
 	}
 	return w
 }
+
+// Describe is a key's guidance: what it is, the values it takes on this node, its default, its current value, and
+// when a change takes effect. `parcon config describe` prints it, and so does `parcon config set` for a refused value.
+func Describe(k Key, s *Settings, l Limits) string {
+	current, _ := k.Get(s)
+	return fmt.Sprintf("%s  %s\n  allowed:  %s\n  default:  %s\n  current:  %s\n  applies:  %s\n", k.Name, k.Summary,
+		k.Allowed(s, l), k.Default, current, k.Applies)
+}

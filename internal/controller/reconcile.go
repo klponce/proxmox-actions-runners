@@ -97,6 +97,7 @@ func (c *Controller) reconcile(ctx context.Context) error {
 	for _, s := range c.scaleSets {
 		c.scale(ctx, s, v, now)
 	}
+	c.countWorkers(v)
 	return nil
 }
 
