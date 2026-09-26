@@ -1,5 +1,5 @@
-# The controller's unit in the controller VM (images/controller/). The image installs it but doesn't enable it: the
-# installer enables it once the config holds the GitHub App's credentials.
+# The controller's unit in the controller VM (images/controller/). The image installs it but doesn't enable it:
+# parcon install on the host enables it once the config holds the GitHub App's credentials.
 [Unit]
 Description=proxmox-actions-runners controller
 Documentation=https://github.com/klponce/proxmox-actions-runners

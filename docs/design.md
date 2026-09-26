@@ -39,7 +39,7 @@ The project follows ARC's model: a lean runner image, with workflows bringing th
 containers.
 
 - **A prebuilt image.** CI builds the runner image with Packer (`images/runner/`) and publishes it as a release
-  asset, `par-runner-<version>.qcow2`, well under GitHub's 2 GiB asset limit. The installer imports it as a template.
+  asset, `par-runner-<version>.qcow2`, well under GitHub's 2 GiB asset limit. `parcon` imports it as a template.
   Nothing is built on the node, so an install needs no build VM, no build tooling, and no extra memory or time.
 - **No hosted-runner parity.** An earlier design built GitHub's full `actions/runner-images` toolset on the node:
   tens of GB, about an hour per build, a build VM, a way to run scripts in it through the guest agent (which needed
@@ -51,7 +51,7 @@ containers.
   from (`par-tpl-<VMID>`), and destroys an older template once no worker references it. Linked clones can't outlive
   their template, and Proxmox refuses to delete a template that clones still use, so pruning is conservative: it
   waits while any worker is being created, and while any managed VM in the pool lacks the reference, such as a
-  half-created clone or the installer's smoke-test clone.
+  half-created clone or `parcon`'s smoke-test clone.
 - **The 30-day rule.** A runner with auto-update disabled must be updated within 30 days of a new `actions/runner`
   release, or GitHub stops assigning it jobs. Auto-update stays disabled, as in ARC: a one-job runner that updates
   itself first downloads the runner on every job. Each runner release therefore needs a new runner image. CI opens a
@@ -215,7 +215,7 @@ workers alone, so restarting or upgrading it doesn't cancel jobs.
   template shows `template: 0` for about 9s. The controller treats `unknown` as "don't know yet" and acts only on
   an explicit `stopped`. A new template with a late flag looks exactly like a half-created worker clone, which also
   carries the template's tags, so they are told apart by VMID: workers take IDs from the start of the range, and
-  the last `ReservedVMIDs` IDs hold templates and the installer's smoke-test clones. The controller never treats a
+  the last `ReservedVMIDs` IDs hold templates and `parcon`'s smoke-test clones. The controller never treats a
   VM in the reserved IDs as a worker or a leftover, and uses a template there only once Proxmox reports it as one.
 
 Check endpoint names and privileges against the installed Proxmox VE version. The API viewer is the authoritative
@@ -245,7 +245,7 @@ Alternatives considered:
 
 | Option | Why not |
 | ------ | ------- |
-| Workers on an existing bridge or VLAN | Isolation depends on the user's switch and router setup, which the installer can't check |
+| Workers on an existing bridge or VLAN | Isolation depends on the user's switch and router setup, which `parcon` can't check |
 | SDN simple zone with SNAT, with the host as gateway | The host routes untrusted traffic, isolation depends on the host's firewall setup, and host DHCP needs the `dnsmasq` package |
 | Route through the controller VM | Puts hostile traffic next to the VM that holds the secrets |
 
@@ -270,6 +270,57 @@ planned: per-worker MAC and IP filters and an inbound DROP policy, enforced in t
 turn them off. GitHub gets the same guarantees from Azure's network, which has no layer-2 broadcast and filters
 spoofed traffic, and it tells customers whose runners share a network to block all inbound connections. Until then,
 run jobs that must be protected from untrusted code on a separate node.
+
+## Managing the install from the host
+
+`parcon` on the Proxmox host installs and manages everything; the gateway and controller VMs need no logins. The
+first design had a Bash installer that did the install and upgrades, and left day-to-day changes to editing the
+controller's config inside its VM. That made the VMs something users had to log into, split the logic between Bash
+and Go, and kept the only record of how the node was set up in the controller VM's config.
+
+- **One tool, in Go.** The install's logic (preflight checks, the plan, idempotent steps, the GitHub App flow) now
+  lives in `internal/installer` next to the controller, typed and tested against a fake node. `install.sh` shrinks
+  to a bootstrap that downloads and verifies `parcon` and runs it.
+- **The host holds the settings; the controller VM holds the secrets.** The settings on the host are the source of
+  truth, and `parcon` renders the controller's config from them. They hold nothing secret: the Proxmox token's
+  secret and the App's private key go into the controller VM on a command's stdin and never leave it. The host's
+  root can read any VM's disk anyway, but keeping secrets off the host's disk keeps them out of backups of the host
+  and out of anything that reads its files.
+- **Local tools, not the API.** On the host, `parcon` drives Proxmox through `pvesh`, `pveum`, and `qm` as root.
+  Importing a disk from a local file needs `root@pam`, which has no API token, and the tools need no credentials of
+  their own, so the host holds none. The controller keeps its scoped API token (invariant 5).
+- **Changes a restart can pick up.** `parcon config set` pushes a new config and restarts the controller rather than
+  reloading it in place. The controller rebuilds its state from Proxmox tags on every start (invariant 3), so a
+  restart costs a few seconds and running workers keep their jobs.
+- **No service on the host.** `parcon` runs only when the user runs it. Its status report comes from the controller,
+  which writes a snapshot in its VM after each pass, so nothing on the host needs to stay running or listen.
+
+Alternatives that were rejected:
+
+| Option | Why not |
+| ------ | ------- |
+| Keep the Bash installer and add a host CLI | Two implementations of the same steps, in two languages, drifting apart |
+| Keep the settings in the controller VM | Network settings (the gateway's subnet, the VMs' addresses) have no place there, and every command would need the VM to answer |
+| Secrets on the host too | Makes the controller VM easy to replace, but puts the App's private key on the host's disk |
+| A root API token for the host | A credential stored on the host for what the local tools do without one |
+| A host service or timer | Invariant 8: nothing on the host runs unless the user runs it |
+
+### Release trust
+
+`parcon update` replaces itself, then the controller's `parcon` and the VM images, from a release on GitHub. Its
+trust anchor is a release signing key: the release workflow signs `SHA256SUMS` with an Ed25519 key held in a GitHub
+environment that only tags can use, and `parcon` carries the public keys and refuses a release none of them verifies.
+It is checked with Go's standard library, so it adds no dependency.
+
+| Option | Why not |
+| ------ | ------- |
+| HTTPS and `SHA256SUMS` only | Anyone who can change a release's assets can change its checksums too |
+| GitHub artifact attestations (Sigstore) | Strong and keyless, but verifying them needs a large dependency tree in `parcon` |
+| Checksums written into each `parcon` | A release can't know the checksums of the releases after it |
+
+The first install still starts from `install.sh`, which trusts only the checksum of `parcon` written into it, the
+same trust as downloading `parcon` from the release page. A leaked signing key can't be revoked: after a leak,
+the key is rotated and users reinstall from a new release's `install.sh`.
 
 ## Sources
 
