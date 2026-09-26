@@ -68,6 +68,46 @@ func latestRunnerRelease(ctx context.Context, client *http.Client, apiBase strin
 	return RunnerRelease{Version: version, PublishedAt: out.PublishedAt}, nil
 }
 
+// Release is a published release of a repository.
+type Release struct {
+	Tag         string
+	Prerelease  bool
+	PublishedAt time.Time
+}
+
+// Releases lists the newest published releases of a public repository on github.com, such as
+// klponce/proxmox-actions-runners, pre-releases included. It needs no credentials.
+func Releases(ctx context.Context, repo string) ([]Release, error) {
+	return releases(ctx, &http.Client{Timeout: restTimeout}, defaultAPIBase, repo)
+}
+
+func releases(ctx context.Context, client *http.Client, apiBase, repo string) ([]Release, error) {
+	path := "/repos/" + repo + "/releases?per_page=50"
+	var out []struct {
+		TagName     string    `json:"tag_name"`
+		Draft       bool      `json:"draft"`
+		Prerelease  bool      `json:"prerelease"`
+		PublishedAt time.Time `json:"published_at"`
+	}
+	status, err := restCall(ctx, client, apiBase, http.MethodGet, path, "", &out)
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("releases of %s: %w", repo, err)
+	case status == http.StatusForbidden || status == http.StatusTooManyRequests:
+		return nil, fmt.Errorf("releases of %s: GitHub's rate limit for unauthenticated requests is used up; try "+
+			"again in an hour", repo)
+	case status != http.StatusOK:
+		return nil, fmt.Errorf("releases of %s: GET %s: %d %s", repo, path, status, http.StatusText(status))
+	}
+	var rels []Release
+	for _, r := range out {
+		if !r.Draft {
+			rels = append(rels, Release{Tag: r.TagName, Prerelease: r.Prerelease, PublishedAt: r.PublishedAt})
+		}
+	}
+	return rels, nil
+}
+
 // restCall sends a request to GitHub's REST API at apiBase, with token as the bearer token if it isn't empty, and
 // decodes a 2xx JSON response into out. It returns the status code. Errors never include the URL, whose path may
 // hold a secret.

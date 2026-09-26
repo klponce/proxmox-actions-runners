@@ -2,6 +2,10 @@ package github
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -82,5 +86,35 @@ func TestRunnerReleaseStaleness(t *testing.T) {
 		if got := r.Staleness(tt.have, released.Add(tt.age)); got != tt.want {
 			t.Errorf("Staleness(%q) after %s = %v, want %v", tt.have, tt.age, got, tt.want)
 		}
+	}
+}
+
+func TestReleases(t *testing.T) {
+	published := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/my-org/project/releases":
+			if r.URL.Query().Get("per_page") != "50" {
+				t.Errorf("query = %s", r.URL.RawQuery)
+			}
+			_, _ = fmt.Fprintf(w, `[{"tag_name":"v0.2.0-rc.1","prerelease":true,"published_at":%q},
+				{"tag_name":"v0.3.0","draft":true},{"tag_name":"v0.1.0","published_at":%q}]`,
+				published.Format(time.RFC3339), published.Format(time.RFC3339))
+		case "/repos/my-org/limited/releases":
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	got, err := releases(context.Background(), srv.Client(), srv.URL, "my-org/project")
+	want := []Release{{Tag: "v0.2.0-rc.1", Prerelease: true, PublishedAt: published}, {Tag: "v0.1.0", PublishedAt: published}}
+	if err != nil || !slices.Equal(got, want) {
+		t.Errorf("releases = %+v, %v", got, err)
+	}
+	if _, err := releases(context.Background(), srv.Client(), srv.URL, "my-org/limited"); err == nil ||
+		!strings.Contains(err.Error(), "rate limit") {
+		t.Errorf("rate limited: %v", err)
 	}
 }

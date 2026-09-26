@@ -2,6 +2,9 @@
 # install.sh with the release's version and checksums written in. A tag vX.Y.Z publishes a release; a tag with a
 # pre-release suffix, such as v0.1.0-rc.1, publishes a pre-release, which the installer's "latest" links skip. Running
 # the workflow by hand builds and checks everything and keeps the files as workflow artifacts, without publishing.
+#
+# Only a tag signs: the publish job runs in the release environment, which holds the signing key and admits only v*
+# tags. parcon refuses a release whose SHA256SUMS.sig none of its keys (internal/release/keys) verifies.
 name: release
 
 on:
@@ -65,8 +68,6 @@ jobs:
     needs: images
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -97,19 +98,56 @@ jobs:
           mv SHA256SUMS dist/
           ls -l dist
           cat dist/SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ env.VERSION }}
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    needs: release
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ env.VERSION }}
+          path: dist
+      - name: Sign SHA256SUMS
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          [[ -n $RELEASE_SIGNING_KEY ]] ||
+            { echo "::error::the release environment has no RELEASE_SIGNING_KEY secret" && exit 1; }
+          umask 077
+          key=$RUNNER_TEMP/release-signing.pem
+          printf '%s\n' "$RELEASE_SIGNING_KEY" >"$key"
+          openssl pkeyutl -sign -rawin -inkey "$key" -in dist/SHA256SUMS -out dist/SHA256SUMS.sig
+          rm -f "$key"
+      - name: Check the signature against parcon's keys
+        run: |
+          for pub in internal/release/keys/*.pem; do
+            if openssl pkeyutl -verify -rawin -pubin -inkey "$pub" -in dist/SHA256SUMS \
+              -sigfile dist/SHA256SUMS.sig >/dev/null 2>&1; then
+              echo "signed by $pub"
+              exit 0
+            fi
+          done
+          echo "::error::no key in internal/release/keys verifies the signature, so parcon would refuse the release"
+          exit 1
       - name: Publish
-        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           prerelease=()
           [[ $VERSION != *-* ]] || prerelease=(--prerelease)
           gh release create "$VERSION" dist/* --verify-tag --generate-notes --title "$VERSION" "${prerelease[@]}"
-      - name: Keep the files of a run by hand
-        if: github.ref_type != 'tag'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-${{ env.VERSION }}
-          path: dist/
-          compression-level: 0
-          retention-days: 7
