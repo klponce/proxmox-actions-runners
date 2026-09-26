@@ -59,6 +59,10 @@ func runController(args []string, stderr io.Writer) error {
 	return nil
 }
 
+// statusPath is where parcon run writes its status: in the runtime directory systemd makes for parcon.service. Tests
+// replace it.
+var statusPath = controller.StatusPath
+
 // newController builds the controller and its clients from the config and the secret files it names.
 func newController(cfg *config.Config, logger *slog.Logger) (*controller.Controller, error) {
 	gh, err := newGitHubClient(cfg, logger.With(slog.String("component", "github")))
@@ -75,10 +79,12 @@ func newController(cfg *config.Config, logger *slog.Logger) (*controller.Control
 		owner = "parcon"
 	}
 	return controller.New(controller.Options{
-		Config:  cfg,
-		Proxmox: pve,
-		GitHub:  gh,
-		Owner:   owner,
-		Logger:  logger.With(slog.String("component", "controller")),
+		Config:     cfg,
+		Proxmox:    pve,
+		GitHub:     gh,
+		Owner:      owner,
+		Logger:     logger.With(slog.String("component", "controller")),
+		StatusPath: statusPath,
+		Version:    buildVersion(),
 	})
 }

@@ -690,3 +690,34 @@ func TestLenientJSON(t *testing.T) {
 		t.Error("pveInt accepted \"abc\"")
 	}
 }
+
+func TestParseResources(t *testing.T) {
+	vms, err := ParseResources([]byte(`[
+		{"type":"qemu","vmid":"102","node":"pve1","pool":"par-system","tags":"par-managed;par-controller",
+		 "status":"running","maxmem":2147483648,"maxdisk":6442450944},
+		{"type":"qemu","vmid":101,"node":"pve1","template":1,"tags":"par-managed,par-template"},
+		{"type":"qemu","vmid":103,"node":"pve2"},
+		{"type":"lxc","vmid":104,"node":"pve1"}]`), "pve1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vms) != 2 || vms[0].VMID != 101 || !vms[0].Template || vms[1].VMID != 102 {
+		t.Fatalf("vms = %+v", vms)
+	}
+	if v := vms[1]; v.MaxMemBytes != 2<<30 || v.Pool != "par-system" || !v.HasTag("par-controller") {
+		t.Errorf("vm 102 = %+v", v)
+	}
+	if _, err := ParseResources([]byte(`{`), "pve1"); err == nil {
+		t.Error("bad JSON: no error")
+	}
+}
+
+func TestParseAgentExecStatus(t *testing.T) {
+	r, exited, err := ParseAgentExecStatus([]byte(`{"exitcode":3,"exited":1,"out-data":"hi\n","err-data":"oops"}`))
+	if err != nil || !exited || r.ExitCode != 3 || string(r.Stdout) != "hi\n" || string(r.Stderr) != "oops" {
+		t.Errorf("= %+v, %v, %v", r, exited, err)
+	}
+	if _, exited, err := ParseAgentExecStatus([]byte(`{"pid":42}`)); err != nil || exited {
+		t.Errorf("running command: exited %v, err %v", exited, err)
+	}
+}

@@ -13,8 +13,9 @@ import (
 const (
 	minVMID = 100
 
-	minCores       = 1
-	minMemoryMiB   = 1024
+	// MinCores and MinMemoryMiB are the smallest worker a config accepts. parcon's config keys offer the same range.
+	MinCores       = 1
+	MinMemoryMiB   = 1024
 	minFreeDiskGiB = 1
 
 	minMaxLifetime = 10 * time.Minute
@@ -22,8 +23,9 @@ const (
 	maxMaxLifetime = 5 * 24 * time.Hour
 )
 
-// Scale set names become runs-on labels and Proxmox tags, so they are limited to characters both accept.
-var scaleSetNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
+// ScaleSetNamePattern is what a scale set name must match. Names become runs-on labels and Proxmox tags, so they are
+// limited to characters both accept.
+var ScaleSetNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 
 // ValidationError lists every problem found in a config, each prefixed with the field's path.
 type ValidationError struct {
@@ -151,8 +153,8 @@ func (c *Config) RequireGitHubApp() error {
 }
 
 func (w Worker) validate(v *validator, prefix string) {
-	v.atLeast(prefix+".cores", w.Cores, minCores)
-	v.atLeast(prefix+".memoryMiB", w.MemoryMiB, minMemoryMiB)
+	v.atLeast(prefix+".cores", w.Cores, MinCores)
+	v.atLeast(prefix+".memoryMiB", w.MemoryMiB, MinMemoryMiB)
 	v.atLeast(prefix+".freeDiskGiB", w.FreeDiskGiB, minFreeDiskGiB)
 }
 
@@ -167,7 +169,7 @@ func (c *Config) validateScaleSets(v *validator) {
 	totalMaxRunners := 0
 	for i, s := range c.ScaleSets {
 		prefix := fmt.Sprintf("scaleSets[%d]", i)
-		if v.required(prefix+".name", s.Name) && !scaleSetNamePattern.MatchString(s.Name) {
+		if v.required(prefix+".name", s.Name) && !ScaleSetNamePattern.MatchString(s.Name) {
 			v.addf(prefix+".name", "%q is not a valid scale set name (lowercase letters, digits, '.', '_', '-'; "+
 				"at most 63 characters)", s.Name)
 		}

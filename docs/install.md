@@ -1,29 +1,39 @@
-# Installer design
+# Install and host commands
 
-The whole project installs with one script, [`install/install.sh`](../install/install.sh), run as root on a
-Proxmox VE 9 node. The script checks the host, creates an isolated worker network with a gateway VM, creates a small
-controller VM, imports the runner template, and registers the scale set. It changes the host only through Proxmox's
-own tools, and it can remove everything it created. It installs only from a release: the release workflow writes
-the version and the assets' checksums into it, and a copy from the source tree refuses to install.
+`parcon`, run as root on a standalone Proxmox VE 9 node, installs and manages the whole project. `parcon install`
+checks the host, creates an isolated worker network with a gateway VM, creates a small controller VM, imports the
+runner template, and registers the scale set. After that, `parcon status`, `parcon config`, `parcon update`, and
+`parcon uninstall` are how the user runs it; the gateway and controller VMs need no logins, since `parcon` reaches
+into them through the guest agent. [`install/install.sh`](../install/install.sh) is only the bootstrap: it
+downloads the release's `parcon`, checks it against the checksum written into it, and runs `parcon install`.
+
+`parcon` changes the host only where the project needs it, almost entirely through Proxmox's own tools, and it can
+remove everything it created. It installs only from a signed release.
 
 ## Goals
 
 - **One download, one command.** No clone, no build tools, and no packages to install first.
-- **Headless.** The installer runs in a root shell with no browser. The only browser step, creating the GitHub App,
+- **Headless.** `parcon` runs in a root shell with no browser. The only browser step, creating the GitHub App,
   happens on any other device, and the user copies one code back.
-- **Minimal host footprint.** The host gets Proxmox objects (pools, a role, a user and token, ACLs, VMs, and an SDN
-  zone and VNet) and nothing else: no apt packages, no systemd units, no binaries, no cloud-init snippets, and no
-  hand edits to `/etc/network/interfaces` or `storage.cfg`.
+- **Minimal host footprint.** The host gets `parcon` itself, its settings, Proxmox objects (pools, a role, a user
+  and token, ACLs, VMs, and an SDN zone and VNet), and host tuning only where the runners need it: on a node that is
+  itself a VM, a udev rule that turns off the LAN NIC's offloads (see *Host NIC offloads*). No apt packages, no
+  services, no cloud-init snippets, and no edits to files Proxmox or the user manages, such as
+  `/etc/network/interfaces` or `storage.cfg`.
 - **Independent of the LAN.** Workers never share a network with the host or the LAN. A gateway VM connects their
   network to the internet, so the design works the same whatever the LAN, VLAN, or host firewall setup is.
-- **Safe to re-run.** A second run detects the existing install and upgrades it. `--dry-run` prints the plan and
-  changes nothing.
-- **Reversible.** `install.sh uninstall` removes every object the installer or controller created, found by tag and
-  name.
+- **No-touch VMs.** Everything the user does, they do with `parcon` on the host. The controller VM keeps the secrets,
+  which never leave it; the host keeps the settings, which hold none.
+- **Safe to re-run.** A second `parcon install` continues an install that stopped, and `parcon update` continues an
+  update that stopped. `--dry-run` prints the plan and changes nothing.
+- **Signed updates.** `parcon update` installs only a release whose checksums carry a signature from a key built
+  into `parcon`.
+- **Reversible.** `parcon uninstall` removes every object `parcon` or the controller created, found by tag and name,
+  and `parcon` itself.
 
 ## Usage
 
-Download, read, then run:
+Download, read, then run the bootstrap:
 
 ```bash
 curl -fsSLO https://github.com/klponce/proxmox-actions-runners/releases/latest/download/install.sh
@@ -37,36 +47,55 @@ Or run it in one line:
 bash -c "$(curl -fsSL https://github.com/klponce/proxmox-actions-runners/releases/latest/download/install.sh)"
 ```
 
-Every setting has a default, so the script asks only for confirmation and for the GitHub App step (see
-*GitHub App setup*), where you choose the organization or repository on GitHub. To change settings, pass an answers
-file of `KEY=value` lines; `bash install.sh --help` lists the keys and their defaults. Values are read literally,
-never evaluated.
+`install.sh` passes its arguments to `parcon install`. Every setting has a default, so `parcon` asks only for
+confirmation and for the GitHub App step (see *GitHub App setup*), where you choose the organization or repository on
+GitHub. `parcon install -h` lists the settings:
 
 ```bash
-cat >par.env <<'EOF'
-PAR_MAX_RUNNERS=4
-PAR_STORAGE=local-zfs
-EOF
-bash install.sh --answers par.env --yes
+bash install.sh --storage local-zfs --set runners.max=4 --set worker.memory=16GiB
 ```
 
-| Command or flag | Effect |
-| --------------- | ------ |
-| `install` (default) | Install, or upgrade if an install is found |
-| `upgrade` | Upgrade to the script's release: the controller's `parcon`, the gateway VM, and a new runner template. Keeps config and secrets |
-| `uninstall` | Remove all managed VMs, templates, the controller VM, and the Proxmox objects |
-| `check` | Run the preflight checks only |
-| `--dry-run` | Run the checks and print the plan, then exit without changing anything |
-| `--answers <file>` | Read settings from a `KEY=value` file instead of prompting |
-| `--yes` | Skip the confirmation prompts |
+| Flag | Default | Setting |
+| ---- | ------- | ------- |
+| `--bridge` | `vmbr0` | LAN bridge for the controller and gateway VMs |
+| `--vlan` | none | VLAN tag on the LAN bridge |
+| `--pve-address` | the host's address on the bridge | the address the controller reaches the API on |
+| `--gateway-ip`, `--controller-ip` | `dhcp` | the VMs' LAN addresses: `dhcp` or a CIDR such as `192.0.2.10/24` |
+| `--lan-gateway` | none | the LAN's router, needed with a static address |
+| `--worker-subnet` | `10.251.0.0/22` | the worker network |
+| `--storage` | `local-lvm` | storage for VM disks |
+| `--vmid-range` | `10000-10099` | VMIDs for workers and templates |
+| `--scale-set` | `proxmox-ubuntu-26.04` | the scale set's name, used in `runs-on` |
+| `--labels` | the scale set's name | comma-separated `runs-on` labels |
+| `--runner-group` | `default` | the GitHub runner group; repositories must use `default` |
+| `--min-runners` | `0` | idle workers to keep booted |
+| `--github-url` | where you install the App | `https://github.com/<org>` or `https://github.com/<owner>/<repo>` |
+| `--set KEY=VALUE` | | any config key (see *Host settings*), repeatable |
+| `--app manual --client-id ID` | `--app manifest` | use an existing GitHub App instead of creating one |
+| `--dry-run`, `--yes` | | print the plan and stop; answer yes to every question |
 
-Each `install.sh` installs exactly its own release. To install another version, download that release's
-`install.sh`.
+The settings are saved on the host when the install starts, so a re-run continues with them and refuses new ones.
+Each release's `install.sh` installs exactly its own release; on a node with an older install, it updates it.
+
+After the install, `parcon` in `/usr/local/bin` does the rest:
+
+| Command | Effect |
+| ------- | ------ |
+| `parcon status [--json]` | The state of the whole install; exits 1 if anything failed |
+| `parcon config get <key>`, `get --all` | A setting's value, or every setting with its default and what it is |
+| `parcon config set <key> <value>` | Change a setting and apply it: the controller restarts with it |
+| `parcon config describe [<key>]` | Which values a setting takes, and when a change applies |
+| `parcon config apply` | Push the settings to the controller again, for example after the API's pinned certificate was renewed |
+| `parcon update [--pre] [--yes] [--dry-run]` | Update to the newest release, or pre-release with `--pre` |
+| `parcon check` | Every check below, and after an install, the controller's own checks |
+| `parcon check network` | The worker network check from step 14, on demand |
+| `parcon check config\|proxmox\|github\|template` | One of the controller's checks, run in the controller VM |
+| `parcon uninstall [--yes] [--dry-run]` | Remove everything, `parcon` included |
 
 ## Architecture
 
 ```
- Proxmox VE 9 node (host: only Proxmox objects are added)
+ Proxmox VE 9 node (host: parcon, its settings, and Proxmox objects)
  ┌──────────────────────────────────────────────────────────────────────────────────┐
  │  pool par-system                            pool par-runners                     │
  │  ┌──────────────────────┐   PVE API +       ┌─────────────────────────────────┐  │
@@ -103,27 +132,44 @@ Each `install.sh` installs exactly its own release. To install another version, 
 - The API token can act only on the `par-runners` pool. The controller and gateway VMs live in `par-system`, so a
   compromised controller can't change or delete itself, the gateway, or any VM outside the runner pool.
 - **Workers** attach only to `parnet`.
+- **`parcon` on the host** drives Proxmox through `pvesh`, `pveum`, and `qm` as root, and the two VMs through
+  `qm guest exec`. It holds the settings but no secrets: the token's secret and the App's key go straight into the
+  controller VM on a command's stdin.
 
 ## Release assets
 
-Each release publishes the following files, built by `.github/workflows/release.yml` for every push to `main` and
-numbered by that workflow's run number (`v12`, `v13`, ...). Each image is boot-tested before it is published. The installer contains the SHA-256 of every asset for its
-own version and refuses a file that doesn't match.
+Each release publishes the following files, built by `.github/workflows/release.yml` when release-please's release
+pull request is merged (see *Commits and releases* in [AGENTS.md](../AGENTS.md)). Versions follow semver, chosen by
+release-please from the Conventional Commits since the last release. Each image is boot-tested before it is
+published, and the release stays a draft until every file is uploaded.
 
 | Asset | Contents | Built by |
 | ----- | -------- | -------- |
-| `install.sh` | The installer | Release workflow |
+| `install.sh` | The bootstrap, with this release's version and `parcon`'s checksum written in | Release workflow |
+| `parcon-<ver>-linux-amd64` | `parcon`, for the host and the controller VM | Release workflow |
 | `parcon-<ver>.qcow2` | The controller VM: Ubuntu 26.04, `qemu-guest-agent`, `unattended-upgrades`, the `parcon` binary, user, and unit | Packer `qemu` builder in CI (`images/controller/`) |
 | `par-gateway-<ver>.qcow2` | The gateway VM: Ubuntu 26.04, `qemu-guest-agent`, `unattended-upgrades`, nftables, dnsmasq, `par-gateway-configure` | Packer `qemu` builder in CI (`images/gateway/`) |
 | `par-runner-<ver>.qcow2` | The runner template: Ubuntu 26.04, `qemu-guest-agent`, the `runner` user, a pinned `actions/runner`, Docker, and a few basics | Packer `qemu` builder in CI (`images/runner/`) |
 | `par-runner-<ver>.json` | The runner image's build manifest, including its `actions/runner` version | Packer `qemu` builder in CI |
-| `parcon-<ver>-linux-amd64` | The `parcon` binary, which `upgrade` puts in the controller VM | Release workflow |
-| `SHA256SUMS` | Checksums of all of the above, `install.sh` included | Release workflow |
+| `SHA256SUMS` | Checksums of all of the above | Release workflow |
+| `SHA256SUMS.sig` | An Ed25519 signature of `SHA256SUMS` by the release signing key | Release workflow |
 
-The release workflow writes the version and the other assets' checksums into `install.sh` (its `@PAR_VERSION@` and
-`@PAR_SHA256SUMS@` placeholders, with `install/fill-release.sh`), so the script is the trust anchor for every asset it
-downloads. The `releases/latest` links in *Usage* point at the newest release; each release's own `install.sh`
-installs exactly that release.
+The chain of trust:
+
+1. `install.sh` holds the version and `parcon`'s SHA-256 (its `@PAR_VERSION@` and `@PAR_PARCON_SHA256@`
+   placeholders, filled by `install/fill-release.sh`), and runs a downloaded `parcon` only if it matches. A copy from
+   the source tree refuses to run.
+2. `parcon` carries the public release signing keys (`internal/release/keys`). It accepts a release only if one of
+   them verifies its `SHA256SUMS.sig`, then checks every asset it downloads against `SHA256SUMS`. `parcon update`
+   does the same from the running `parcon`, so an update needs neither a new `install.sh` nor trust in anything but
+   the key.
+3. The release workflow signs with a key only its `publish` job can read (the `release` environment admits only
+   `main`), and checks the signature against those public keys before it publishes (see *Release signing* in
+   [AGENTS.md](../AGENTS.md)).
+
+A version with a suffix, such as `0.2.0-rc.1`, is published as a pre-release: its `install.sh` installs it and
+`parcon update --pre` updates to it, but the `releases/latest` links in *Usage* and a plain `parcon update` keep to
+the latest full release.
 
 **Why prebuilt images instead of stock Ubuntu cloud images:** stock images don't include `qemu-guest-agent`, and the
 only way to add it at first boot is custom cloud-init user data. Proxmox stores that as snippet files, which means
@@ -132,17 +178,18 @@ include the agent avoids both changes to the host.
 
 ## Preflight checks
 
-`install.sh check` runs these, and `install` runs them first. A failed **hard** check stops the install. A failed
-**warn** check is shown in the plan and needs confirmation (or `--yes`).
+`parcon install` runs these first, and `parcon check` runs them any time. A failed **hard** check stops the install. A
+failed **warn** check is shown in the plan and needs confirmation (or `--yes`). Before an install, `parcon check`
+checks the default settings; `parcon install --dry-run` with your flags checks yours. After an install, it checks the
+saved settings, skips the free space an install needs, and also runs the controller's checks in its VM.
 
 | Check | How | Level |
 | ----- | --- | ----- |
-| Running as root | `EUID` is 0 (`pveum` and `qm` need `root@pam`) | hard |
+| Running as root | the effective user ID is 0 (`pveum` and `qm` need `root@pam`) | hard |
 | Proxmox VE 9.x | `pveversion` reports `pve-manager/9.*` | hard |
-| Running on a PVE node, not in a container or VM guest | `pveversion` present, `/etc/pve` mounted, `systemd-detect-virt --container` false | hard |
-| amd64 | `dpkg --print-architecture` is `amd64` | hard |
+| Running on a PVE node, not in a container | `pveversion` present, `/etc/pve` mounted, `systemd-detect-virt --container` false. A node that is itself a VM is fine | hard |
 | KVM available | `/dev/kvm` exists | hard |
-| Required tools present | `qm`, `pveum`, `pvesh`, `pvesm`, `curl`, `sha256sum`, `perl` (all ship with PVE) | hard |
+| Required tools present | `qm`, `pveum`, `pvesh`, `pvesm`, and `ip` (all ship with PVE). The bootstrap checks for amd64, the only build of `parcon` | hard |
 | Standalone node | `/etc/pve/corosync.conf` doesn't exist, so the node isn't in a cluster. Clusters aren't supported (see the README's *Limitations*) | hard |
 | Clock synchronized | `timedatectl show -p NTPSynchronized` is `yes` (GitHub App JWTs fail when clocks drift) | hard |
 | Outbound HTTPS | `github.com`, `api.github.com`, and the release asset hosts (`objects.githubusercontent.com`, `release-assets.githubusercontent.com`) | hard |
@@ -152,102 +199,153 @@ include the agent avoids both changes to the host.
 | Download space | 6 GiB free in `/var/tmp`, on the host's root filesystem, where the images are downloaded before they are imported | hard |
 | Free memory and CPU | host RAM and threads against `maxRunners` × worker size plus existing VMs | warn |
 | LAN bridge | the bridge for the controller and gateway VMs exists. VLAN tag valid if set | hard |
+| LAN NIC offloads | on a node that is itself a VM (a virtio NIC under the LAN bridge), its offloads are off, now and at boot. `parcon install` and `parcon update` turn them off; `parcon check` warns until they are | warn |
 | API certificate | how the controller will verify it: the node's CA, the system CAs, or a pinned fingerprint for a certificate from a CA the host doesn't trust | warn if pinned |
 | SDN available | `ifupdown2` installed and `/etc/network/interfaces` sources `/etc/network/interfaces.d/*`, so applying SDN works | hard |
 | Worker subnet free | the worker subnet doesn't overlap any route or address on the host, or the LAN subnet given for the gateway | hard |
-| SDN names free | zone `parzone` and VNet `parnet` are unused, or already ours (upgrade) | hard |
-| No name or ID clash | pools, user, role, and VMIDs are unused, or already tagged as ours (upgrade) | hard |
+| SDN names free | zone `parzone` and VNet `parnet` are unused, or ours from an earlier run | hard |
+| No name or ID clash | pools, user, role, and VMIDs are unused, or ours from an earlier run | hard |
 | Pending SDN changes | no SDN zone or VNet other than ours has pending changes, since applying ours would apply theirs too. Uninstall doesn't apply while any exist, and says so | hard |
 
 ## Controller VM contract
 
-The controller image and the installer agree on this layout:
+The controller image, `parcon` on the host, and the controller agree on this layout:
 
 - **User:** a system user `parcon` with no login shell, created by the controller image. `parcon run` runs as
   `parcon` from a systemd unit.
-- **Binary:** `/usr/local/bin/parcon`, baked into the controller image. An upgrade replaces the file and restarts the
-  unit.
+- **Binary:** `/usr/local/bin/parcon`, baked into the controller image. `parcon update` has the VM download the new
+  release's binary and check it against the verified `SHA256SUMS`, replaces the file, and restarts the unit.
 - **Config and secrets:** the directory `/etc/proxmox-actions-runners` is owned by `parcon:parcon` with mode `0700`.
-  Every file in it is owned by `parcon` with mode `0600`: `config.yaml`, `pve-token`, and `github-app.pem`.
-- **Commands:** the installer runs every `parcon` command in the VM as `parcon`, with
+  Every file in it is owned by `parcon` with mode `0600`: `config.yaml`, `pve-token`, `github-app.pem`, and, when
+  the API serves the node's own certificate, `pve-ca.pem`.
+- **Commands:** `parcon` on the host runs every `parcon` command in the VM as `parcon`, with
   `runuser -u parcon -- parcon …` through `qm guest exec`, so files that `parcon` writes get the right owner.
 - **Before the App exists:** `github.app` (`clientId`, `installationId`, `privateKeyFile`) may be left out of
-  `config.yaml`, because step 10 checks Proxmox before step 11 creates the App. `parcon check config`,
+  `config.yaml`, because step 12 checks Proxmox before step 13 creates the App. `parcon check config`,
   `parcon check proxmox`, and `parcon check template` work without it. `parcon run` and `parcon check github` fail
   with "the GitHub App isn't set up yet" until all three fields are set.
-- **Who writes the config:** only the installer. `parcon` prints the non-secret values it learns (client ID, App ID,
-  slug, installation ID) and writes secrets only to their own files. Nothing in `parcon` writes YAML.
+- **Who writes the config:** only `parcon` on the host, which renders it from the host settings (see *Host
+  settings*) and rewrites it whenever they change. It writes `config.yaml.new`, has the VM's own
+  `parcon check config -config config.yaml.new` accept it, and only then moves it into place, so a config that
+  version can't read never replaces a working one. In the VM, `parcon` prints the non-secret values it learns (Client
+  ID, App ID, slug, installation ID) and writes secrets only to their own files; it never writes YAML.
+- **Status:** the running controller writes a non-secret report to `/run/parcon/status.json` after each pass
+  (`RuntimeDirectory=parcon` in the unit): each scale set's session, desired and actual workers, and GitHub's last
+  job counts. `parcon status` reads it through the guest agent. The controller never reads it back.
+
+## Host settings
+
+`/etc/proxmox-actions-runners/settings.yaml` on the host (root, `0600`) is the source of truth for the install:
+
+| Section | What | Written by |
+| ------- | ---- | ---------- |
+| `network` | the bridge, VLAN, API address, the VMs' LAN addresses and router, the worker subnet | install flags |
+| `proxmox` | the storage and the VMID range | install flags |
+| `github` | the organization or repository, and the App's Client ID and installation ID | the install, as it learns them |
+| `scaleSet` | the name, labels, runner group, and the most and fewest workers | install flags, `runners.max` |
+| `worker` | worker hardware; a field left out uses the GitHub-matching default | `worker.cores`, `worker.memory` |
+
+It holds nothing secret. `parcon` renders the controller's `config.yaml` from it together with what it reads from
+the node each time (the node's name, the API's address and certificate, and whether the storage can make linked
+clones), and checks the result with the controller's own config validation before it pushes it. The defaults live
+only in `internal/config`, like every other default.
+
+The **config keys** are the settings `parcon config` changes. Each has a description, the values it takes on this
+node (for example, no more vCPUs than the node has), a default, and says when a change applies:
+
+| Key | Values | Default |
+| --- | ------ | ------- |
+| `runners.max` | 1 to the number of worker IDs in the VMID range, and at least `minRunners` | 1 |
+| `worker.cores` | 1 to the node's CPU threads | 2 |
+| `worker.memory` | 1GiB to the node's memory, in GiB or MiB, such as `8GiB` or `12288MiB` | 8GiB |
+
+`parcon config set` refuses a value outside them with the key's description, the same text `parcon config describe`
+prints, and exits 2. It warns, but allows, a combination the node likely can't run, such as more worker memory in
+total than the node has. For a value it accepts, it:
+
+1. refuses if the controller runs a different `parcon` than the host (run `parcon update` first);
+2. pushes the new config the safe way described in the *Controller VM contract*;
+3. saves the settings;
+4. restarts `parcon.service` and waits for its scale set session. Running workers keep their jobs: a restarted
+   controller adopts them. New workers get the new hardware.
+
+Adding a key means adding it to the registry in `internal/settings/keys.go`.
 
 ## Install flow
 
 1. **Preflight.** Run the checks above.
-2. **Collect settings** from the answers file, or take the defaults: scale set name and limits, storage, the LAN bridge and VLAN, the controller and gateway LAN IPs (DHCP or static), the
-   worker subnet (default `10.251.0.0/22`, changeable if it clashes), and the VMID range.
+2. **Collect settings** from the flags, or the defaults: scale set name and limits, storage, the LAN bridge and VLAN,
+   the controller and gateway LAN IPs (DHCP or static), the worker subnet (default `10.251.0.0/22`, changeable if it
+   clashes), and the VMID range. An earlier run's saved settings take their place.
 3. **Show the plan.** List every object to be created or changed on the host, then ask for confirmation.
-4. **Proxmox access objects** (`pveum`):
+4. **`parcon` on the host:** copy the running `parcon` to `/usr/local/bin/parcon` and save the settings.
+5. **Proxmox access objects** (`pveum`):
    - pools `par-system` and `par-runners`
-   - role `PARController` with only the privileges listed in the README
+   - role `PARController` with only the privileges in `internal/proxmox/access.go`, listed in the README
    - user `par@pve` and a privilege-separated token `par@pve!controller`
    - ACLs for that token on `/pool/par-runners`, the target storage, and `/sdn/zones/parzone/parnet`
-   The installer captures the token secret in a shell variable. It never writes it to the host's disk.
-5. **Worker network** (`pvesh`): create the simple zone `parzone` and the VNet `parnet` with no subnet, then apply
+   `parcon` holds the token secret only in memory and pipes it into the controller VM. It never reaches the host's
+   disk, a command line, or the output.
+6. **Worker network** (`pvesh`): create the simple zone `parzone` and the VNet `parnet` with no subnet, then apply
    the SDN config (`pvesh set /cluster/sdn`).
-6. **Download and verify images** into a temporary directory under `/var/tmp`, which is deleted on exit, including
-   on failure.
-7. **Import the runner template** in `par-runners` from `par-runner-<ver>.qcow2` into the first free VMID of the
+7. **Host NIC offloads**, only on a node that is itself a VM: see *Host NIC offloads*.
+8. **Verify the release**: download `SHA256SUMS` and `SHA256SUMS.sig` and check the signature. Each image is then
+   downloaded when a step needs it, into a temporary directory under `/var/tmp` that is removed afterward, and checked
+   against `SHA256SUMS`.
+9. **Import the runner template** in `par-runners` from `par-runner-<ver>.qcow2` into the first free VMID of the
    reserved IDs at the end of the range (`qm create` + `qm set --scsi0 <storage>:0,import-from=<file>`), with a
    cloud-init drive and the guest agent enabled. Tag it `par-managed`, `par-template`,
-   `par-tv-<import time in Unix seconds>`, and `par-rv-<actions/runner version>` (from the image's manifest), and
-   convert it to a template. See *Runner image*.
-8. **Create the gateway VM** in `par-system` from `par-gateway-<ver>.qcow2`: 1 vCPU, 1 GiB RAM, a 6 GiB disk (the
-   image's size), `net0` on the LAN bridge, and `net1` on `parnet`. Use the built-in cloud-init drive for hostname
-   and the LAN address only, tag it `par-managed,par-gateway`, and start it. Once it has finished booting (the guest agent
-   answers and `systemctl is-system-running --wait` returns), pipe
-   the worker subnet and the ranges to block (the LAN bridge's networks, every address the host has on any
-   interface, and the controller VM) into `par-gateway-configure` through `qm guest exec --pass-stdin` (see
-   *Gateway and controller images*), then check that it serves DHCP on `parnet` and reaches the internet.
-9. **Create the controller VM** in `par-system` from `parcon-<ver>.qcow2`: 2 vCPU, 2 GiB RAM, a 6 GiB disk (the
-   image's size). Use Proxmox's built-in cloud-init drive for hostname and network only (no user data, no
-   snippets), tag it `par-managed,par-controller`, and start it.
-10. **Configure the controller** through the guest agent once it has finished booting. Secrets go through
+   `par-tv-<import time in Unix seconds>`, `par-rv-<actions/runner version>` (from the image's manifest), and
+   `par-release-<ver>`, and convert it to a template. See *Runner image*.
+10. **Create the gateway VM** in `par-system` from `par-gateway-<ver>.qcow2`: 1 vCPU, 1 GiB RAM, a 6 GiB disk (the
+    image's size), `net0` on the LAN bridge, and `net1` on `parnet`. Use the built-in cloud-init drive for hostname
+    and the LAN address only, tag it `par-managed,par-gateway,par-release-<ver>`, and start it. Once it has finished
+    booting (the guest agent answers and `systemctl is-system-running --wait` returns), pipe the worker subnet and
+    the ranges to block (the LAN bridge's networks, every address the host has on any interface, and the controller
+    VM) into `par-gateway-configure` through `qm guest exec --pass-stdin` (see *Gateway and controller images*),
+    then check that it reaches the internet.
+11. **Create the controller VM** in `par-system` from `parcon-<ver>.qcow2`: 2 vCPU, 2 GiB RAM, a 6 GiB disk (the
+    image's size). Use Proxmox's built-in cloud-init drive for hostname and network only (no user data, no
+    snippets), tag it `par-managed,par-controller`, and start it. Once it has an address, configure the gateway again
+    to block it.
+12. **Configure the controller** through the guest agent once it has finished booting. Secrets go through
     `qm guest exec --pass-stdin`, so they never appear on a command line or on the host's disk:
-    - `/etc/proxmox-actions-runners/config.yaml` with the settings, but no `github.app` yet (see *Controller VM
-      contract*)
+    - `/etc/proxmox-actions-runners/config.yaml`, rendered from the settings, with no `github.app` yet (see
+      *Controller VM contract*)
     - the Proxmox token in `/etc/proxmox-actions-runners/pve-token`
     - with Proxmox's own certificate, a copy of the node's CA (`/etc/pve/pve-root-ca.pem`) in
       `/etc/proxmox-actions-runners/pve-ca.pem`
-    The files are owned by `parcon` with mode `0600`. The controller connects to the API by IP and verifies its
-    certificate against a DNS name the certificate lists (`tlsServerName`), so renewals don't break it. It verifies
-    Proxmox's own certificate against the node's CA (`caCertFile`), and a custom or ACME certificate the host's
-    system CAs trust against the controller's system CAs. Only a certificate from a CA the host doesn't trust is
-    pinned by fingerprint (`tlsFingerprint`), which preflight warns about: its renewal needs a config edit. The installer then runs `parcon check proxmox` in the VM as
-    `parcon`. It confirms the Proxmox VE version, that the token has every privilege it needs on the pool, storage,
-    and VNet, and that the storage accepts VM disks.
-11. **Create the GitHub App** with the manifest flow described under *GitHub App setup*. The code the user pastes is
+    The controller connects to the API by IP and verifies its certificate against a DNS name the certificate lists
+    (`tlsServerName`), so renewals don't break it. It verifies Proxmox's own certificate against the node's CA
+    (`caCertFile`), and a custom or ACME certificate the host's system CAs trust against the controller's system CAs.
+    Only a certificate from a CA the host doesn't trust is pinned by fingerprint (`tlsFingerprint`), which preflight
+    warns about: after it is renewed, `parcon config apply` pins the new one. `parcon` then runs
+    `parcon check proxmox` in the VM as `parcon`. It confirms the Proxmox VE version, that the token has every
+    privilege it needs on the pool, storage, and VNet, and that the storage accepts VM disks.
+13. **Create the GitHub App** with the manifest flow described under *GitHub App setup*. The code the user pastes is
     passed to `parcon github app create` in the controller VM, so the App's private key goes straight from GitHub
-    into the controller VM and never passes through the host. The installer then waits for the user to install the
-    App (`parcon github app wait-installation`), learns from the installation which organization or repository the
-    runners serve, and writes it and the installation ID into `config.yaml`. It writes the Client ID there as soon as
-    the key is in the VM, so a re-run after a failure keeps waiting for the same App rather than creating another. The installer then runs `parcon check github` in the VM. This confirms that the App
-    credentials produce an installation token and can reach the org or repo. It then enables and starts
-    `parcon.service`.
-12. **Smoke test.** The installer clones one worker from the template into a reserved VMID, tagged
-    `par-managed,par-build` so the reconcile loop leaves it alone, waits for it to finish booting, and confirms
-    through `qm guest exec` that the worker got a DHCP lease, reaches GitHub, and can't reach the Proxmox API or the
-    controller VM. It then destroys the clone and waits for the controller to log `scale set session opened`, which
-    it does once the scale set is registered and its listener session is open. A re-run first destroys a clone a
-    failed run left.
-13. **Summary.** Print the `runs-on:` label, the controller and gateway VMs' IDs and IPs, and the upgrade and
-    uninstall commands. (The metrics URL and its certificate's fingerprint come with the metrics endpoint, which is
-    deferred.)
+    into the controller VM and never passes through the host. `parcon` then waits for the user to install the App
+    (`parcon github app wait-installation`), learns from the installation which organization or repository the
+    runners serve, and saves it and the installation ID in the settings and the controller's config. It saves the
+    Client ID as soon as the key is in the VM, so a re-run after a failure keeps waiting for the same App rather than
+    creating another. It then runs `parcon check github` in the VM, which confirms that the App credentials produce
+    an installation token and can reach the org or repo, and enables and starts `parcon.service`.
+14. **Worker network check** (also `parcon check network`). `parcon` clones one worker from the template into a
+    reserved VMID, tagged `par-managed,par-build` so the reconcile loop leaves it alone, waits for it to finish
+    booting, and confirms through `qm guest exec` that the worker got a DHCP lease, reaches GitHub, and can't reach
+    the Proxmox API or the controller VM. It then destroys the clone, and waits for the controller to log
+    `scale set session opened`, which it does once the scale set is registered and its listener session is open. A
+    re-run first destroys a clone a failed run left.
+15. **Finish.** Tag the controller VM `par-release-<ver>`, which marks a finished install, and print the `runs-on:`
+    label, the controller and gateway VMs' IDs and IPs, and the `parcon` commands.
 
-If any step fails, the installer stops and prints what it already created, so a re-run can continue from there.
+If any step fails, `parcon` stops and says why; fix the cause and run `parcon install` again to continue from there.
 Each step checks for existing objects before it creates anything.
 
 ## Gateway and controller images
 
 Both images start from the same pinned Ubuntu 26.04 cloud image as the runner image, turn on `unattended-upgrades`,
-and include `qemu-guest-agent`, which is how the installer configures them. Both disks are 6 GiB, the VMs'
+and include `qemu-guest-agent`, which is how `parcon` configures them. Both disks are 6 GiB, the VMs'
 size. A built image holds about 2.5 GiB and grows only by logs and OS updates, but a kernel update from
 `unattended-upgrades` briefly needs room for two kernels and a new initramfs, which 4 GiB can't hold.
 
@@ -256,7 +354,7 @@ size. A built image holds about 2.5 GiB and grows only by logs and OS updates, b
 The gateway runs dnsmasq for DHCP and DNS on `net1` and nftables for NAT and the firewall. The worker NIC is always
 called `net1` inside the VM: the image names it by the PCI slot Proxmox gives `net1`, so nothing depends on MACs.
 
-The installer configures it by piping `KEY=value` lines into `/usr/local/sbin/par-gateway-configure` through
+`parcon` configures it by piping `KEY=value` lines into `/usr/local/sbin/par-gateway-configure` through
 `qm guest exec --pass-stdin`:
 
 ```
@@ -291,19 +389,19 @@ The controller image follows the *Controller VM contract*. On top of it:
 
 - `parcon` is statically linked and baked into the image at `/usr/local/bin/parcon`.
 - The image creates the `parcon` user and `/etc/proxmox-actions-runners`, and installs `parcon.service`
-  ([`deploy/parcon.service`](../deploy/parcon.service)) without enabling it; the installer enables it after step 11.
+  ([`deploy/parcon.service`](../deploy/parcon.service)) without enabling it; `parcon install` enables it in step 13.
   The unit starts only once `/etc/proxmox-actions-runners/config.yaml` exists.
-- The image doesn't enforce the files' modes: the installer writes each one as `parcon` with `umask 077`, for example
+- The image doesn't enforce the files' modes: `parcon` writes each one as `parcon` with `umask 077`, for example
   `runuser -u parcon -- sh -c 'umask 077; cat > FILE'`.
 
 ## GitHub App setup
 
 GitHub Apps can only be created in a browser: there is no API for it, and the OAuth device flow (where you type a
-code shown by a CLI) only works for an App that already exists. The installer therefore uses GitHub's
+code shown by a CLI) only works for an App that already exists. `parcon install` therefore uses GitHub's
 [manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest) with
 a static helper page, and the user copies one line back:
 
-1. The installer picks a random `state`, 32 bytes from `/dev/urandom` in unpadded base64url (43 characters, 256
+1. `parcon` picks a random `state`, 32 bytes from the kernel's random source in unpadded base64url (43 characters, 256
    bits, so nobody can guess it), and prints a link to the helper page with it:
    `https://klponce.github.io/proxmox-actions-runners/app/v1/?state=<state>`. The user opens it on any device with a
    browser. The page refuses a link without a state of that shape.
@@ -323,16 +421,17 @@ a static helper page, and the user copies one line back:
 3. The user reviews the App on GitHub and clicks **Create GitHub App**. GitHub redirects back to the page with `code`
    and `state`. The page shows one line to copy, `<state>.<code>`, removes the code from the address bar, and warns
    that the line unlocks the App's private key for up to an hour.
-4. The user pastes the line into the installer. The installer splits it at the first `.`, checks that the state is
+4. The user pastes the line into `parcon`, which splits it at the first `.`, checks that the state is
    the one it printed, and pipes **only the code** into `parcon github app create` in the controller VM.
-5. The installer prints the App's install link (`https://github.com/apps/<slug>/installations/new`), GitHub's own
+5. `parcon` prints the App's install link (`https://github.com/apps/<slug>/installations/new`), GitHub's own
    install page, where the user installs the App on the organization, or on the repository for a personal account.
    A private App can only be installed on the account that owns it, so the App and its installation can't disagree.
    `parcon github app wait-installation` polls until the installation appears. No second copy-back is needed.
-6. The installer takes the runners' target from the installation: the organization, or the one repository the App
-   can reach on a personal account. If it can reach several, `PAR_GITHUB_URL` from the answers file picks one, or the
-   installer asks. With `PAR_GITHUB_URL` set, the installation must match it. The installer writes `configUrl`,
-   `clientId`, `installationId`, and `privateKeyFile` into `github` in `config.yaml`, then runs `parcon check github`.
+6. `parcon` takes the runners' target from the installation: the organization, or the one repository the App can
+   reach on a personal account. If it can reach several, `--github-url` picks one, or `parcon` asks. With
+   `--github-url` set, the installation must match it. `parcon` saves the target and the installation ID in the
+   settings, renders `configUrl`, `clientId`, `installationId`, and `privateKeyFile` into `github` in `config.yaml`,
+   then runs `parcon check github`.
 
 The `parcon` commands, run in the controller VM as `parcon`. Secrets come only on stdin, never as arguments, and are
 never logged or printed:
@@ -350,8 +449,8 @@ never logged or printed:
 - `create` calls `POST /app-manifests/{code}/conversions` and keeps only the App ID, slug, Client ID, owner, and
   private key. It drops the client secret and webhook secret, which the controller doesn't use. An invalid, used, or
   expired code fails with a message that says so.
-- `import` is the `PAR_GITHUB_APP=manual` path for an App that already exists: the installer asks for its Client ID,
-  reads its private key, and pipes the key to `import`. `import` checks that it is a PEM-encoded RSA private key.
+- `import` is the `--app manual --client-id ID` path for an App that already exists: `parcon install` reads its
+  private key from the terminal and pipes the key to `import`. `import` checks that it is a PEM-encoded RSA private key.
 - `wait-installation` authenticates as the App with a JWT and polls `GET /app/installations` every 5 seconds until
   the App is installed. On a personal account it also lists the repositories the installation can reach
   (`GET /installation/repositories` with an installation token), since the runners need one of them; an
@@ -365,12 +464,12 @@ About the helper page:
   plain HTML and JavaScript with no third-party scripts, analytics, or cookies. Its Content-Security-Policy allows
   no requests except the form `POST` to GitHub.
 - Its path is versioned (`/app/v1/`). Once a release has shipped, a change to the manifest or the query parameters
-  gets a new path, so older installers keep working.
+  gets a new path, so older releases keep working.
 - The code on the page can be exchanged for the App's private key by anyone who has it, until it is used or expires.
-  The page says so, and the installer exchanges it at once. Neither the installer nor `parcon` logs it.
+  The page says so, and `parcon` exchanges it at once and never logs it.
 
-Typing a code from the installer into the page (the device-flow style) isn't possible: the page is static, so it
-has no way to send the result back to the installer. That would need a hosted relay service, which would also see
+Typing a code from `parcon` into the page (the device-flow style) isn't possible: the page is static, so it has no
+way to send the result back to `parcon`. That would need a hosted relay service, which would also see
 the code that unlocks the private key.
 
 ## Metrics endpoint
@@ -385,7 +484,7 @@ main, so `unattended-upgrades` patches it) runs in the controller VM and serves 
   names. It is generated inside the controller VM on first boot, never baked into the image, since every install
   would then share the same key. A timer regenerates it 30 days before it expires, which is 2 years after it was
   issued.
-- The installer prints the certificate's SHA-256 fingerprint so Prometheus can be pointed at it with `ca_file`, or
+- `parcon status` prints the certificate's SHA-256 fingerprint so Prometheus can be pointed at it with `ca_file`, or
   at least checked by hand.
 - There is no authentication for now. The endpoint exposes counts, latencies, and scale set names, but no secrets.
   Workers can't reach it because the gateway blocks the LAN.
@@ -399,18 +498,18 @@ The runner template is imported, never built on the node. CI builds `par-runner-
 runs the checks in `images/runner/tests/`, and cleans up the machine-id, SSH host keys, cloud-init state, and logs.
 The image's disk size is the baseline that each worker's `freeDiskGiB` is added to, so it is kept small.
 
-Templates are immutable. The installer imports each new runner image as a new template with a newer `par-tv` tag,
+Templates are immutable. `parcon update` imports each new release's runner image as a new template with a newer `par-tv` tag,
 and the controller clones the newest one. Linked clones depend on their template, so the controller deletes an old
 template only once no worker references it (`par-tpl-<VMID>` on each worker). A `par-build` smoke-test clone doesn't
-say which template it came from, so the controller deletes no template while one exists. The installer destroys
-its clones itself, and `uninstall` removes any that remain.
+say which template it came from, so the controller deletes no template while one exists. `parcon` destroys its
+clones itself, and `parcon uninstall` removes any that remain.
 
 GitHub stops accepting a runner with auto-update disabled 30 days after a newer `actions/runner` release. Each
-runner release therefore ships as a project release with a new runner image, and `install.sh upgrade` imports it. A
+runner release therefore ships as a project release with a new runner image, and `parcon update` imports it. A
 daily workflow (`.github/workflows/runner-release.yml`) opens a pull request that bumps the image's pin as soon as a
 new `actions/runner` release is out.
 The controller logs a warning when the template has been behind the latest release for 7 days and an error after
-21, and `parcon check template` reports the same.
+21, and `parcon status` and `parcon check template` report the same.
 
 ## Networking
 
@@ -434,42 +533,66 @@ an existing bridge or VLAN:
   `pve-firewall` setup, which varies from host to host.
 - SDN DHCP on the host needs the `dnsmasq` package, which invariant 8 rules out.
 - Attaching workers to an existing bridge makes isolation depend on the user's switch, router, and VLAN setup, which
-  the installer can't check.
+  `parcon` can't check.
 
-The gateway is a single point of failure for worker networking. The controller's metrics show it as jobs that
-stay queued and workers that never register, and `install.sh check` tests it. Its OS updates itself with
-`unattended-upgrades`, and `install.sh upgrade` replaces it with a new image.
+The gateway is a single point of failure for worker networking. `parcon status` shows whether its DHCP, DNS, and
+NAT services run, and `parcon check network` tests the network end to end from a throwaway worker. Its OS updates
+itself with `unattended-upgrades`, and `parcon update` replaces it with the new release's image.
 
-## Upgrade and uninstall
+### Host NIC offloads
 
-Each VM the installer creates carries a `par-release-<version>` tag, and the controller VM gets its tag last, so
-it marks a finished install. `install` on a node with a finished install upgrades it; on one with an unfinished
-install (the `par-system` pool exists), it continues it.
+The node may itself be a VM, for example to keep the runners apart from a main Proxmox setup. Its NIC is then a
+virtio NIC under the LAN bridge, and its offloads (GRO, GSO, TSO, and TX checksumming) are on by default. The NIC
+merges incoming packets that the bridge then forwards to the gateway VM, which NATs them to the workers, and
+workers' downloads stall at a few KB/s while the host's own run at full speed.
 
-- **Upgrade** is in place, run on the host like the install:
-  - The controller VM downloads the release's `parcon-<ver>-linux-amd64` itself, checks it against the checksum the
-    installer passes it through the guest agent, replaces `/usr/local/bin/parcon`, and restarts `parcon.service`.
-    The binary is far too big for the guest agent to carry, and config and secrets never leave the VM. The VM's OS
-    updates itself with `unattended-upgrades`.
-  - The gateway VM holds no state beyond its settings, so the installer reads them, replaces the VM with the new
-    image under the same VMID and address, and reconfigures it with `par-gateway-configure`. Workers lose their
-    network for the minute or two this takes.
+On such a node (a port of the LAN bridge whose driver is `virtio_net`), `parcon install` and `parcon update` turn
+those offloads off with `ethtool -K`, and write `/etc/udev/rules.d/90-par-offloads.rules` so they stay off after a reboot. The rule
+matches the NIC by the name Proxmox gives it (such as `nic0`) and sorts after `80-net-setup-link.rules`, which
+renames it. This is a file of our own rather than a `post-up` line in `/etc/network/interfaces`, which Proxmox's GUI
+rewrites. `parcon check` and `parcon status` warn while the offloads are on or the rule is missing, and
+`parcon uninstall` removes the rule and turns the offloads back on. On a node that isn't a VM, none of this happens.
+
+## Update and uninstall
+
+Each VM `parcon` creates carries a `par-release-<version>` tag, and the controller VM gets its tag last, so it marks
+a finished install or update. `parcon install` on a node with a finished install of an older release updates it; on
+one with an unfinished install (the `par-system` pool exists), it continues it.
+
+- **Update** (`parcon update`) is in place, run on the host:
+  - It finds the newest release (with `--pre`, the newest pre-release too). If that is newer than the host's
+    `parcon`, it shows the plan, verifies the release's signature, replaces `/usr/local/bin/parcon` with the
+    release's, and runs it to do the rest, so each release's own code updates the node to it.
   - The release's runner image is imported as a new template, and the controller removes the old one once its
     workers are gone.
-- **Uninstall** first stops the controller and deletes the scale set in GitHub (`parcon github scaleset delete` in
-  the controller VM, which also unregisters its runners). It then destroys every VM tagged `par-managed` in the two
-  pools, clones before templates, removes the ACLs, token, user, role, and pools, and removes the `parzone` zone and
-  `parnet` VNet and applies the SDN config. It doesn't touch anything it didn't create. The GitHub App stays; delete
-  it in GitHub's settings if you no longer need it.
+  - The gateway VM holds no state beyond what the settings say, so `parcon` replaces it with the new image under the
+    same VMID, NICs, and address, and configures it with `par-gateway-configure`. Workers lose their network for the
+    minute or two this takes.
+  - The controller VM downloads the release's `parcon-<ver>-linux-amd64` itself and checks it against the checksum
+    from the verified `SHA256SUMS`, which `parcon` passes it through the guest agent. The binary is far too big for
+    the guest agent to carry, and config and secrets never leave the VM. `parcon` then pushes the config the new
+    release renders, restarts `parcon.service`, and waits for its session. The VM's OS updates itself with
+    `unattended-upgrades`.
+  - On a node that is itself a VM, the LAN NIC's offloads are turned off if they aren't yet (see *Host NIC
+    offloads*).
+  - Each piece already at the release is left alone, so `parcon update` again continues an update that stopped. An
+    install newer than the host's `parcon` is refused rather than downgraded.
+- **Uninstall** (`parcon uninstall`) first stops the controller and deletes the scale set in GitHub
+  (`parcon github scaleset delete` in the controller VM, which also unregisters its runners). It then destroys every
+  VM tagged `par-managed` in the two pools, clones before templates, removes the ACLs, token, user, role, and pools,
+  and removes the `parzone` zone and `parnet` VNet and applies the SDN config. On a node that is itself a VM, it
+  removes the udev rule that keeps the LAN NIC's offloads off and turns them back on. Last, it removes the settings
+  and `/usr/local/bin/parcon`. It doesn't touch anything it didn't create. The GitHub App stays; delete it in
+  GitHub's settings if you no longer need it.
 
-## Script conventions
+## Conventions
 
-- Bash with `set -euo pipefail`. The whole body is inside `main` and called on the last line, so a partial
-  `curl | bash` download can't run half a script. Tests source the script with `PAR_INSTALL_SOURCED=1`, which skips
-  `main`.
-- Use only tools that ship with Proxmox VE 9. Parse JSON with `pvesh --output-format json` and `perl -MJSON`, not
-  `jq`.
-- Every command that changes the host goes through the `change` function, which logs it and honors `--dry-run`.
-  Secrets are never arguments, so the log never holds one: they go to the controller VM on `qm guest exec`'s stdin.
-- Must pass `shellcheck`. Tests use `bats` (`install/tests`) with stubbed `qm`, `pveum`, `pvesh`, `curl`, and `ip`.
-  A Go test keeps the script's role privileges equal to what `parcon check proxmox` requires.
+- The host commands live in `internal/installer`, and reach the host only through `pvecli` (commands) and `hostsys`
+  (files and facts), so their tests run whole installs, updates, and uninstalls against a fake node.
+- Every change to the host goes through `pvecli.Changer`, which logs it and honors `--dry-run`. Secrets are never
+  arguments, so the log never holds one: they go to the controller VM on `qm guest exec`'s stdin. A test runs a whole
+  install with sentinel secrets and checks every command line, output, error, and host file for them.
+- Use only tools that ship with Proxmox VE 9, and parse their JSON output in Go.
+- `install/install.sh` stays a bootstrap in Bash with `set -euo pipefail`. Its body is inside `main` and called on the
+  last line, so a partial `curl | bash` download can't run half a script. It must pass `shellcheck`, and its bats
+  tests (`install/tests`) stub `curl` and the checks it makes.

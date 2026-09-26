@@ -24,6 +24,9 @@ const (
 	// Build marks a VM the installer creates and destroys itself, such as its smoke-test clone. It lives in the
 	// reserved VMIDs, which the controller never treats as workers or leftovers.
 	Build = "par-build"
+	// Gateway and Controller mark the gateway and controller VMs, which parcon creates in the system pool.
+	Gateway    = "par-gateway"
+	Controller = "par-controller"
 )
 
 // Tag prefixes, each followed by a value.
@@ -40,6 +43,9 @@ const (
 	TemplateVersionPrefix = "par-tv-"
 	// RunnerVersionPrefix is followed by the actions/runner version a template contains, such as 2.337.0.
 	RunnerVersionPrefix = "par-rv-"
+	// ReleasePrefix is followed by the project release a VM was created or last upgraded by, such as 0.2.0. The
+	// controller VM gets it last, so it marks a finished install or update.
+	ReleasePrefix = "par-release-"
 )
 
 // Int returns the number after prefix in the first tag that has it.

@@ -1,5 +1,5 @@
-# The controller's unit in the controller VM (images/controller/). The image installs it but doesn't enable it: the
-# installer enables it once the config holds the GitHub App's credentials.
+# The controller's unit in the controller VM (images/controller/). The image installs it but doesn't enable it:
+# parcon install on the host enables it once the config holds the GitHub App's credentials.
 [Unit]
 Description=proxmox-actions-runners controller
 Documentation=https://github.com/klponce/proxmox-actions-runners
@@ -21,6 +21,9 @@ TimeoutStopSec=6min
 NoNewPrivileges=yes
 ProtectSystem=strict
 PrivateTmp=yes
+# /run/parcon, for the status file `parcon status` on the host reads (internal/controller/status.go).
+RuntimeDirectory=parcon
+RuntimeDirectoryMode=0755
 
 [Install]
 WantedBy=multi-user.target

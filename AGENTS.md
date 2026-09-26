@@ -11,7 +11,8 @@ number of runners GitHub wants, and keeps that many **worker VMs** running, each
 image, the template carries the runner, Docker, and a few basics; workflows bring their own toolchains with `setup-*`
 actions. Matching the preinstalled toolset of GitHub-hosted runners is out of scope.
 
-The project supports exactly one setup: a single standalone Proxmox VE 9 node, installed by `install/install.sh`.
+The project supports exactly one setup: a single standalone Proxmox VE 9 node, installed and managed by `parcon` on
+the node (`install/install.sh` is only its bootstrap).
 Don't add support for clusters, containers or Kubernetes, other hypervisors, or per-scale-set networks. The README's
 *Limitations* section lists what is out of scope and why.
 
@@ -29,13 +30,18 @@ behind the invariants and the alternatives that were rejected.
   controller uses it for scale set registration, the message session, and JIT configs.
 - **Template**: a versioned, immutable Proxmox VM template imported from the runner image (`images/runner/`), which
   CI builds with Packer and publishes with each release. Nothing is built on the node.
-- **Controller VM**: the VM the installer creates to run the `parcon` controller. It lives in the `par-system` pool,
+- **Controller VM**: the VM `parcon install` creates to run the `parcon` controller. It lives in the `par-system` pool,
   outside the token's reach.
 - **Worker network**: the isolated Proxmox SDN VNet (`parnet` in the simple zone `parzone`) that workers attach to.
   It has no uplink, no host IP, and no host SNAT or DHCP.
-- **Gateway VM**: the VM the installer creates in `par-system` with one NIC on the LAN and one on the worker network.
+- **Gateway VM**: the VM `parcon install` creates in `par-system` with one NIC on the LAN and one on the worker network.
   It is the worker network's only way out: it provides DHCP, DNS, and NAT to the internet, and blocks the LAN.
-- **Installer**: `install/install.sh`, run as root on a Proxmox VE 9 node. See [docs/install.md](docs/install.md).
+- **Host commands**: `parcon install`, `status`, `config`, `update`, `check`, and `uninstall`, run as root on the
+  Proxmox VE 9 node (`internal/installer`). They are the user's interface: the gateway and controller VMs need no
+  logins, and `parcon` reaches into them through the guest agent. `install/install.sh` is the bootstrap that
+  downloads and verifies the release's `parcon` and runs `parcon install`. See [docs/install.md](docs/install.md).
+- **Host settings**: `/etc/proxmox-actions-runners/settings.yaml` on the host (`internal/settings`), the source of
+  truth for the install. `parcon` renders the controller VM's `config.yaml` from it. It holds nothing secret.
 - **Worker**: a VM cloned from the template to run one job.
 - **Linked clone**: a copy-on-write clone of the template. It is fast and saves space. Full clones are also
   supported.
@@ -73,8 +79,8 @@ Keep these true. If a change needs to break one, discuss it first.
 5. **Only touch what we own.** Every managed VM is tagged, for example with `par-managed` and a scale set tag, and
    lives in the runner pool. The controller must never modify or delete an untagged VM. It must never modify an
    existing template: a new runner image is imported as a new template instead, and the controller deletes an old
-   one only once no worker uses it. The installer's smoke-test clones (`par-build`, in the reserved VMIDs) belong to
-   the installer, which destroys them, including ones a failed run left. The Proxmox token's ACLs enforce the same
+   one only once no worker uses it. The smoke-test clones of `parcon install` and `parcon check network` (`par-build`,
+   in the reserved VMIDs) belong to `parcon`, which destroys them, including ones a failed run left. The Proxmox token's ACLs enforce the same
    limit, and the controller and gateway VMs sit in `par-system`, outside the token's reach.
 6. **GitHub-matching defaults.** Default worker hardware is 2 vCPU, 8 GiB RAM, and 14 GiB of free disk space,
    matching `ubuntu-latest` for private repositories. The free space is added on top of the template's disk size,
@@ -83,12 +89,16 @@ Keep these true. If a change needs to break one, discuss it first.
 7. **Secrets never leak.** The GitHub App private key, the Proxmox API token, installation tokens, and JIT configs
    must never be logged, put in error messages, or stored in VM notes, tags, config, or cloud-init snippets. Pass
    JIT configs to the running VM only through the QEMU guest agent. Cloud-init carries only non-secret settings.
-8. **Minimal host footprint.** The installer changes the Proxmox host only through `pveum`, `qm`, `pvesh`, and
-   `pvesm`, and only to create objects it tags or names as ours: pools, role, user, token, ACLs, VMs, and the worker
-   network's SDN zone and VNet. It installs no packages, services, binaries, or snippets, and doesn't edit host
-   network or storage config by hand. The worker network has no host IP, SNAT, or DHCP, so the host never routes
-   worker traffic. Every host change must appear in the plan the installer prints, and `install.sh uninstall` must
-   remove it. Everything else runs inside the controller and gateway VMs.
+8. **Minimal host footprint.** `parcon` changes the Proxmox host only where the project needs it: itself
+   (`/usr/local/bin/parcon`) and its settings (`/etc/proxmox-actions-runners/settings.yaml`), what the runners run
+   on (pools, role, user, token, ACLs, VMs, and the worker network's SDN zone and VNet, through `pveum`, `qm`,
+   `pvesh`, and `pvesm`), and host tuning the runners can't work well without, such as turning off the LAN NIC's
+   offloads on a node that is itself a VM. A change that is merely convenient doesn't qualify, and whatever can run
+   inside the controller or gateway VM runs there. `parcon` runs no service on the host, installs no packages, and
+   doesn't edit files that Proxmox or the user manages, such as `/etc/network/interfaces` or `storage.cfg`: a change
+   outside Proxmox's tools goes in a file of its own, named as ours. The worker network has no host IP, SNAT, or
+   DHCP, so the host never routes worker traffic. Every host change must appear in the plan `parcon` prints before
+   it changes anything, and `parcon uninstall` must remove it.
 9. **Workers are isolated.** Workers attach only to the worker network. Their only way out is the gateway VM, which
    allows DHCP, DNS, and outbound internet traffic and drops everything else, including the LAN, the Proxmox host,
    the controller VM, and private and link-local ranges. The controller reaches workers only through the Proxmox API
@@ -97,29 +107,42 @@ Keep these true. If a change needs to break one, discuss it first.
 ## Repository layout (planned)
 
 ```
-cmd/parcon/            `parcon` binary: `run`, `check`, `github app create|import|wait-installation`,
-                       `github scaleset delete`; flags, wiring, signals
-internal/config/       config schema, defaults, validation
+cmd/parcon/            `parcon` binary. On the host: `install`, `status`, `config`, `update`, `check`, `uninstall`.
+                       In the controller VM: `run`, `check`, `github app create|import|wait-installation`,
+                       `github scaleset delete`. Flags, wiring, signals
+internal/config/       the controller's config schema, every default (install defaults included), validation
+internal/settings/     the host settings, the `parcon config` key registry, rendering the controller's config
+internal/installer/    the host commands: preflight, plan, install steps, status, config, update, uninstall
+internal/pvecli/       Proxmox through pvesh, pveum, and qm on the host; the Changer that logs every change
+internal/hostsys/      host facts: addresses, routes, NICs, ethtool, memory, the API's certificate
+internal/release/      release lookup, SHA256SUMS signature verification, verified downloads; keys/ holds the
+                       public release signing keys
+internal/term/         questions on /dev/tty and step output for the host commands
 internal/github/       thin wrapper over actions/scaleset: GitHub App auth, scale set, message session, JIT configs
 internal/proxmox/      Proxmox API client wrapper: clone, configure, start, stop, destroy, list by tag, guest-agent writes
 internal/controller/   reconcile loop, worker lifecycle state machine, reaper
 internal/metrics/      Prometheus metrics
-internal/vmtags/       the Proxmox tags that hold the controller's state, shared by the controller and `parcon check`
-install/               install.sh (the only thing that runs on the Proxmox host) and its bats tests
+internal/vmtags/       the Proxmox tags that hold the project's state, shared by the controller and the host commands
+install/               install.sh, the bootstrap that verifies and runs parcon install; fill-release.sh; bats tests
 images/common/         what every image build shares: the Ubuntu and plugin pins, base and cleanup steps, boot test
 images/controller/     Packer (qemu builder): the controller VM image with parcon, shipped as a release asset
 images/gateway/        Packer (qemu builder): the gateway VM image (nftables, dnsmasq), shipped as a release asset
 images/runner/         Packer (qemu builder): the runner template image, shipped as a release asset
 deploy/                example config, systemd unit for the controller VM
 .devcontainer/         development container with every tool below, at pinned versions
-.github/workflows/     CI, releases, the daily actions/runner check, and the helper page on GitHub Pages
-.github/scripts/       what the workflows run: check.sh, build-image.sh, bump-runner.sh, and their bats tests
+.github/workflows/     the check-and-release pipeline, the pull requests' commit check, the daily actions/runner
+                       check, and the helper page on GitHub Pages
+.github/scripts/       what the workflows run: check.sh, check-commits.sh, build-image.sh, bump-runner.sh, and
+                       their bats tests
+release-please-config.json, .release-please-manifest.json
+                       release-please's configuration and the current version; CHANGELOG.md is written by it
 site/                  GitHub Pages helper page for the GitHub App manifest flow (static, no third-party scripts)
 docs/                  design notes
 ```
 
 `internal/controller` depends on small interfaces, not on the concrete Proxmox or GitHub clients, so that tests
-can use fakes.
+can use fakes. `internal/installer` reaches Proxmox and the host only through `pvecli.Exec` and file paths it is
+given, so its tests run whole installs against a fake node.
 
 ## Development environment
 
@@ -156,9 +179,10 @@ test/integration/run.sh                   # needs SSH to a throwaway Proxmox nod
 `check.sh` runs `go build`, `go test -race`, `go vet` (also with `-tags integration`), `gofmt -l`, `golangci-lint`,
 `shellcheck` on every script, `bats install/tests .github/scripts/tests`, `packer fmt -check` and `packer validate`
 for each image, and `actionlint` on the workflows. It must pass before you consider a change done: pull requests
-aren't checked, and the release workflow's check job, which runs the same script in the same image, stops a broken
-`main` from being released. When you change an image, also build it. Each build runs its scripts twice (they must
-be idempotent) and checks the result; the runner build also runs the one-job flow with a stand-in runner. The boot test then boots the finished image the way Proxmox first
+aren't checked (only their commit messages are), and the release workflow's check job, which runs the same script in
+the same image, stops a broken `main` from being released. When you change an image, also build it. Each build runs
+its scripts twice (they must be idempotent) and checks the result; the runner build also runs the one-job flow with
+a stand-in runner. The boot test then boots the finished image the way Proxmox first
 boots a VM made from it: net0 at Proxmox's PCI slot with a cloud-init network config that names it `eth0` by MAC,
 and, for the gateway, net1 at its slot. It checks the console for failed units, ordering cycles, a network that
 timed out, cloud-init finishing within 90 seconds, and each image's own lines. A
@@ -201,30 +225,40 @@ expects, and the suite has already caught a missing privilege (`Pool.Audit`) tha
 - Authenticate to GitHub only as a GitHub App (Client ID, installation ID, private key). Don't add PAT support.
 - Never log the manifest-flow code. It can be exchanged for the App's private key until it is used or expires.
   `parcon github app` commands read the code and keys from stdin, never from arguments.
-- `github.app` is optional when the config is parsed, because the installer checks Proxmox before it creates the
+- `github.app` is optional when the config is parsed, because `parcon install` checks Proxmox before it creates the
   App. A command that talks to GitHub as the App (`parcon run`, `parcon check github`) calls
   `(*config.Config).RequireGitHubApp` first; one that needs only public GitHub data, like `parcon check template`,
   doesn't.
 
-## Installer guidelines (`install/install.sh`)
+## Host command guidelines (`internal/installer`, `install/install.sh`)
 
 See [docs/install.md](docs/install.md) for the full design.
 
-- Keep invariant 8. If a feature seems to need a new host change, put it in the controller VM instead, or discuss it
-  first.
-- Preflight checks come first and change nothing. They include root, Proxmox VE 9.x, amd64, KVM, standalone node,
-  clock sync, tools, storage, space, the LAN bridge, SDN support, worker subnet overlap, and name or ID clashes. Add a
-  check whenever a later step could fail on host state.
-- Use Bash with `set -euo pipefail`, put the body in `main`, and call it on the last line so a truncated
-  `curl | bash` download can't run.
-- Use only tools that ship with Proxmox VE 9. Parse JSON with `perl -MJSON`, not `jq`.
-- Send every command that changes the host through the `change` helper, which logs it and honors `--dry-run`.
-  Never pass a secret as an argument, so the log never holds one. (Not `run`: that name belongs to bats.)
-- Every step checks what already exists before it creates anything, so a re-run continues or upgrades.
-- Secrets never touch the host's disk or a command line. Capture them in variables and send them into the
-  controller VM with `qm guest exec --pass-stdin`.
-- Download only release assets whose SHA-256 is embedded in the script, into a temp directory removed by an `EXIT`
-  trap.
+- Keep invariant 8. If a feature seems to need a new host change, first see whether it can live in the controller or
+  gateway VM. If it can't, and the runners need it, make it idempotent, list it in the plan, report it in
+  `parcon check` and `parcon status`, and undo it in `uninstall`.
+- Preflight checks come first and change nothing. They include root, Proxmox VE 9.x, KVM, standalone node, clock
+  sync, tools, storage, space, the LAN bridge and its NIC's offloads, SDN support, worker subnet overlap, and name or
+  ID clashes. Add a check whenever a later step could fail on host state.
+- Show the plan and ask before any change; `--dry-run` stops at the plan and `--yes` answers the question. Without
+  a terminal, a question fails and names `--yes`: never guess an answer.
+- Send every change through `pvecli.Changer` (commands, and files with `WriteFile` and `Remove`), which logs it and
+  honors `--dry-run`, or log it with `Changer.Log` and skip it in a dry run, as for files written in a VM.
+- Every step checks what already exists before it creates anything, so a re-run continues. Save what an install
+  learns (the App's IDs) to the settings as soon as it is known.
+- Secrets never touch the host's disk, a command line, the output, or an error. They travel only in `Cmd.Stdin`, to
+  `qm guest exec --pass-stdin`. A test runs a whole install with sentinel secrets and checks every command line,
+  output, error, and host file for them; keep it passing.
+- Use only tools that ship with Proxmox VE 9, through `pvecli` or `hostsys`. Parse their JSON in Go.
+- Download only release assets listed in a `SHA256SUMS` whose signature a key in `internal/release/keys` verifies,
+  into a temporary directory removed afterward. `--assets` (for the integration suite and development builds) is the
+  one exception: whoever put the files there, as root, vouches for them.
+- Push the controller's config as `config.yaml.new`, have the controller's own `parcon check config` accept it, and
+  only then move it into place. A config the controller's version can't read must never replace a working one.
+- Hold the lock (`Installer.Lock`) in every command that changes the node.
+- `install/install.sh` stays a bootstrap: Bash with `set -euo pipefail`, the body in `main` called on the last line
+  so a truncated `curl | bash` download can't run, and nothing but downloading `parcon`, checking it against the
+  checksum `fill-release.sh` writes in, and running it.
 
 ## Runner image guidelines (`images/runner/`)
 
@@ -240,7 +274,7 @@ See [docs/install.md](docs/install.md) for the full design.
   release-asset limit.
 - Pin the `actions/runner` version and its SHA-256 (`runner_version` and `runner_sha256` in `runner.pkr.hcl`) and
   disable runner auto-update. GitHub stops accepting a runner that doesn't update itself 30 days after a newer
-  release, so each runner release needs a new runner image, imported by `install.sh upgrade`. The controller logs a
+  release, so each runner release needs a new runner image, imported by `parcon update`. The controller logs a
   warning 7 days after a release its template lacks and an error after 21 (`parcon check template` shows the same).
 - Scripts run in order: `images/common/base.sh` (system upgrade, `qemu-guest-agent`, and `net.ifnames=0`, shared
   with the other images), `scripts/base.sh` (the `runner` user, automatic updates off),
@@ -256,7 +290,7 @@ See [docs/install.md](docs/install.md) for the full design.
 - The template must create `/run/par-runner` at boot, root-only (`20-par-runner.sh` uses a `tmpfiles.d` entry): the
   guest agent's file-write can't create directories, so without it every worker fails at the JIT step.
 - Runners work in `/home/runner/work` (`github.WorkFolder`), as on GitHub-hosted runners.
-- The template contract, which the installer follows when it imports the image and the controller relies on: the
+- The template contract, which `parcon` follows when it imports the image and the controller relies on: the
   root disk on `scsi0`, a cloud-init drive (for `ipconfig0`), the guest agent enabled, the VM in the runner pool,
   and the tags `par-managed`, `par-template`, `par-tv-<import time in Unix seconds>`, and
   `par-rv-<actions/runner version>` (`internal/vmtags`). The controller clones the newest `par-tv`, tags each worker
@@ -281,29 +315,86 @@ See [docs/install.md](docs/install.md) for the full design.
   cloud-init network config gives it. With predictable names, the dracut initrd brings it up as `ens18` before
   cloud-init can rename it, netplan's config for `eth0` never applies (a static address is lost), and every boot
   waits two minutes for an `eth0` that never appears. The boot test catches that.
-- The controller image, the installer, and `parcon` all follow the *Controller VM contract* in
+- The controller image, the host commands, and the controller all follow the *Controller VM contract* in
   [docs/install.md](docs/install.md): the `parcon` user, `/usr/local/bin/parcon`, `parcon.service`
   ([deploy/parcon.service](deploy/parcon.service), installed but not enabled by the image), and the modes of
   `/etc/proxmox-actions-runners` and its files. Change it there, not here.
 
-## Releases and checks (`.github/`)
+## Commits and releases (`.github/`)
 
-- **One pipeline** (`release.yml`): check → images → release. Pull requests start no workflow; `main` is checked
-  when a pull request is merged, before anything is released.
+Releases are cut by [release-please](https://github.com/googleapis/release-please) from the commit history, so the
+commit messages are the release process. Follow these rules exactly.
+
+### Commit messages
+
+- Every commit subject is a [Conventional Commit](https://www.conventionalcommits.org/): `type(scope): description`,
+  lowercase type, an optional scope such as a package or directory (`installer`, `pvecli`, `images`), and a
+  description in the imperative with no period at the end. The `commits` workflow checks every pull request's
+  commits with `.github/scripts/check-commits.sh`; run it yourself before pushing:
+  `.github/scripts/check-commits.sh origin/main HEAD`.
+- The type decides the release:
+
+  | Type | Use for | Release |
+  | ---- | ------- | ------- |
+  | `feat` | a new feature users see: a command, flag, config key, or behavior | minor |
+  | `fix` | a bug fix, including in an image; an `actions/runner` update is a `fix(images)` | patch |
+  | `perf` | a faster or smaller implementation | patch |
+  | `revert` | reverting an earlier commit | patch |
+  | `docs`, `refactor`, `test`, `build`, `ci`, `chore` | everything else | none: it ships with the next release |
+
+- A breaking change (a removed or renamed command, flag, config key, or settings field, or anything an existing
+  install can't take by `parcon update`) gets a `!` after the type or scope and a `BREAKING CHANGE:` footer saying
+  what to do. Before 1.0 it makes a minor release (`bump-minor-pre-major`).
+- One logical change per commit. Don't mix a fix with a refactor: each type shows up in the changelog on its own.
+- Merge pull requests with a merge commit, never squash, so each commit's type reaches release-please as written.
+
+### Releasing
+
+- **One pipeline** (`release.yml`) runs on every push to `main`: check → release-please → images → assemble →
+  publish.
   - **check** runs `.github/scripts/check.sh` in the dev container's image, so it uses the same pinned tools as
-    local development. Tool versions live only in `.devcontainer/Dockerfile`.
-  - **images** builds the three images in parallel on KVM, each boot-tested.
-  - **release** publishes a GitHub release with them, `par-runner-<ver>.json`, `parcon-<ver>-linux-amd64`,
-    `install.sh`, and `SHA256SUMS`. `install/fill-release.sh` writes the version and the assets' checksums into
-    `install.sh`, which then refuses any file that doesn't match.
-- **Every push to `main`** publishes release `v<run number>`, numbered by GitHub's per-workflow run counter, so
-  the numbers go up but have gaps (runs by hand count too). The `releases/latest` install links always point at the
-  newest one. There is no other way to release.
-- **Running the workflow by hand** checks and builds everything and keeps the files as workflow artifacts without
-  publishing.
-- **actions/runner** (`runner-release.yml`): a daily job opens a pull request that bumps the runner image's pin when
-  a new release is out (`.github/scripts/bump-runner.sh`). Merging it publishes a release with the new runner, which
-  installs then need within GitHub's 30-day window.
+    local development. Tool versions live only in `.devcontainer/Dockerfile`. A failed check stops the run: nothing
+    broken is released.
+  - **release-please** reads the commits since the last release and keeps one pull request open, *chore: release
+    X.Y.Z*, with the next version (`.release-please-manifest.json`) and `CHANGELOG.md`. Its configuration is
+    `release-please-config.json`.
+  - When that pull request is merged, release-please creates release `vX.Y.Z` as a **draft**, with its tag. The
+    **images** job builds the three images on KVM, each boot-tested; **assemble** builds `parcon-<ver>-linux-amd64`
+    and fills `install.sh`; **publish** signs `SHA256SUMS`, uploads `par-runner-<ver>.qcow2`, `par-runner-<ver>.json`,
+    `par-gateway-<ver>.qcow2`, `parcon-<ver>.qcow2`, `parcon-<ver>-linux-amd64`, `install.sh`, `SHA256SUMS`, and
+    `SHA256SUMS.sig`, and only then publishes the draft. `releases/latest` never points at a release without its
+    files.
+- **The procedure to release**: merge the pull requests that belong in it, wait for the release pull request to
+  update, review its version and changelog, and merge it. That is the only way to release. Never push a tag,
+  create a GitHub release, or edit the manifest or `CHANGELOG.md` by hand; if a release run fails partway, fix the
+  cause and re-run the failed jobs, which the draft waits for.
+- **Pre-releases**, to test a release on a node first: add a `Release-As: 0.2.0-rc.1` footer to a commit (an empty
+  `chore` commit is fine). The release pull request then proposes that version, and publish marks any version with
+  a suffix as a pre-release, which `releases/latest` skips and `parcon update --pre` takes.
+- `install/fill-release.sh` writes the version and `parcon`'s checksum into `install.sh`, which refuses a `parcon`
+  that doesn't match; `parcon` refuses a release whose `SHA256SUMS.sig` no key in `internal/release/keys` verifies,
+  and any asset that doesn't match `SHA256SUMS`.
+- **Running the workflow by hand** checks and builds everything as `0.0.0-dev.<run>` and keeps the files as workflow
+  artifacts, unsigned, without releasing.
+- **Release signing**: the `publish` job runs in the `release` environment, whose `RELEASE_SIGNING_KEY` secret holds
+  an Ed25519 private key in PEM. It signs `SHA256SUMS` with `openssl pkeyutl -sign -rawin`, then checks the
+  signature against every public key in `internal/release/keys` before it publishes, so a release `parcon` would
+  refuse is never published. Limit the environment to the `main` branch (Settings → Environments → release →
+  deployment branches and tags), since releases run on pushes to `main`.
+  - Create a key with `openssl genpkey -algorithm ed25519 -out release-signing.pem`, put the whole file in the
+    secret, and commit its public key: `openssl pkey -in release-signing.pem -pubout -out
+    internal/release/keys/<year>-<n>.pem`. Keep an offline copy of the private key, and never commit it or put it
+    in `.agents/`.
+  - To rotate, commit the new public key next to the old one and release with the old key, so installed `parcon`s
+    trust both; then switch the secret to the new key, and drop the old public key a release later.
+  - There is no revocation: a leaked key can sign releases that installed `parcon`s accept until they update past
+    one that drops it. After a leak, rotate at once and tell users to reinstall with a new release's `install.sh`,
+    which trusts only its written-in checksum.
+- **actions/runner** (`runner-release.yml`): a daily job opens a pull request, `fix(images): update actions/runner
+  to X`, that bumps the runner image's pin when a new release is out (`.github/scripts/bump-runner.sh`). Merge it,
+  then the release pull request, within GitHub's 30-day window.
+- Pull requests that workflows open with their token (release-please's, the runner bump) start no other workflows,
+  so their commits aren't checked; both write Conventional Commits themselves.
 - Pin every action to a full commit SHA with its version in a comment, and give each workflow and job only the
   `permissions` it needs.
 - Repository settings the workflows need: Actions may create pull requests (Settings → Actions → General), and
@@ -312,5 +403,6 @@ See [docs/install.md](docs/install.md) for the full design.
 ## Change hygiene
 
 - Update `README.md` and this file when you change the architecture, config schema, defaults, or commands.
-- Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, `chore:`, and so on).
+- Write every commit as a Conventional Commit, as *Commits and releases* says: release-please turns them into the
+  version and the changelog.
 - Keep changes focused. Don't mix refactors with behavior changes.

@@ -1,5 +1,6 @@
-# Example controller config. The installer writes the real one to /etc/proxmox-actions-runners/config.yaml in the
-# controller VM. All values here are placeholders.
+# Example controller config. parcon on the Proxmox host renders the real one from its settings and writes it to
+# /etc/proxmox-actions-runners/config.yaml in the controller VM; change it there with `parcon config set`, since the
+# next change rewrites the file. All values here are placeholders.
 
 proxmox:
   url: https://192.0.2.1:8006/api2/json

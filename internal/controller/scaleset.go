@@ -28,10 +28,38 @@ type scaleSetState struct {
 	busy map[string]bool
 	// retryAfter holds off new workers after a failed creation.
 	retryAfter time.Time
+
+	// For the status: the message session, and GitHub's last statistics.
+	sessionOpen  bool
+	sessionSince time.Time
+	sessionErr   string
+	stats        *github.Stats
+	now          func() time.Time
 }
 
-func newScaleSetState(cfg config.ScaleSet, wake func()) *scaleSetState {
-	return &scaleSetState{cfg: cfg, wake: wake, busy: map[string]bool{}}
+func newScaleSetState(cfg config.ScaleSet, wake func(), now func() time.Time) *scaleSetState {
+	return &scaleSetState{cfg: cfg, wake: wake, busy: map[string]bool{}, now: now}
+}
+
+// SessionOpened implements github.SessionObserver.
+func (s *scaleSetState) SessionOpened() {
+	s.mu.Lock()
+	s.sessionOpen, s.sessionSince, s.sessionErr = true, s.now(), ""
+	s.mu.Unlock()
+}
+
+// SessionEnded implements github.SessionObserver.
+func (s *scaleSetState) SessionEnded(err error) {
+	s.mu.Lock()
+	s.sessionOpen, s.sessionSince, s.sessionErr = false, s.now(), err.Error()
+	s.mu.Unlock()
+}
+
+// RecordStats implements github.StatsRecorder.
+func (s *scaleSetState) RecordStats(st github.Stats) {
+	s.mu.Lock()
+	s.stats = &st
+	s.mu.Unlock()
 }
 
 // DesiredRunners implements github.Handler. The target is minRunners idle workers on top of one per assigned job,
@@ -106,4 +134,8 @@ func (s *scaleSetState) canCreate(now time.Time) bool {
 	return !now.Before(s.retryAfter)
 }
 
-var _ github.Handler = (*scaleSetState)(nil)
+var (
+	_ github.Handler         = (*scaleSetState)(nil)
+	_ github.SessionObserver = (*scaleSetState)(nil)
+	_ github.StatsRecorder   = (*scaleSetState)(nil)
+)

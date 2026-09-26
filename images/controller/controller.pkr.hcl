@@ -25,8 +25,8 @@ locals {
 build {
   source "qemu.ubuntu" {
     name = "controller"
-    # The controller VM's disk size (install.sh CONTROLLER_GIB). The built image holds about 2.5 GiB, but a kernel
-    # update needs room for two kernels and a new initramfs: 4 GiB runs out during the build's own upgrade.
+    # The controller VM's disk size (ControllerGiB in internal/installer). The built image holds about 2.5 GiB, but
+    # a kernel update needs room for two kernels and a new initramfs: 4 GiB runs out during the build's own upgrade.
     disk_size = "6G"
     memory    = 2048
     cd_content = {

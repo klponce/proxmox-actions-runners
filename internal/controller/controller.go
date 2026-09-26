@@ -82,6 +82,11 @@ type Options struct {
 	RetryBackoff time.Duration
 	// Now returns the current time. Nil means time.Now.
 	Now func() time.Time
+	// StatusPath is where the controller writes its status after each pass, for `parcon status`. Empty means
+	// nowhere.
+	StatusPath string
+	// Version is the controller's version, for the status.
+	Version string
 }
 
 // Controller runs the reconcile loop for every configured scale set.
@@ -119,6 +124,9 @@ type Controller struct {
 
 	// nextRunnerCheck is when the template's runner is next compared with the latest release.
 	nextRunnerCheck time.Time
+
+	statusPath string
+	status     Status
 }
 
 // New returns a Controller. It doesn't contact Proxmox or GitHub.
@@ -144,6 +152,8 @@ func New(opts Options) (*Controller, error) {
 		busy:             map[int]string{},
 		foreign:          map[int]bool{},
 		lastRunnerCheck:  map[int]time.Time{},
+		statusPath:       opts.StatusPath,
+		status:           Status{Schema: StatusSchema, Version: opts.Version},
 	}
 	if c.logger == nil {
 		c.logger = slog.New(slog.DiscardHandler)
@@ -157,7 +167,7 @@ func New(opts Options) (*Controller, error) {
 	}
 	c.slots = make(chan struct{}, parallelism)
 	for _, s := range c.cfg.ScaleSets {
-		c.scaleSets[s.Name] = newScaleSetState(s, c.trigger)
+		c.scaleSets[s.Name] = newScaleSetState(s, c.trigger, c.now)
 	}
 	return c, nil
 }
@@ -196,10 +206,13 @@ func (c *Controller) Run(ctx context.Context) error {
 
 	ticker := time.NewTicker(c.resync)
 	defer ticker.Stop()
+	c.status.StartedAt = c.now()
 	for {
-		if err := c.reconcile(ctx); err != nil && ctx.Err() == nil {
+		err := c.reconcile(ctx)
+		if err != nil && ctx.Err() == nil {
 			c.logger.WarnContext(ctx, "reconcile pass failed", slog.String("error", err.Error()))
 		}
+		c.writeStatus(ctx, err)
 		select {
 		case <-ctx.Done():
 			c.logger.InfoContext(ctx, "stopping; running workers are left for the next start")

@@ -1,10 +1,15 @@
-# Checks and releases, in one pipeline: check → images → release.
+# Checks and releases, in one pipeline: check → release-please → images → assemble → publish.
 #
-# Every push to main (a merged pull request) checks the code, builds the three VM images (each built with Packer and
-# boot-tested on KVM), and publishes release v<run number>, numbered by GitHub's per-workflow run counter. Each
-# release has the images, the parcon binary, and install.sh with the release number and checksums written in. Running
-# the workflow by hand checks and builds everything and keeps the files as workflow artifacts, without publishing.
-# Pull requests start no workflow: main is checked when a pull request is merged, before anything is released.
+# Every push to main (a merged pull request) runs the checks. release-please then reads the Conventional Commits since
+# the last release and keeps a release pull request open with the next version and its changelog
+# (release-please-config.json, .release-please-manifest.json). Merging that pull request is how a release happens:
+# release-please creates the release as a draft, with its tag, and the rest of the pipeline builds the three VM images
+# (each built with Packer and boot-tested on KVM), assembles parcon and install.sh with the version and checksums
+# written in, signs SHA256SUMS in the release environment, uploads everything, and only then publishes the release.
+# A version with a suffix, such as 0.2.0-rc.1 (from a Release-As footer), is published as a pre-release.
+#
+# Running the workflow by hand checks and builds everything and keeps the files as workflow artifacts, without
+# releasing. Pull requests start no workflow here; .github/workflows/commits.yml checks their commit messages.
 name: release
 
 on:
@@ -15,8 +20,7 @@ on:
 permissions:
   contents: read
 
-# One run at a time, so releases publish in order. A newer push waiting replaces an older one that hasn't started;
-# the newer release includes its changes.
+# One run at a time, so releases publish in order. A newer push waiting replaces an older one that hasn't started.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -25,24 +29,10 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      publish: ${{ steps.version.outputs.publish }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Choose the release number
-        id: version
-        env:
-          EVENT: ${{ github.event_name }}
-          RUN: ${{ github.run_number }}
-        run: |
-          publish=false
-          [[ $EVENT != push ]] || publish=true
-          echo "version=$RUN" >>"$GITHUB_OUTPUT"
-          echo "publish=$publish" >>"$GITHUB_OUTPUT"
-          echo "::notice::release $RUN, publish: $publish"
       - name: Build the dev container image
         run: |
           docker build --build-arg USER_UID="$(id -u)" --build-arg USER_GID="$(id -g)" -t par-dev .devcontainer
@@ -52,15 +42,55 @@ jobs:
           PACKER_GITHUB_API_TOKEN: ${{ github.token }}
         run: docker run --rm -e PACKER_GITHUB_API_TOKEN -v "$PWD:$PWD" -w "$PWD" par-dev .github/scripts/check.sh
 
-  images:
+  release-please:
     needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
+      publish: ${{ steps.version.outputs.publish }}
+      tag: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - id: release
+        if: github.event_name == 'push'
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+      - name: Choose what to build
+        id: version
+        env:
+          CREATED: ${{ steps.release.outputs.release_created }}
+          VERSION: ${{ steps.release.outputs.version }}
+          RUN: ${{ github.run_number }}
+        run: |
+          if [[ $CREATED == true ]]; then
+            [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9a-z.]+)?$ ]] ||
+              { echo "::error::release-please made version $VERSION, which isn't X.Y.Z or X.Y.Z-pre" && exit 1; }
+            printf 'version=%s\nbuild=true\npublish=true\n' "$VERSION" >>"$GITHUB_OUTPUT"
+            echo "::notice::release $VERSION"
+          elif [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
+            printf 'version=0.0.0-dev.%s\nbuild=true\npublish=false\n' "$RUN" >>"$GITHUB_OUTPUT"
+          else
+            echo "build=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::no release; release-please keeps the next one's pull request up to date"
+          fi
+
+  images:
+    needs: release-please
+    if: needs.release-please.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       matrix:
         image: [runner, gateway, controller]
     env:
-      VERSION: ${{ needs.check.outputs.version }}
+      VERSION: ${{ needs.release-please.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -91,14 +121,12 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  release:
-    needs: [check, images]
+  assemble:
+    needs: [release-please, images]
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: write
     env:
-      VERSION: ${{ needs.check.outputs.version }}
+      VERSION: ${{ needs.release-please.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -128,16 +156,63 @@ jobs:
           mv SHA256SUMS dist/
           ls -l dist
           cat dist/SHA256SUMS
-      - name: Publish
-        if: needs.check.outputs.publish == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "v$VERSION" dist/* --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes
-      - name: Keep the files of a run by hand
-        if: needs.check.outputs.publish != 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-${{ env.VERSION }}
           path: dist/
+          if-no-files-found: error
           compression-level: 0
           retention-days: 7
+
+  # Only this job can read the signing key: the release environment admits only main.
+  publish:
+    needs: [release-please, assemble]
+    if: needs.release-please.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.release-please.outputs.version }}
+      TAG: ${{ needs.release-please.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ env.VERSION }}
+          path: dist
+      - name: Sign SHA256SUMS
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          [[ -n $RELEASE_SIGNING_KEY ]] ||
+            { echo "::error::the release environment has no RELEASE_SIGNING_KEY secret" && exit 1; }
+          umask 077
+          key=$RUNNER_TEMP/release-signing.pem
+          printf '%s\n' "$RELEASE_SIGNING_KEY" >"$key"
+          openssl pkeyutl -sign -rawin -inkey "$key" -in dist/SHA256SUMS -out dist/SHA256SUMS.sig
+          rm -f "$key"
+      - name: Check the signature against parcon's keys
+        run: |
+          for pub in internal/release/keys/*.pem; do
+            if openssl pkeyutl -verify -rawin -pubin -inkey "$pub" -in dist/SHA256SUMS \
+              -sigfile dist/SHA256SUMS.sig >/dev/null 2>&1; then
+              echo "signed by $pub"
+              exit 0
+            fi
+          done
+          echo "::error::no key in internal/release/keys verifies the signature, so parcon would refuse the release"
+          exit 1
+      - name: Upload the assets and publish the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$TAG" dist/* --clobber
+          if [[ $VERSION == *-* ]]; then
+            gh release edit "$TAG" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$TAG" --draft=false --latest
+          fi

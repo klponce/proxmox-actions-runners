@@ -260,7 +260,7 @@ func TestGitHubUsage(t *testing.T) {
 		{"github", "x", "create"}} {
 		var stdout, stderr bytes.Buffer
 		err := run(args, &stdout, &stderr)
-		if outcomeOf(err) != usageError || !strings.Contains(stderr.String(), "usage:") {
+		if outcomeOf(err) != usageError || !strings.Contains(stderr.String(), "usage in the controller VM:") {
 			t.Errorf("%v: error = %v, stderr %q", args, err, stderr.String())
 		}
 	}

@@ -22,12 +22,12 @@ func TestRun(t *testing.T) {
 		wantStdout string
 		wantStderr string
 	}{
-		{"no arguments", nil, usageError, "", "usage:"},
+		{"no arguments", nil, usageError, "", "usage in the controller VM:"},
 		{"unknown command", []string{"frobnicate"}, usageError, "", `unknown command "frobnicate"`},
-		{"help", []string{"help"}, succeeded, "usage:", ""},
+		{"help", []string{"help"}, succeeded, "usage in the controller VM:", ""},
 		{"version", []string{"version"}, succeeded, "", ""},
-		{"check without target", []string{"check"}, usageError, "", "usage:"},
-		{"check unknown target", []string{"check", "frobnicate"}, usageError, "", "usage:"},
+		{"check without target", []string{"check"}, usageError, "", "usage in the controller VM:"},
+		{"check unknown target", []string{"check", "frobnicate"}, usageError, "", "usage in the controller VM:"},
 		{"check config extra argument", []string{"check", "config", "extra"}, usageError, "", "unexpected arguments"},
 		{"check config bad flag", []string{"check", "config", "-nope"}, usageError, "", "flag provided but not defined"},
 		{"check example config", []string{"check", "config", "-config", "../../deploy/config.example.yaml"}, succeeded,
