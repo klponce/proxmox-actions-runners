@@ -223,10 +223,10 @@ func (in *Installer) Status(ctx context.Context) (*Report, error) {
 func worst(findings []Finding) StatusLevel {
 	level := OK
 	for _, f := range findings {
-		switch {
-		case f.Level == FAIL:
+		switch f.Level {
+		case FAIL:
 			return FAIL
-		case f.Level == WARN:
+		case WARN:
 			level = WARN
 		}
 	}
