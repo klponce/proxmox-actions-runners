@@ -142,6 +142,19 @@ func TestStatus(t *testing.T) {
 	if r.Failed() {
 		t.Errorf("a healthy install fails: %+v", r)
 	}
+	// The progress comes first, on the error stream, a line per part.
+	progress := ti.stderr.String()
+	if !strings.HasPrefix(progress, "Collecting the status of each part:\n") {
+		t.Errorf("progress:\n%s", progress)
+	}
+	for _, want := range []string{"ok    node pve1, its settings, and its VMs (", "ok    gateway VM 100 (",
+		"ok    controller VM 101 (", "ok    the latest release on GitHub (",
+		"ok    the host's Proxmox objects and NIC offloads (",
+		"ok    the runner template against actions/runner's latest release ("} {
+		if !strings.Contains(progress, want) {
+			t.Errorf("progress lacks %q:\n%s", want, progress)
+		}
+	}
 	var out strings.Builder
 	r.Render(&out, ti.Now())
 	for _, want := range []string{
@@ -160,6 +173,19 @@ func TestStatus(t *testing.T) {
 			t.Errorf("status lacks %q:\n%s", want, out.String())
 		}
 	}
+
+	// A standing settings warning shows up under Settings.
+	s, _ := settings.Load(ti.SettingsPath)
+	s.ScaleSet.MaxRunners = 9
+	must(t, s.Save(ti.SettingsPath))
+	r, _ = ti.Status(context.Background())
+	out.Reset()
+	r.Render(&out, ti.Now())
+	if !strings.Contains(out.String(), "WARN  runners.max 9 × worker.memory 8GiB is 72GiB, more than this node's") {
+		t.Errorf("status:\n%s", out.String())
+	}
+	s.ScaleSet.MaxRunners = 1
+	must(t, s.Save(ti.SettingsPath))
 
 	// A stopped controller, a config that drifted, and a stale runner fail or warn.
 	c.files[config.DefaultPath] = "# edited by hand\n"

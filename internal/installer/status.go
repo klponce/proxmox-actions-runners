@@ -7,6 +7,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/klponce/proxmox-actions-runners/internal/config"
@@ -59,6 +60,8 @@ type Report struct {
 	Workers    []WorkerStatus              `json:"workers"`
 	MaxRunners int                         `json:"maxRunners"`
 	Settings   []SettingStatus             `json:"settings,omitempty"`
+	// SettingsWarnings are the settings that are allowed but likely to cause trouble on this node.
+	SettingsWarnings []string `json:"settingsWarnings,omitempty"`
 }
 
 // SystemVMStatus is the gateway or controller VM.
@@ -109,9 +112,23 @@ func (r *Report) Failed() bool {
 // guestTimeout bounds each command status runs in a VM, so a hung guest can't hang status.
 const guestTimeout = 15 * time.Second
 
-// Status reports the state of the whole install.
+// githubTimeout bounds each GitHub lookup status makes: the answer is useful, but not worth a long wait.
+const githubTimeout = 10 * time.Second
+
+// Status reports the state of the whole install. It says at once that it is collecting, then writes a line to
+// the error stream for each part as it comes in, since the parts that ask the VMs and GitHub take a few seconds.
+// They run at the same time.
 func (in *Installer) Status(ctx context.Context) (*Report, error) {
+	var progressMu sync.Mutex
+	progress := func(format string, args ...any) {
+		progressMu.Lock()
+		defer progressMu.Unlock()
+		_, _ = fmt.Fprintf(in.Out.Err, format+"\n", args...)
+	}
+	progress("Collecting the status of each part:")
+
 	r := &Report{Schema: StatusSchema, Version: in.Version.String()}
+	began := time.Now()
 	var err error
 	if r.Node, err = in.nodeName(ctx); err != nil {
 		return nil, err
@@ -131,37 +148,97 @@ func (in *Installer) Status(ctx context.Context) (*Report, error) {
 		v, isDefault := k.Get(s)
 		r.Settings = append(r.Settings, SettingStatus{Key: k.Name, Value: v, IsDefault: isDefault})
 	}
-	latest, err := release.Latest(ctx, in.Source, in.Version.IsPre())
-	if err != nil {
-		r.LatestError = err.Error()
-	} else {
-		r.Latest = latest.Version.String()
+	for _, w := range settings.Warnings(s, in.Limits()) {
+		r.SettingsWarnings = append(r.SettingsWarnings, w.Text)
 	}
-
 	vms, err := in.vms(ctx)
 	if err != nil {
 		return nil, err
 	}
-	r.Host = in.hostFindings(ctx, s)
-	if vm, ok := findSystemVM(vms, vmtags.Gateway); ok {
-		r.Gateway = in.gatewayStatus(ctx, vm)
-	} else {
-		r.Host = append(r.Host, Finding{FAIL, "there is no gateway VM; run parcon install"})
+	r.Templates, r.Workers = templatesAndWorkers(vms)
+	progress("  %s  node %s, its settings, and its VMs (%s)", levelLabel(OK), r.Node, since(began))
+
+	var wg sync.WaitGroup
+	part := func(name string, fn func() StatusLevel) {
+		wg.Go(func() {
+			began := time.Now()
+			level := fn()
+			progress("  %s  %s (%s)", levelLabel(level), name, since(began))
+		})
+	}
+	part("the host's Proxmox objects and NIC offloads", func() StatusLevel {
+		r.Host = in.hostFindings(ctx, s)
+		return worst(r.Host)
+	})
+	gateway, hasGateway := findSystemVM(vms, vmtags.Gateway)
+	if hasGateway {
+		part(fmt.Sprintf("gateway VM %d", gateway.VMID), func() StatusLevel {
+			r.Gateway = in.gatewayStatus(ctx, gateway)
+			return worst(r.Gateway.Findings)
+		})
 	}
 	var snapshot *controller.Status
-	if vm, ok := findSystemVM(vms, vmtags.Controller); ok {
-		r.Controller, snapshot = in.controllerStatus(ctx, vm, s)
-	} else {
+	ctrl, hasController := findSystemVM(vms, vmtags.Controller)
+	if hasController {
+		part(fmt.Sprintf("controller VM %d", ctrl.VMID), func() StatusLevel {
+			r.Controller, snapshot = in.controllerStatus(ctx, ctrl, s)
+			return worst(r.Controller.Findings)
+		})
+	}
+	part("the latest release on GitHub", func() StatusLevel {
+		ctx, cancel := context.WithTimeout(ctx, githubTimeout)
+		defer cancel()
+		latest, err := release.Latest(ctx, in.Source, in.Version.IsPre())
+		if err != nil {
+			r.LatestError = err.Error()
+			return WARN
+		}
+		r.Latest = latest.Version.String()
+		return OK
+	})
+	var runner Finding
+	part("the runner template against actions/runner's latest release", func() StatusLevel {
+		ctx, cancel := context.WithTimeout(ctx, githubTimeout)
+		defer cancel()
+		runner = in.runnerFinding(ctx, r.Templates)
+		return runner.Level
+	})
+	wg.Wait()
+	progress("")
+
+	if !hasGateway {
+		r.Host = append(r.Host, Finding{FAIL, "there is no gateway VM; run parcon install"})
+	}
+	if !hasController {
 		r.Host = append(r.Host, Finding{FAIL, "there is no controller VM; run parcon install"})
 	}
-	r.GitHub = githubFindings(s, snapshot, in.Now())
+	r.GitHub = append(githubFindings(s, snapshot, in.Now()), runner)
 	if snapshot != nil {
 		r.ScaleSets = snapshot.ScaleSets
 	}
-	r.Templates, r.Workers = templatesAndWorkers(vms)
-	r.GitHub = append(r.GitHub, in.runnerFinding(ctx, r.Templates))
 	return r, nil
 }
+
+// worst is the most serious level among findings.
+func worst(findings []Finding) StatusLevel {
+	level := OK
+	for _, f := range findings {
+		switch {
+		case f.Level == FAIL:
+			return FAIL
+		case f.Level == WARN:
+			level = WARN
+		}
+	}
+	return level
+}
+
+func levelLabel(l StatusLevel) string {
+	return map[StatusLevel]string{OK: "ok  ", WARN: "WARN", FAIL: "FAIL"}[l]
+}
+
+// since is how long ago began was, to a tenth of a second.
+func since(began time.Time) string { return time.Since(began).Round(100 * time.Millisecond).String() }
 
 func findSystemVM(vms []proxmox.VM, tag string) (proxmox.VM, bool) {
 	t := tagged(vms, SystemPool, tag)
@@ -467,6 +544,9 @@ func (r *Report) Render(w io.Writer, now time.Time) {
 			def = " (default)"
 		}
 		p("  %-14s %s%s", s.Key, s.Value, def)
+	}
+	for _, w := range r.SettingsWarnings {
+		p("  WARN  %s", w)
 	}
 }
 
