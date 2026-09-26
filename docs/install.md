@@ -138,8 +138,10 @@ After the install, `parcon` in `/usr/local/bin` does the rest:
 
 ## Release assets
 
-Each release publishes the following files, built by `.github/workflows/release.yml` when a `vX.Y.Z` tag is
-pushed. Each image is boot-tested before it is published.
+Each release publishes the following files, built by `.github/workflows/release.yml` when release-please's release
+pull request is merged (see *Commits and releases* in [AGENTS.md](../AGENTS.md)). Versions follow semver, chosen by
+release-please from the Conventional Commits since the last release. Each image is boot-tested before it is
+published, and the release stays a draft until every file is uploaded.
 
 | Asset | Contents | Built by |
 | ----- | -------- | -------- |
@@ -161,10 +163,11 @@ The chain of trust:
    them verifies its `SHA256SUMS.sig`, then checks every asset it downloads against `SHA256SUMS`. `parcon update`
    does the same from the running `parcon`, so an update needs neither a new `install.sh` nor trust in anything but
    the key.
-3. The release workflow signs only for tags, with a key the `release` environment holds, and checks the signature
-   against those public keys before it publishes (see *Release signing* in [AGENTS.md](../AGENTS.md)).
+3. The release workflow signs with a key only its `publish` job can read (the `release` environment admits only
+   `main`), and checks the signature against those public keys before it publishes (see *Release signing* in
+   [AGENTS.md](../AGENTS.md)).
 
-A tag with a suffix, such as `v0.2.0-rc.1`, publishes a pre-release: its `install.sh` installs it and
+A version with a suffix, such as `0.2.0-rc.1`, is published as a pre-release: its `install.sh` installs it and
 `parcon update --pre` updates to it, but the `releases/latest` links in *Usage* and a plain `parcon update` keep to
 the latest full release.
 

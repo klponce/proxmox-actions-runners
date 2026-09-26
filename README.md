@@ -347,7 +347,10 @@ docs/                  design notes
 ## Contributing
 
 See [AGENTS.md](AGENTS.md) for architecture invariants, conventions, and development commands. It applies to
-human contributors too.
+human contributors too. Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/):
+[release-please](https://github.com/googleapis/release-please) turns them into each release's version and
+changelog, and merging its release pull request is the only way to publish a release (AGENTS.md, *Commits and
+releases*).
 
 ## License
 

@@ -309,7 +309,7 @@ Alternatives that were rejected:
 
 `parcon update` replaces itself, then the controller's `parcon` and the VM images, from a release on GitHub. Its
 trust anchor is a release signing key: the release workflow signs `SHA256SUMS` with an Ed25519 key held in a GitHub
-environment that only tags can use, and `parcon` carries the public keys and refuses a release none of them verifies.
+environment that only the release job on `main` can use, and `parcon` carries the public keys and refuses a release none of them verifies.
 It is checked with Go's standard library, so it adds no dependency.
 
 | Option | Why not |

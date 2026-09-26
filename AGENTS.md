@@ -130,8 +130,12 @@ images/gateway/        Packer (qemu builder): the gateway VM image (nftables, dn
 images/runner/         Packer (qemu builder): the runner template image, shipped as a release asset
 deploy/                example config, systemd unit for the controller VM
 .devcontainer/         development container with every tool below, at pinned versions
-.github/workflows/     CI, releases, the daily actions/runner check, and the helper page on GitHub Pages
-.github/scripts/       what the workflows run: check.sh, build-image.sh, bump-runner.sh, and their bats tests
+.github/workflows/     the check-and-release pipeline, the pull requests' commit check, the daily actions/runner
+                       check, and the helper page on GitHub Pages
+.github/scripts/       what the workflows run: check.sh, check-commits.sh, build-image.sh, bump-runner.sh, and
+                       their bats tests
+release-please-config.json, .release-please-manifest.json
+                       release-please's configuration and the current version; CHANGELOG.md is written by it
 site/                  GitHub Pages helper page for the GitHub App manifest flow (static, no third-party scripts)
 docs/                  design notes
 ```
@@ -174,9 +178,11 @@ test/integration/run.sh                   # needs SSH to a throwaway Proxmox nod
 
 `check.sh` runs `go build`, `go test -race`, `go vet` (also with `-tags integration`), `gofmt -l`, `golangci-lint`,
 `shellcheck` on every script, `bats install/tests .github/scripts/tests`, `packer fmt -check` and `packer validate`
-for each image, and `actionlint` on the workflows. It must pass before you consider a change done, and CI runs the
-same script in the same image. When you change an image, also build it. Each build runs its scripts twice (they must be idempotent) and checks the result; the runner build also
-runs the one-job flow with a stand-in runner. The boot test then boots the finished image the way Proxmox first
+for each image, and `actionlint` on the workflows. It must pass before you consider a change done: pull requests
+aren't checked (only their commit messages are), and the release workflow's check job, which runs the same script in
+the same image, stops a broken `main` from being released. When you change an image, also build it. Each build runs
+its scripts twice (they must be idempotent) and checks the result; the runner build also runs the one-job flow with
+a stand-in runner. The boot test then boots the finished image the way Proxmox first
 boots a VM made from it: net0 at Proxmox's PCI slot with a cloud-init network config that names it `eth0` by MAC,
 and, for the gateway, net1 at its slot. It checks the console for failed units, ordering cycles, a network that
 timed out, cloud-init finishing within 90 seconds, and each image's own lines. A
@@ -314,23 +320,67 @@ See [docs/install.md](docs/install.md) for the full design.
   ([deploy/parcon.service](deploy/parcon.service), installed but not enabled by the image), and the modes of
   `/etc/proxmox-actions-runners` and its files. Change it there, not here.
 
-## Releases and CI (`.github/`)
+## Commits and releases (`.github/`)
 
-- **CI** (`ci.yml`) runs `.github/scripts/check.sh` in the dev container's image on every pull request and every
-  push to `main`. Tool versions live only in `.devcontainer/Dockerfile`.
-- **Releases** (`release.yml`): pushing a tag `vX.Y.Z` builds the three images in parallel on KVM, each boot-tested,
-  then publishes a GitHub release with them, `par-runner-<ver>.json`, `parcon-<ver>-linux-amd64`, `install.sh`,
-  `SHA256SUMS`, and `SHA256SUMS.sig`. `install/fill-release.sh` writes the version and `parcon`'s checksum into
-  `install.sh`, which refuses a `parcon` that doesn't match; `parcon` refuses a release whose `SHA256SUMS.sig` no key
-  in `internal/release/keys` verifies, and any asset that doesn't match `SHA256SUMS`. A tag with a suffix, such as `v0.2.0-rc.1`, makes a pre-release, which
-  `releases/latest` links skip: use one to test a release on a node before publishing it for everyone. Running the
-  workflow by hand builds and checks everything and keeps the files as workflow artifacts without publishing.
-- To cut a release, from an up-to-date `main` whose CI passed: `git tag v0.1.0 && git push origin v0.1.0`.
-- **Release signing**: the `publish` job runs only for tags, in the `release` environment, whose
-  `RELEASE_SIGNING_KEY` secret holds an Ed25519 private key in PEM. It signs `SHA256SUMS` with
-  `openssl pkeyutl -sign -rawin`, then checks the signature against every public key in `internal/release/keys`
-  before it publishes, so a release `parcon` would refuse is never published. Limit the environment to `v*` tags
-  (Settings → Environments → release → deployment branches and tags).
+Releases are cut by [release-please](https://github.com/googleapis/release-please) from the commit history, so the
+commit messages are the release process. Follow these rules exactly.
+
+### Commit messages
+
+- Every commit subject is a [Conventional Commit](https://www.conventionalcommits.org/): `type(scope): description`,
+  lowercase type, an optional scope such as a package or directory (`installer`, `pvecli`, `images`), and a
+  description in the imperative with no period at the end. The `commits` workflow checks every pull request's
+  commits with `.github/scripts/check-commits.sh`; run it yourself before pushing:
+  `.github/scripts/check-commits.sh origin/main HEAD`.
+- The type decides the release:
+
+  | Type | Use for | Release |
+  | ---- | ------- | ------- |
+  | `feat` | a new feature users see: a command, flag, config key, or behavior | minor |
+  | `fix` | a bug fix, including in an image; an `actions/runner` update is a `fix(images)` | patch |
+  | `perf` | a faster or smaller implementation | patch |
+  | `revert` | reverting an earlier commit | patch |
+  | `docs`, `refactor`, `test`, `build`, `ci`, `chore` | everything else | none: it ships with the next release |
+
+- A breaking change (a removed or renamed command, flag, config key, or settings field, or anything an existing
+  install can't take by `parcon update`) gets a `!` after the type or scope and a `BREAKING CHANGE:` footer saying
+  what to do. Before 1.0 it makes a minor release (`bump-minor-pre-major`).
+- One logical change per commit. Don't mix a fix with a refactor: each type shows up in the changelog on its own.
+- Merge pull requests with a merge commit, never squash, so each commit's type reaches release-please as written.
+
+### Releasing
+
+- **One pipeline** (`release.yml`) runs on every push to `main`: check → release-please → images → assemble →
+  publish.
+  - **check** runs `.github/scripts/check.sh` in the dev container's image, so it uses the same pinned tools as
+    local development. Tool versions live only in `.devcontainer/Dockerfile`. A failed check stops the run: nothing
+    broken is released.
+  - **release-please** reads the commits since the last release and keeps one pull request open, *chore: release
+    X.Y.Z*, with the next version (`.release-please-manifest.json`) and `CHANGELOG.md`. Its configuration is
+    `release-please-config.json`.
+  - When that pull request is merged, release-please creates release `vX.Y.Z` as a **draft**, with its tag. The
+    **images** job builds the three images on KVM, each boot-tested; **assemble** builds `parcon-<ver>-linux-amd64`
+    and fills `install.sh`; **publish** signs `SHA256SUMS`, uploads `par-runner-<ver>.qcow2`, `par-runner-<ver>.json`,
+    `par-gateway-<ver>.qcow2`, `parcon-<ver>.qcow2`, `parcon-<ver>-linux-amd64`, `install.sh`, `SHA256SUMS`, and
+    `SHA256SUMS.sig`, and only then publishes the draft. `releases/latest` never points at a release without its
+    files.
+- **The procedure to release**: merge the pull requests that belong in it, wait for the release pull request to
+  update, review its version and changelog, and merge it. That is the only way to release. Never push a tag,
+  create a GitHub release, or edit the manifest or `CHANGELOG.md` by hand; if a release run fails partway, fix the
+  cause and re-run the failed jobs, which the draft waits for.
+- **Pre-releases**, to test a release on a node first: add a `Release-As: 0.2.0-rc.1` footer to a commit (an empty
+  `chore` commit is fine). The release pull request then proposes that version, and publish marks any version with
+  a suffix as a pre-release, which `releases/latest` skips and `parcon update --pre` takes.
+- `install/fill-release.sh` writes the version and `parcon`'s checksum into `install.sh`, which refuses a `parcon`
+  that doesn't match; `parcon` refuses a release whose `SHA256SUMS.sig` no key in `internal/release/keys` verifies,
+  and any asset that doesn't match `SHA256SUMS`.
+- **Running the workflow by hand** checks and builds everything as `0.0.0-dev.<run>` and keeps the files as workflow
+  artifacts, unsigned, without releasing.
+- **Release signing**: the `publish` job runs in the `release` environment, whose `RELEASE_SIGNING_KEY` secret holds
+  an Ed25519 private key in PEM. It signs `SHA256SUMS` with `openssl pkeyutl -sign -rawin`, then checks the
+  signature against every public key in `internal/release/keys` before it publishes, so a release `parcon` would
+  refuse is never published. Limit the environment to the `main` branch (Settings → Environments → release →
+  deployment branches and tags), since releases run on pushes to `main`.
   - Create a key with `openssl genpkey -algorithm ed25519 -out release-signing.pem`, put the whole file in the
     secret, and commit its public key: `openssl pkey -in release-signing.pem -pubout -out
     internal/release/keys/<year>-<n>.pem`. Keep an offline copy of the private key, and never commit it or put it
@@ -340,9 +390,11 @@ See [docs/install.md](docs/install.md) for the full design.
   - There is no revocation: a leaked key can sign releases that installed `parcon`s accept until they update past
     one that drops it. After a leak, rotate at once and tell users to reinstall with a new release's `install.sh`,
     which trusts only its written-in checksum.
-- **actions/runner** (`runner-release.yml`): a daily job opens a pull request that bumps the runner image's pin when
-  a new release is out (`.github/scripts/bump-runner.sh`). Merge it and cut a release within GitHub's 30-day window.
-  Pull requests opened with the workflow's token don't trigger other workflows, so close and reopen one to run CI.
+- **actions/runner** (`runner-release.yml`): a daily job opens a pull request, `fix(images): update actions/runner
+  to X`, that bumps the runner image's pin when a new release is out (`.github/scripts/bump-runner.sh`). Merge it,
+  then the release pull request, within GitHub's 30-day window.
+- Pull requests that workflows open with their token (release-please's, the runner bump) start no other workflows,
+  so their commits aren't checked; both write Conventional Commits themselves.
 - Pin every action to a full commit SHA with its version in a comment, and give each workflow and job only the
   `permissions` it needs.
 - Repository settings the workflows need: Actions may create pull requests (Settings → Actions → General), and
@@ -351,5 +403,6 @@ See [docs/install.md](docs/install.md) for the full design.
 ## Change hygiene
 
 - Update `README.md` and this file when you change the architecture, config schema, defaults, or commands.
-- Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:`, `chore:`, and so on).
+- Write every commit as a Conventional Commit, as *Commits and releases* says: release-please turns them into the
+  version and the changelog.
 - Keep changes focused. Don't mix refactors with behavior changes.
