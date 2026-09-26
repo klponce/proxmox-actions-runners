@@ -241,7 +241,7 @@ The controller image, `parcon` on the host, and the controller agree on this lay
 | ------- | ---- | ---------- |
 | `network` | the bridge, VLAN, API address, the VMs' LAN addresses and router, the worker subnet | install flags |
 | `proxmox` | the storage and the VMID range | install flags |
-| `github` | the organization or repository, and the App's Client ID and installation ID | the install, as it learns them |
+| `github` | the organization or repository, and the App's Client ID, installation ID, and slug (for its install link) | the install, as it learns them |
 | `scaleSet` | the name, labels, runner group, and the most and fewest workers | install flags, `runners.max` |
 | `worker` | worker hardware; a field left out uses the GitHub-matching default | `worker.cores`, `worker.memory` |
 
@@ -423,9 +423,10 @@ a static helper page, and the user copies one line back:
    that the line unlocks the App's private key for up to an hour.
 4. The user pastes the line into `parcon`, which splits it at the first `.`, checks that the state is
    the one it printed, and pipes **only the code** into `parcon github app create` in the controller VM.
-5. `parcon` prints the App's install link (`https://github.com/apps/<slug>/installations/new`), GitHub's own
-   install page, where the user installs the App on the organization, or on the repository for a personal account.
-   A private App can only be installed on the account that owns it, so the App and its installation can't disagree.
+5. `parcon` prints the App's install link (`https://github.com/apps/<slug>/installations/new`) as the last line
+   while it waits, so it is what the user sees. It leads to GitHub's own install page, where the user installs the
+   App on the organization, or on the repository for a personal account. A private App can only be installed on the
+   account that owns it, so the App and its installation can't disagree.
    `parcon github app wait-installation` polls until the installation appears. No second copy-back is needed.
 6. `parcon` takes the runners' target from the installation: the organization, or the one repository the App can
    reach on a personal account. If it can reach several, `--github-url` picks one, or `parcon` asks. With

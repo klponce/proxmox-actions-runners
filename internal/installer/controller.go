@@ -160,10 +160,9 @@ func (in *Installer) setupApp(ctx context.Context, vmid int, s *settings.Setting
 			if err := in.importAppKey(ctx, vmid); err != nil {
 				return err
 			}
-			in.Out.Say("    Install the App on your organization or repository if it isn't already.")
 		} else {
 			var err error
-			if clientID, err = in.createApp(ctx, vmid); err != nil {
+			if clientID, s.GitHub.App.Slug, err = in.createApp(ctx, vmid); err != nil {
 				return err
 			}
 		}
@@ -173,7 +172,7 @@ func (in *Installer) setupApp(ctx context.Context, vmid int, s *settings.Setting
 		}
 	}
 	if s.GitHub.App.InstallationID == 0 {
-		in.Out.Say("    waiting for App %s to be installed (up to 15 minutes)", s.GitHub.App.ClientID)
+		in.askToInstall(s.GitHub.App)
 		out, err := in.asParcon(ctx, vmid, 16*time.Minute, nil, "parcon", "github", "app", "wait-installation",
 			"-client-id", s.GitHub.App.ClientID)
 		if err != nil {
@@ -264,9 +263,28 @@ func newState() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-// createApp runs the manifest flow and returns the new App's Client ID. The code the user pastes goes only into the
-// controller VM, on stdin.
-func (in *Installer) createApp(ctx context.Context, vmid int) (string, error) {
+// askToInstall tells the user to install the App while parcon waits for it. The install link is the very last line,
+// so it is what the user sees while the terminal waits.
+func (in *Installer) askToInstall(app settings.App) {
+	in.Out.Say(`
+    Now install the App. On an organization, install it for all repositories; on your personal account, choose
+    the repository the runners serve. parcon waits up to 15 minutes, and carries on by itself once it is installed.`)
+	if app.Slug == "" {
+		// An existing App: parcon doesn't know its name, so it can't make the link.
+		in.Out.Say(`
+    Install App %s from its settings on GitHub (Settings > Developer settings > GitHub Apps > the App > Install
+    App), unless it is installed already.`, app.ClientID)
+		return
+	}
+	in.Out.Say(`
+    Open this link to install it:
+
+      https://github.com/apps/%s/installations/new`, app.Slug)
+}
+
+// createApp runs the manifest flow and returns the new App's Client ID and slug. The code the user pastes goes only
+// into the controller VM, on stdin.
+func (in *Installer) createApp(ctx context.Context, vmid int) (clientID, slug string, err error) {
 	state := newState()
 	in.Out.Say(`
     Create your GitHub App in a browser on any device:
@@ -278,19 +296,19 @@ func (in *Installer) createApp(ctx context.Context, vmid int) (string, error) {
 `, HelperURL, state)
 	line, err := in.Term.Line("    Line from the page: ")
 	if errors.Is(err, term.ErrNoTerminal) {
-		return "", errors.New("creating the GitHub App needs a terminal; run parcon install in one, or use an " +
+		return "", "", errors.New("creating the GitHub App needs a terminal; run parcon install in one, or use an " +
 			"existing App with --app manual --client-id")
 	}
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	got, code, ok := strings.Cut(strings.TrimSpace(line), ".")
 	if !ok || got != state || code == "" {
-		return "", errors.New("that line isn't from this install's link; run parcon install again")
+		return "", "", errors.New("that line isn't from this install's link; run parcon install again")
 	}
 	out, err := in.asParcon(ctx, vmid, time.Minute, []byte(code+"\n"), "parcon", "github", "app", "create")
 	if err != nil {
-		return "", fmt.Errorf("creating the GitHub App failed: %w", err)
+		return "", "", fmt.Errorf("creating the GitHub App failed: %w", err)
 	}
 	var app struct {
 		ClientID string `json:"clientId"`
@@ -298,17 +316,10 @@ func (in *Installer) createApp(ctx context.Context, vmid int) (string, error) {
 		Owner    string `json:"owner"`
 	}
 	if err := json.Unmarshal(out, &app); err != nil || app.ClientID == "" {
-		return "", fmt.Errorf("parcon github app create printed %q", out)
+		return "", "", fmt.Errorf("parcon github app create printed %q", out)
 	}
-	in.Out.Say(`
-    Created GitHub App %s, owned by %s. Install it:
-
-      https://github.com/apps/%s/installations/new
-
-    On an organization, install it for all repositories. On your personal account, choose the repository the
-    runners serve.
-`, app.Slug, app.Owner, app.Slug)
-	return app.ClientID, nil
+	in.Out.Say("\n    Created GitHub App %s, owned by %s.", app.Slug, app.Owner)
+	return app.ClientID, app.Slug, nil
 }
 
 // importAppKey reads an existing App's private key from the terminal and pipes it into the controller VM.
