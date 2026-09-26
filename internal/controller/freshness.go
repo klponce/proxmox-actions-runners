@@ -63,7 +63,7 @@ func (c *Controller) compareRunner(ctx context.Context, template proxmox.VM, now
 		return now.Add(runnerCheckInterval)
 	}
 	c.logger.Log(ctx, level, "the runner template's actions/runner is older than the latest release; install a "+
-		"newer runner image (install.sh upgrade) before GitHub stops accepting it",
+		"newer runner image (parcon update on the Proxmox host) before GitHub stops accepting it",
 		slog.Int("templateVmid", template.VMID), slog.String("templateRunner", have),
 		slog.String("latestRunner", latest.Version), slog.Time("released", latest.PublishedAt),
 		slog.Time("deadline", latest.PublishedAt.Add(github.RunnerUpdateDeadline)))

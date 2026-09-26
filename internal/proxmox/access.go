@@ -143,7 +143,7 @@ type Requirement struct {
 	Privileges []string
 }
 
-// Required privileges. README.md ("Requirements") and install/install.sh must grant exactly these.
+// Required privileges. parcon install grants exactly these, and README.md ("Requirements") lists them.
 var (
 	poolPrivileges = []string{
 		"VM.Allocate", "VM.Clone",

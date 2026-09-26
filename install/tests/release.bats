@@ -1,42 +1,30 @@
 #!/usr/bin/env bats
-# fill-release.sh, which writes a release's version and checksums into install.sh.
+# fill-release.sh, which writes a release's version and its parcon's checksum into install.sh.
 
 load helpers
 
-FILL="$BATS_TEST_DIRNAME/../fill-release.sh"
-
-sums() {
-	cat >"$BATS_TEST_TMPDIR/sums" <<EOF
-$(printf a | sha256sum | cut -d' ' -f1)  par-runner-0.1.0.qcow2
-$(printf b | sha256sum | cut -d' ' -f1)  parcon-0.1.0-linux-amd64
-EOF
-}
-
-@test "the filled installer carries the version and every checksum" {
-	sums
+@test "the filled bootstrap carries the version and parcon's checksum" {
+	printf '%s  par-runner-0.1.0.qcow2\n%s  parcon-0.1.0-linux-amd64\n' "$(printf a | sha256sum | cut -d' ' -f1)" \
+		"$(printf b | sha256sum | cut -d' ' -f1)" >"$BATS_TEST_TMPDIR/sums"
 	"$FILL" 0.1.0 "$BATS_TEST_TMPDIR/sums" >"$BATS_TEST_TMPDIR/install.sh"
 	bash -n "$BATS_TEST_TMPDIR/install.sh"
-	# A fresh shell: this one already sourced the unfilled script, whose constants are read-only.
-	run bash -c 'PAR_INSTALL_SOURCED=1 && source "$1" && require_release && echo "$PAR_VERSION" &&
-		asset_sha256 parcon-0.1.0-linux-amd64 && asset_sha256 par-runner-0.1.0.qcow2 &&
-		asset_url parcon-0.1.0-linux-amd64' _ "$BATS_TEST_TMPDIR/install.sh"
+	run bash -c 'PAR_INSTALL_SOURCED=1 && source "$1" && echo "$PAR_VERSION" && echo "$PAR_PARCON_SHA256" &&
+		parcon_url' _ "$BATS_TEST_TMPDIR/install.sh"
 	[ "$status" -eq 0 ]
 	[ "${lines[0]}" = 0.1.0 ]
 	[ "${lines[1]}" = "$(printf b | sha256sum | cut -d' ' -f1)" ]
-	[ "${lines[2]}" = "$(printf a | sha256sum | cut -d' ' -f1)" ]
-	[ "${lines[3]}" = \
+	[ "${lines[2]}" = \
 		https://github.com/klponce/proxmox-actions-runners/releases/download/v0.1.0/parcon-0.1.0-linux-amd64 ]
 }
 
 @test "a pre-release version is accepted" {
-	sums
-	run "$FILL" 0.2.0-rc.1 "$BATS_TEST_TMPDIR/sums"
-	[ "$status" -eq 0 ]
-	[[ $output == *'PAR_VERSION="0.2.0-rc.1"'* ]]
+	echo parcon >"$BATS_TEST_TMPDIR/parcon"
+	filled 0.2.0-rc.1 "$BATS_TEST_TMPDIR/parcon"
+	grep -qx 'PAR_VERSION="0.2.0-rc.1"' "$BATS_TEST_TMPDIR/install.sh"
 }
 
 @test "bad versions and checksum files are refused" {
-	sums
+	printf '%s  parcon-0.1.0-linux-amd64\n' "$(printf a | sha256sum | cut -d' ' -f1)" >"$BATS_TEST_TMPDIR/sums"
 	run "$FILL" v0.1.0 "$BATS_TEST_TMPDIR/sums"
 	[ "$status" -eq 1 ]
 	[[ $output == *"isn't X.Y.Z"* ]]
@@ -47,6 +35,11 @@ EOF
 	run "$FILL" 0.1.0 "$BATS_TEST_TMPDIR/bad"
 	[ "$status" -eq 1 ]
 	[[ $output == *"not a sha256sum line"* ]]
+
+	# The sums must have this release's parcon.
+	run "$FILL" 0.2.0 "$BATS_TEST_TMPDIR/sums"
+	[ "$status" -eq 1 ]
+	[[ $output == *"has no parcon-0.2.0-linux-amd64"* ]]
 
 	: >"$BATS_TEST_TMPDIR/empty"
 	run "$FILL" 0.1.0 "$BATS_TEST_TMPDIR/empty"
