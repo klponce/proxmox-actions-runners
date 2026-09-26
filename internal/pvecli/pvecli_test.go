@@ -156,3 +156,18 @@ func TestGuestExec(t *testing.T) {
 		t.Error("oversized stdin: no error")
 	}
 }
+
+// qm may exit non-zero when the command does; its printed status still counts.
+func TestGuestExecWhenQMFails(t *testing.T) {
+	fake := (&FakeExec{}).On("qm guest exec", func(c Cmd) ([]byte, error) {
+		return []byte(`{"exited":1,"exitcode":1,"out-data":"degraded\n"}`), &ExitError{Cmd: c.String(), Err: errors.New("exit status 1")}
+	})
+	r, err := PVE{Exec: fake}.GuestExec(context.Background(), 101, 10*time.Second, []string{"systemctl"}, nil)
+	if err != nil || r.ExitCode != 1 || string(r.Stdout) != "degraded\n" {
+		t.Errorf("GuestExec = %+v, %v", r, err)
+	}
+	fake = (&FakeExec{}).Fail("qm guest exec")
+	if _, err := (PVE{Exec: fake}).GuestExec(context.Background(), 101, time.Second, []string{"x"}, nil); err == nil {
+		t.Error("a failed qm with no status: no error")
+	}
+}

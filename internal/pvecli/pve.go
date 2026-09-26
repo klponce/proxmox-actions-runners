@@ -223,6 +223,10 @@ func (p PVE) GuestExec(ctx context.Context, vmid int, timeout time.Duration, arg
 	cmd.Stdin = stdin
 	out, err := p.Exec.Run(ctx, cmd)
 	if err != nil {
+		// qm may exit non-zero with the command, and still print its status; a status is the answer.
+		if res, exited, perr := proxmox.ParseAgentExecStatus(out); perr == nil && exited {
+			return res, nil
+		}
 		return proxmox.ExecResult{}, fmt.Errorf("guest exec in VM %d: %w", vmid, err)
 	}
 	res, exited, err := proxmox.ParseAgentExecStatus(out)
