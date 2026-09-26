@@ -424,3 +424,59 @@ func TestControllerStopTimeoutOutlastsTheService(t *testing.T) {
 		t.Errorf("ControllerStopTimeout %s isn't longer than TimeoutStopSec %s", ControllerStopTimeout, d)
 	}
 }
+
+// lastLine is the last line of output that isn't blank.
+func lastLine(out string) string {
+	lines := strings.Split(strings.TrimRight(out, " \n"), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
+}
+
+// While install waits for the App to be installed, the last thing on the screen is the link to install it.
+func TestInstallEndsWithTheAppsInstallLink(t *testing.T) {
+	ti := newTestInstaller(t)
+	ti.answerManifest()
+	var shown []string
+	waits := 0
+	ti.node.guest = func(_ *fakeVM, argv []string, _ []byte) (int, string, string, bool) {
+		if slices.Contains(argv, "wait-installation") {
+			shown = append(shown, lastLine(ti.stdout.String()))
+			if waits++; waits == 1 {
+				return 1, "", "timed out", true // the first run stops here, as if the user didn't install it
+			}
+		}
+		return 0, "", "", false
+	}
+	if err := ti.Install(context.Background(), defaultOptions()); err == nil {
+		t.Fatal("the first run didn't stop")
+	}
+	// The re-run knows the App's slug from the settings, so it shows the link again.
+	if err := ti.Install(context.Background(), defaultOptions()); err != nil {
+		t.Fatalf("second Install: %v", err)
+	}
+	link := "https://github.com/apps/my-runners/installations/new"
+	if !slices.Equal(shown, []string{link, link}) {
+		t.Errorf("last line while waiting = %q, want the link", shown)
+	}
+	if s, _ := settings.Load(ti.SettingsPath); s.GitHub.App.Slug != "my-runners" {
+		t.Errorf("slug = %q", s.GitHub.App.Slug)
+	}
+}
+
+// An existing App's link isn't known, so install says where to install it instead, last.
+func TestInstallWithAnExistingAppSaysWhereToInstallIt(t *testing.T) {
+	ti := newTestInstaller(t)
+	ti.Term = &linkAnswerer{ti: ti}
+	var shown string
+	ti.node.guest = func(_ *fakeVM, argv []string, _ []byte) (int, string, string, bool) {
+		if slices.Contains(argv, "wait-installation") && shown == "" {
+			shown = lastLine(ti.stdout.String())
+		}
+		return 0, "", "", false
+	}
+	opts := defaultOptions()
+	opts.App, opts.ClientID = AppManual, "Iv23liEXISTING"
+	must(t, ti.Install(context.Background(), opts))
+	if !strings.HasPrefix(shown, "App), unless it is installed already.") {
+		t.Errorf("last line while waiting = %q", shown)
+	}
+}

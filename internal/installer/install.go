@@ -232,7 +232,7 @@ func (in *Installer) printPlan(ctx context.Context, s *settings.Settings, warnin
 	return nil
 }
 
-func warnAll(w io.Writer, checks []Check, more []string) {
+func warnAll(w io.Writer, checks []Check, more []settings.Warning) {
 	if len(checks) == 0 && len(more) == 0 {
 		return
 	}

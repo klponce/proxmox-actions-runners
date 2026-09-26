@@ -183,15 +183,28 @@ var workerMemory = Key{
 	Applies: appliesToNewWorkers,
 }
 
-// Warnings are settings that are allowed but likely to cause trouble on this node, such as more worker memory than
-// the node has.
-func Warnings(s *Settings, l Limits) []string {
-	var w []string
+// Warning is a combination of settings that is allowed but likely to cause trouble on this node.
+type Warning struct {
+	// Keys are the config keys the warning is about: changing any of them can cause or clear it.
+	Keys []string
+	Text string
+}
+
+// About reports whether the warning is about key.
+func (w Warning) About(key string) bool { return slices.Contains(w.Keys, key) }
+
+func (w Warning) String() string { return w.Text }
+
+// Warnings are the settings that are allowed but likely to cause trouble on this node, such as more worker memory
+// than the node has.
+func Warnings(s *Settings, l Limits) []Warning {
+	var w []Warning
 	if l.HostMemMiB > 0 {
 		if total := s.ScaleSet.MaxRunners * s.EffectiveWorker().MemoryMiB; total > l.HostMemMiB {
-			w = append(w, fmt.Sprintf("runners.max %d × worker.memory %s is %s, more than this node's %s: workers "+
-				"will fail to start once memory runs out", s.ScaleSet.MaxRunners,
-				config.FormatMiB(s.EffectiveWorker().MemoryMiB), config.FormatMiB(total), config.FormatMiB(l.HostMemMiB)))
+			w = append(w, Warning{Keys: []string{"runners.max", "worker.memory"}, Text: fmt.Sprintf(
+				"runners.max %d × worker.memory %s is %s, more than this node's %s: workers will fail to start "+
+					"once memory runs out", s.ScaleSet.MaxRunners, config.FormatMiB(s.EffectiveWorker().MemoryMiB),
+				config.FormatMiB(total), config.FormatMiB(l.HostMemMiB))})
 		}
 	}
 	return w

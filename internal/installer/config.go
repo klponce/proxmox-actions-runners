@@ -38,8 +38,11 @@ func (in *Installer) SetConfig(ctx context.Context, key, value string) error {
 		in.Out.Say("%s is already %s", key, after)
 		return ErrUnchanged
 	}
+	// Only what this key has a part in: another key's standing warning isn't news here. parcon status shows them all.
 	for _, w := range settings.Warnings(s, in.Limits()) {
-		in.Out.Warn("%s", w)
+		if w.About(key) {
+			in.Out.Warn("%s", w)
+		}
 	}
 	unlock, err := in.Lock()
 	if err != nil {

@@ -77,6 +77,8 @@ type GitHub struct {
 type App struct {
 	ClientID       string `yaml:"clientId,omitempty"`
 	InstallationID int64  `yaml:"installationId,omitempty"`
+	// Slug is the App's name in its URLs, when parcon created it: it makes the App's install link.
+	Slug string `yaml:"slug,omitempty"`
 }
 
 // ScaleSet is the one scale set the installer creates.
@@ -191,6 +193,7 @@ var (
 	labelPattern       = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 	runnerGroupPattern = regexp.MustCompile(`^[A-Za-z0-9._ -]+$`)
 	githubURLPattern   = regexp.MustCompile(`^https://github\.com/[A-Za-z0-9-]+(/[A-Za-z0-9._-]+)?$`)
+	slugPattern        = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 )
 
 // Validate checks every setting and reports every problem.
@@ -251,6 +254,9 @@ func (s *Settings) Validate() error {
 	}
 	if g.App.ClientID != "" && !labelPattern.MatchString(g.App.ClientID) {
 		add("github.app.clientId", "%q is not a Client ID", g.App.ClientID)
+	}
+	if g.App.Slug != "" && !slugPattern.MatchString(g.App.Slug) {
+		add("github.app.slug", "%q is not an App's slug", g.App.Slug)
 	}
 	if g.App.InstallationID < 0 {
 		add("github.app.installationId", "must not be negative")
