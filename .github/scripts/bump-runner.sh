@@ -50,13 +50,14 @@ main() {
 	pin runner_version "$version"
 	pin runner_sha256 "$sum"
 	git switch -c "$branch"
-	git commit -q -am "chore(images): bump actions/runner to $version"
+	git commit -q -am "fix(images): update actions/runner to $version"
 	git push -q origin "$branch"
-	gh pr create --base main --head "$branch" --title "chore(images): bump actions/runner to $version" --body "\
+	gh pr create --base main --head "$branch" --title "fix(images): update actions/runner to $version" --body "\
 actions/runner $version is out; the runner image pins $current. GitHub stops accepting a runner that doesn't update \
 itself 30 days after a newer release, so this needs to ship in a project release before then.
 
-Merging it publishes a release with the new runner. Opened by .github/workflows/runner-release.yml."
+Merging it puts the new runner in release-please's next release pull request, as a fix; merging that publishes \
+the release. Opened by .github/workflows/runner-release.yml."
 }
 
 [[ -n ${BUMP_RUNNER_SOURCED:-} ]] || main "$@"
