@@ -1,0 +1,25 @@
+# Checks that a pull request's commits have Conventional Commits subjects, which release-please reads to choose the next
+# version and write the changelog (AGENTS.md, "Commits and releases"). The code itself is checked when it reaches main
+# (release.yml), so this is the only workflow pull requests start.
+name: commits
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  conventional:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check the commit subjects
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/check-commits.sh "$BASE" "$HEAD"
