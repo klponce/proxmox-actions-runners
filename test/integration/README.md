@@ -45,7 +45,7 @@ devcontainer exec --workspace-folder . \
 | `test` | Runs the Go integration tests, the `parcon` checks, and the permission checks below |
 | `teardown` | Removes everything `setup` created and restores the storage setting it changed |
 | `all` | `setup`, then `test` (the default) |
-| `installer` | Runs `install/install.sh` on the node without GitHub, then uninstalls it. See [The installer](#the-installer) |
+| `installer` | Runs `parcon install` on the node without GitHub, then uninstalls it. See [The installer](#the-installer) |
 
 `run.sh -h` lists the settings, such as `PAR_IT_STORAGE`, `PAR_IT_TEMPLATE_VMID`, and `PAR_IT_TEST_VMID`.
 
@@ -67,8 +67,8 @@ devcontainer exec --workspace-folder . ... \
 
 ### The installer
 
-`run.sh installer` tests `install/install.sh` on the node with locally built images and no GitHub App. It needs all
-three images, built with the same version, and a node with no install on it:
+`run.sh installer` tests `parcon`'s host commands on the node with locally built images and no GitHub App. It
+needs all three images, built with the same version, and a node with no install on it:
 
 ```bash
 packer init images/gateway && packer build -var version=it images/gateway
@@ -84,21 +84,24 @@ devcontainer exec --workspace-folder . ... \
   test/integration/run.sh installer
 ```
 
-It copies `install.sh`, an answers file, and the images to `/var/tmp/par-it-installer` on the node, then:
+It builds `parcon` and copies it and the images, as release assets with a `SHA256SUMS`, to
+`/var/tmp/par-it-installer` on the node, then:
 
-1. runs `install.sh check` and `install.sh install --dry-run`, and checks the dry run changed nothing;
-2. runs `install.sh`'s own install steps through `node/installer.sh`, which sources `install.sh` as its bats tests do
-   and points its release version and checksums at the local images: the Proxmox access objects, the worker
-   network, the runner template, the gateway and controller VMs, and the controller's configuration, which ends with
-   `parcon check proxmox` inside the controller VM;
-3. checks the worker network the way the installer's smoke test does: a worker cloned from the template gets a
-   DHCP lease from the gateway, reaches the internet, and can't reach the Proxmox API or the controller VM;
-4. stops the controller VM and runs `install.sh uninstall --yes`, then checks nothing of the install is left.
+1. runs `parcon install --dry-run` with the local assets (`--assets`, which trusts their `SHA256SUMS` instead of a
+   signed release), and checks that it changed nothing on the node or its files;
+2. runs `parcon install --stop-after configure`: parcon and its settings on the host, the Proxmox access objects, the
+   worker network, the runner template, the gateway and controller VMs, and the controller's configuration, which
+   ends with `parcon check proxmox` inside the controller VM;
+3. runs `parcon check proxmox` on the host, which forwards it into the controller VM, and `parcon check network`: a
+   worker cloned from the template gets a DHCP lease from the gateway, reaches the internet, and can't reach the
+   Proxmox API or the controller VM;
+4. stops the controller VM and runs `parcon uninstall --yes`, then checks that nothing of the install is left,
+   `/usr/local/bin/parcon` and its settings included.
 
-It stops before the GitHub App (`setup_app`) and doesn't start the controller service, whose scale set session
-needs the App. It uses the install's real names (`par-runners`, `par-system`, `parzone`, `parnet`), so it refuses a
-node that already has an install, and it uninstalls even when a step fails. The node needs the free space the
-installer's preflight asks for: 50 GiB on the VM storage.
+It stops before the GitHub App and doesn't start the controller service, whose scale set session needs the App. It
+uses the install's real names (`par-runners`, `par-system`, `parzone`, `parnet`), so it refuses a node that already
+has an install, and it uninstalls even when a step fails. The node needs the free space the install's checks ask
+for: 50 GiB on the VM storage.
 
 ## What setup creates
 

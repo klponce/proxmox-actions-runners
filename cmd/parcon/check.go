@@ -33,7 +33,7 @@ var checks = map[string]func(ctx context.Context, cfg *config.Config, path strin
 // runCheck handles "parcon check <target> [-config path]".
 func runCheck(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 || checks[args[0]] == nil {
-		fmt.Fprint(stderr, usage)
+		fmt.Fprint(stderr, vmUsage)
 		return errUsage
 	}
 	target := args[0]

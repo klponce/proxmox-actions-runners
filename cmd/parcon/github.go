@@ -51,7 +51,7 @@ func runGitHub(args []string, stdout, stderr io.Writer) error {
 		cmd = scaleSetDelete
 	}
 	if cmd == nil {
-		fmt.Fprint(stderr, usage)
+		fmt.Fprint(stderr, vmUsage)
 		return errUsage
 	}
 	err := cmd(args[2:], stdout, stderr)

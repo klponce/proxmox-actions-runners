@@ -22,7 +22,7 @@ usage: test/integration/run.sh [setup|test|teardown|all]
   test      run the integration tests and checks against them; needs PAR_IT_THROWAWAY=1
   teardown  remove everything setup created; needs PAR_IT_THROWAWAY=1
   all       setup, then test (the default)
-  installer run install.sh on the node without GitHub, then uninstall it (see below); needs PAR_IT_THROWAWAY=1
+  installer run parcon install on the node without GitHub, then uninstall it (see below); needs PAR_IT_THROWAWAY=1
 
 environment:
   PAR_IT_SSH             root@<node>, required
@@ -366,12 +366,13 @@ cmd_test() {
 	log "all integration tests passed"
 }
 
-# Where cmd_installer puts install.sh, its answers, and the images on the node.
+# Where cmd_installer puts parcon and the release assets on the node.
 readonly INSTALLER_DIR=/var/tmp/par-it-installer
 
-# cmd_installer runs install.sh on the node without GitHub: its checks and dry run through its command line, its own
-# install steps up to the GitHub App through node/installer.sh, and its uninstall. It uses the install's real names
-# (par-runners, parzone), so it needs a node with no install on it, and it uninstalls even when a step fails.
+# cmd_installer runs parcon's host commands on the node without GitHub: the dry run, the install up to the GitHub App
+# (--stop-after configure), the forwarded controller check, the worker network check, and the uninstall. It installs
+# from the local images (--assets), with the install's real names (par-runners, parzone), so it needs a node with no
+# install on it, and it uninstalls even when a step fails.
 cmd_installer() {
 	require_throwaway
 	[[ -n $RUNNER_IMAGE && -f ${PAR_IT_GATEWAY_IMAGE:-} && -f ${PAR_IT_CONTROLLER_IMAGE:-} ]] ||
@@ -382,38 +383,40 @@ cmd_installer() {
 	[[ $(basename "$PAR_IT_GATEWAY_IMAGE") == "par-gateway-$version.qcow2" &&
 		$(basename "$PAR_IT_CONTROLLER_IMAGE") == "parcon-$version.qcow2" ]] ||
 		die "the images must share one version: par-runner-$version, par-gateway-$version, parcon-$version"
+	# Release versions are X.Y.Z; images built with -var version=it get one here.
+	local release=$version
+	[[ $release =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || release=0.0.0-$version
 
 	local before
 	before=$(node_script objects.sh) || die "can't list the node's objects"
-	[[ -z $before ]] || die "the node already has an install on it; run install.sh uninstall there first:"$'\n'"$before"
+	[[ -z $before ]] || die "the node already has an install on it; run parcon uninstall there first:"$'\n'"$before"
 
-	log "copy install.sh, its answers, and the images to $INSTALLER_DIR on the node"
-	node "rm -rf $INSTALLER_DIR && mkdir -p $INSTALLER_DIR"
+	log "build parcon and copy it and the images to $INSTALLER_DIR on the node"
+	(cd "$ROOT" && CGO_ENABLED=0 go build -trimpath -o "$STATE/parcon-host" ./cmd/parcon)
+	node "rm -rf $INSTALLER_DIR && mkdir -p $INSTALLER_DIR/assets"
+	scp -q "${SSH_OPTS[@]}" "$STATE/parcon-host" "$PAR_IT_SSH:$INSTALLER_DIR/parcon"
+	scp -q "${SSH_OPTS[@]}" "$RUNNER_IMAGE" "$PAR_IT_SSH:$INSTALLER_DIR/assets/par-runner-$release.qcow2"
+	scp -q "${SSH_OPTS[@]}" "$IMAGE_MANIFEST" "$PAR_IT_SSH:$INSTALLER_DIR/assets/par-runner-$release.json"
+	scp -q "${SSH_OPTS[@]}" "$PAR_IT_GATEWAY_IMAGE" "$PAR_IT_SSH:$INSTALLER_DIR/assets/par-gateway-$release.qcow2"
+	scp -q "${SSH_OPTS[@]}" "$PAR_IT_CONTROLLER_IMAGE" "$PAR_IT_SSH:$INSTALLER_DIR/assets/parcon-$release.qcow2"
+	node "cd $INSTALLER_DIR/assets && sha256sum -- * >SHA256SUMS"
+
 	# The GitHub settings are placeholders: nothing here contacts the App or the organization.
-	node "cat >$INSTALLER_DIR/answers" <<EOF
-PAR_GITHUB_URL=https://github.com/my-org
-PAR_GITHUB_APP=manual
-PAR_GITHUB_APP_CLIENT_ID=Iv23liEXAMPLE0000000
-PAR_MAX_RUNNERS=1
-PAR_STORAGE=$STORAGE
-PAR_BRIDGE=$BUILD_BRIDGE
-EOF
-	scp -q "${SSH_OPTS[@]}" "$ROOT/install/install.sh" "$HERE/node/installer.sh" "$RUNNER_IMAGE" "$IMAGE_MANIFEST" \
-		"$PAR_IT_GATEWAY_IMAGE" "$PAR_IT_CONTROLLER_IMAGE" "$PAR_IT_SSH:$INSTALLER_DIR/"
+	local install=("$INSTALLER_DIR/parcon" install --assets "$INSTALLER_DIR/assets" --assets-version "$release"
+		--storage "$STORAGE" --bridge "$BUILD_BRIDGE" --github-url https://github.com/my-org --app manual
+		--client-id Iv23liEXAMPLE0000000)
 
-	log "install.sh check"
-	node "cd $INSTALLER_DIR && bash install.sh check --answers answers" || die "install.sh check failed"
-
-	log "install.sh install --dry-run"
-	node "cd $INSTALLER_DIR && bash install.sh install --dry-run --answers answers" ||
-		die "install.sh install --dry-run failed"
-	[[ -z $(node_script objects.sh) ]] || die "install.sh install --dry-run changed the node"
+	log "parcon install --dry-run"
+	node "${install[*]} --dry-run" || die "parcon install --dry-run failed"
+	[[ -z $(node_script objects.sh) ]] || die "parcon install --dry-run changed the node"
+	node "test ! -e /usr/local/bin/parcon && test ! -e /etc/proxmox-actions-runners" ||
+		die "parcon install --dry-run wrote files on the host"
 	echo "the dry run changed nothing"
 
 	# From here on a failure leaves a partial install, which the uninstall removes.
 	trap installer_cleanup EXIT
-	log "install.sh's install steps, up to the GitHub App"
-	node "env DIR=$INSTALLER_DIR VERSION=$version bash $INSTALLER_DIR/installer.sh" || die "the install steps failed"
+	log "parcon install, up to the GitHub App"
+	node "${install[*]} --yes --stop-after configure" || die "parcon install failed"
 
 	local objects
 	objects=$(node_script objects.sh)
@@ -423,29 +426,38 @@ EOF
 		"vnet parnet" "par-gateway" "par-controller" "par-runner-"; do
 		grep -qF -- "$want" <<<"$objects" || die "the install has no $want"
 	done
+	node "test -x /usr/local/bin/parcon && test -f /etc/proxmox-actions-runners/settings.yaml" ||
+		die "parcon or its settings aren't on the host"
+
+	log "parcon check proxmox, forwarded to the controller VM"
+	node "parcon check proxmox" || die "parcon check proxmox failed"
+	log "parcon check network"
+	node "parcon check network" || die "parcon check network failed"
 
 	installer_uninstall
 	trap - EXIT
 	local left
 	left=$(node_script objects.sh)
-	[[ -z $left ]] || die "install.sh uninstall left:"$'\n'"$left"
+	[[ -z $left ]] || die "parcon uninstall left:"$'\n'"$left"
+	node "test ! -e /usr/local/bin/parcon && test ! -e /etc/proxmox-actions-runners/settings.yaml" ||
+		die "parcon uninstall left parcon or its settings on the host"
 	node "rm -rf $INSTALLER_DIR"
-	log "installer tests passed: check, dry run, install steps, worker network, and uninstall"
+	log "installer tests passed: dry run, install, forwarded check, worker network, and uninstall"
 }
 
-# installer_uninstall runs install.sh uninstall. It stops the controller VM first: this install has no GitHub App,
-# and uninstall asks a running controller to delete its scale set in GitHub.
+# installer_uninstall runs parcon uninstall. It stops the controller VM first: this install has no GitHub App, and
+# uninstall asks a running controller to delete its scale set in GitHub.
 installer_uninstall() {
-	log "install.sh uninstall"
+	log "parcon uninstall"
 	local controller
 	controller=$(node_script objects.sh | awk '$1 == "vm" && $3 == "par-controller" {print $2}')
 	[[ -z $controller ]] || node "qm stop $controller" || true
-	node "cd $INSTALLER_DIR && bash install.sh uninstall --yes"
+	node "if [ -x /usr/local/bin/parcon ]; then parcon uninstall --yes; else $INSTALLER_DIR/parcon uninstall --yes; fi"
 }
 
 installer_cleanup() {
 	echo "the installer tests failed; uninstalling what they installed" >&2
-	installer_uninstall || echo "warning: install.sh uninstall failed too; remove the install by hand" >&2
+	installer_uninstall || echo "warning: parcon uninstall failed too; remove the install by hand" >&2
 }
 
 cmd_teardown() {
@@ -454,7 +466,7 @@ cmd_teardown() {
 	# Always both pools: the image pool may be left from an earlier run with PAR_IT_RUNNER_IMAGE.
 	node_script teardown.sh "ZONE=$ZONE" "VNET=$VNET" "POOLS=$POOL $IMAGE_POOL" "ROLE=$ROLE" "USER=$USER"
 	rm -f "$STATE/env" "$STATE/token" "$STATE/config.yaml" "$STATE/config-image.yaml" "$STATE/github-app.pem" \
-		"$STATE/parcon"
+		"$STATE/parcon" "$STATE/parcon-host"
 }
 
 main() {

@@ -83,14 +83,16 @@ type Changer struct {
 
 // Run logs c and runs it.
 func (ch *Changer) Run(ctx context.Context, c Cmd) ([]byte, error) {
-	ch.log(c.String())
+	ch.Log(c.String())
 	if ch.DryRun {
 		return nil, nil
 	}
 	return ch.Exec.Run(ctx, c)
 }
 
-func (ch *Changer) log(line string) {
+// Log logs a change that isn't a host command, such as a file written in a VM. The caller makes the change, and
+// skips it in a dry run.
+func (ch *Changer) Log(line string) {
 	if ch.Out != nil {
 		_, _ = fmt.Fprintf(ch.Out, "    $ %s\n", line)
 	}
@@ -99,7 +101,7 @@ func (ch *Changer) log(line string) {
 // WriteFile logs and writes a file on the host atomically: a temporary file in the same directory, synced, then
 // renamed over path.
 func (ch *Changer) WriteFile(path string, data []byte, mode os.FileMode) error {
-	ch.log("write " + path)
+	ch.Log("write " + path)
 	if ch.DryRun {
 		return nil
 	}
@@ -108,7 +110,7 @@ func (ch *Changer) WriteFile(path string, data []byte, mode os.FileMode) error {
 
 // Remove logs and removes a file. One that is already gone counts as removed.
 func (ch *Changer) Remove(path string) error {
-	ch.log("rm " + path)
+	ch.Log("rm " + path)
 	if ch.DryRun {
 		return nil
 	}
