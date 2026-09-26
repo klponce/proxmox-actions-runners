@@ -7,6 +7,9 @@
 
 # Secrets and credentials
 *.pem
+# Public keys: the release signing keys parcon trusts, and the test fixture's.
+!internal/release/keys/*.pem
+!internal/release/testdata/*.pem
 *.key
 *.p12
 *.token

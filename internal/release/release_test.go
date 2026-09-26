@@ -71,9 +71,11 @@ func TestVerifyOpenSSLSignature(t *testing.T) {
 	}
 }
 
+// parcon must trust at least one key, or it refuses every release.
 func TestEmbeddedKeysParse(t *testing.T) {
-	if _, err := TrustedKeys(); err != nil {
-		t.Fatal(err)
+	keys, err := TrustedKeys()
+	if err != nil || len(keys) == 0 {
+		t.Fatalf("TrustedKeys = %d keys, %v", len(keys), err)
 	}
 	if _, err := loadKeys(fstest.MapFS{"k/bad.pem": {Data: []byte("nope")}}, "k"); err == nil {
 		t.Error("a bad key file loads")
