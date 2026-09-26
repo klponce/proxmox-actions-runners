@@ -16,8 +16,8 @@ import (
 	"github.com/klponce/proxmox-actions-runners/internal/github"
 )
 
-// defaultKeyFile is where the installer keeps the GitHub App's private key in the controller VM.
-const defaultKeyFile = "/etc/proxmox-actions-runners/github-app.pem"
+// defaultKeyFile is where the GitHub App's private key lives in the controller VM.
+const defaultKeyFile = config.AppKeyFile
 
 // maxStdin bounds what the commands read from stdin: a manifest code or a PEM key.
 const maxStdin = 64 << 10

@@ -53,6 +53,8 @@ const (
 	// both created by the installer.
 	DefaultPool = "par-runners"
 	DefaultVNet = "parnet"
+	// DefaultTokenID is the controller's API token, which the installer creates.
+	DefaultTokenID = "par@pve!controller"
 )
 
 // DefaultWorker returns the GitHub-matching worker hardware.

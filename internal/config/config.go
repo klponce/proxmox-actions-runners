@@ -18,8 +18,19 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// DefaultPath is where the installer writes the config file inside the controller VM.
-const DefaultPath = "/etc/proxmox-actions-runners/config.yaml"
+// The controller VM's files (docs/install.md, "Controller VM contract"): the config, and the secrets it names. Only
+// the parcon user can read them.
+const (
+	Dir = "/etc/proxmox-actions-runners"
+	// DefaultPath is the config file.
+	DefaultPath = Dir + "/config.yaml"
+	// TokenSecretFile holds the Proxmox API token's secret.
+	TokenSecretFile = Dir + "/pve-token"
+	// AppKeyFile holds the GitHub App's private key.
+	AppKeyFile = Dir + "/github-app.pem"
+	// CACertFile is a copy of the node's CA, when the API serves the node's own certificate.
+	CACertFile = Dir + "/pve-ca.pem"
+)
 
 // Config is the controller's whole configuration.
 type Config struct {
