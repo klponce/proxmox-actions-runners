@@ -289,3 +289,27 @@ func runStatus(args []string, stdout, stderr io.Writer) error {
 	}
 	return nil
 }
+
+// runUpdate handles "parcon update": update the install to the newest release, verified by its signature.
+func runUpdate(args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	var h hostFlags
+	h.register(fs, true)
+	pre := fs.Bool("pre", false, "consider pre-releases too, such as 0.2.0-rc.1")
+	// Set by an older parcon that installed this one to finish the update it started. Not in the usage text.
+	cont := fs.Bool("continue", false, "")
+	if err := parseHostFlags(fs, args, stderr); err != nil {
+		return usageOrNil(err)
+	}
+	in, err := newInstaller(stdout, stderr, h.dryRun)
+	if err != nil {
+		return err
+	}
+	if err := needRelease(in, h.assetsVersion); err != nil {
+		return err
+	}
+	in.Yes, in.Assets = h.yes || *cont, h.assets
+	ctx, cancel := hostContext()
+	defer cancel()
+	return in.Update(ctx, installer.UpdateOptions{Pre: *pre, Continue: *cont})
+}

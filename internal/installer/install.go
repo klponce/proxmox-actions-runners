@@ -33,6 +33,9 @@ var ErrInstalled = errors.New("already installed")
 func (in *Installer) Install(ctx context.Context, opts InstallOptions) error {
 	if v, ok, err := in.InstalledRelease(ctx); err != nil {
 		return err
+	} else if ok && v.Compare(in.Version) < 0 {
+		// install.sh from a newer release, on a node with an older install: update it to this release.
+		return in.Upgrade(ctx, v, false)
 	} else if ok {
 		return fmt.Errorf("%w: release %s; run parcon update to update it, or parcon status to see it", ErrInstalled, v)
 	}

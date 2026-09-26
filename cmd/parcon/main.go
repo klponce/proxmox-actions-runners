@@ -46,6 +46,9 @@ const hostUsage = `usage on the Proxmox host, as root:
   parcon config set <key> <value>       change a setting; the controller restarts with it
   parcon config describe [<key>]        which values a setting takes, and when a change applies
   parcon config apply                   push the settings to the controller again
+  parcon update [-pre] [-yes] [-dry-run]
+                                        update to the newest release (-pre: or pre-release), once its signature
+                                        checks out; running it again continues an update that stopped
   parcon uninstall [-yes] [-dry-run]    remove everything parcon created, and parcon itself
   parcon check                          check this node, and after an install, the controller too
   parcon check network                  check the worker network from a throwaway worker
@@ -148,6 +151,8 @@ func runHost(args []string, stdout, stderr io.Writer) error {
 		err = runStatus(args[1:], stdout, stderr)
 	case "config":
 		err = runConfig(args[1:], stdout, stderr)
+	case "update":
+		err = runUpdate(args[1:], stdout, stderr)
 	case "run", "github":
 		return fmt.Errorf("parcon %s runs in the controller VM; parcon install sets it up", args[0])
 	default:

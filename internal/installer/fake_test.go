@@ -609,3 +609,5 @@ func must(t *testing.T, err error) {
 }
 
 func netipMust(s string) netip.Addr { return netip.MustParseAddr(s) }
+
+var defaultExecBinary = execBinary

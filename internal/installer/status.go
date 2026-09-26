@@ -143,13 +143,13 @@ func (in *Installer) Status(ctx context.Context) (*Report, error) {
 		return nil, err
 	}
 	r.Host = in.hostFindings(ctx, s)
-	if vm, ok := findTagged(vms, SystemPool, vmtags.Gateway); ok {
+	if vm, ok := findSystemVM(vms, vmtags.Gateway); ok {
 		r.Gateway = in.gatewayStatus(ctx, vm)
 	} else {
 		r.Host = append(r.Host, Finding{FAIL, "there is no gateway VM; run parcon install"})
 	}
 	var snapshot *controller.Status
-	if vm, ok := findTagged(vms, SystemPool, vmtags.Controller); ok {
+	if vm, ok := findSystemVM(vms, vmtags.Controller); ok {
 		r.Controller, snapshot = in.controllerStatus(ctx, vm, s)
 	} else {
 		r.Host = append(r.Host, Finding{FAIL, "there is no controller VM; run parcon install"})
@@ -163,8 +163,8 @@ func (in *Installer) Status(ctx context.Context) (*Report, error) {
 	return r, nil
 }
 
-func findTagged(vms []proxmox.VM, pool, tag string) (proxmox.VM, bool) {
-	t := tagged(vms, pool, tag)
+func findSystemVM(vms []proxmox.VM, tag string) (proxmox.VM, bool) {
+	t := tagged(vms, SystemPool, tag)
 	if len(t) == 0 {
 		return proxmox.VM{}, false
 	}
