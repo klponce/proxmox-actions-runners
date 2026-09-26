@@ -56,8 +56,7 @@ main() {
 actions/runner $version is out; the runner image pins $current. GitHub stops accepting a runner that doesn't update \
 itself 30 days after a newer release, so this needs to ship in a project release before then.
 
-After merging, tag a release. Opened by .github/workflows/runner-release.yml. Pull requests opened with the \
-workflow's token don't start other workflows, so close and reopen this one to run CI."
+Merging it publishes a release with the new runner. Opened by .github/workflows/runner-release.yml."
 }
 
 [[ -n ${BUMP_RUNNER_SOURCED:-} ]] || main "$@"

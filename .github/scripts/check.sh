@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # check.sh runs every check a change must pass: the Go build, tests, vet, format, and lint; shellcheck; the
 # installer's bats tests; Packer's format and validation; and actionlint on the workflows. It runs in the dev
-# container, locally and in CI (.github/workflows/ci.yml). It builds nothing that takes long: the images are built by
-# the release workflow, and the integration suite needs a Proxmox node.
+# container, locally and as the first job of the release workflow (.github/workflows/release.yml), which builds the
+# images next. It builds nothing that takes long, and the integration suite needs a Proxmox node.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
