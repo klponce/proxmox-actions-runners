@@ -70,6 +70,16 @@ func TestSetConfig(t *testing.T) {
 	if !strings.Contains(ti.stderr.String(), "more than this node's") {
 		t.Errorf("stderr:\n%s", ti.stderr)
 	}
+	// A key the warning isn't about doesn't repeat it; one it is about does.
+	ti.stderr.Reset()
+	must(t, ti.SetConfig(ctx, "worker.cores", "4"))
+	if strings.Contains(ti.stderr.String(), "more than this node's") {
+		t.Errorf("setting worker.cores warned about memory:\n%s", ti.stderr)
+	}
+	must(t, ti.SetConfig(ctx, "worker.memory", "9GiB"))
+	if !strings.Contains(ti.stderr.String(), "more than this node's") {
+		t.Errorf("setting worker.memory didn't warn:\n%s", ti.stderr)
+	}
 }
 
 func TestSetConfigRefusesAnotherControllerVersion(t *testing.T) {

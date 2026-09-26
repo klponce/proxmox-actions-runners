@@ -94,8 +94,13 @@ func TestGetShowsDefaults(t *testing.T) {
 func TestWarnings(t *testing.T) {
 	s := Default()
 	s.ScaleSet.MaxRunners = 8
-	if w := Warnings(&s, testLimits); len(w) != 1 || !strings.Contains(w[0], "64GiB, more than this node's 62GiB") {
-		t.Errorf("Warnings = %q", w)
+	w := Warnings(&s, testLimits)
+	if len(w) != 1 || !strings.Contains(w[0].Text, "64GiB, more than this node's 62GiB") {
+		t.Fatalf("Warnings = %q", w)
+	}
+	// It is about the two keys that make it up, so setting either shows it, and setting another doesn't.
+	if !w[0].About("runners.max") || !w[0].About("worker.memory") || w[0].About("worker.cores") {
+		t.Errorf("warning keys = %v", w[0].Keys)
 	}
 	s.ScaleSet.MaxRunners = 7
 	if w := Warnings(&s, testLimits); len(w) != 0 {
