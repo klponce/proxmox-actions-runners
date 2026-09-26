@@ -72,7 +72,7 @@ readonly CONTROLLER_STOP_TIMEOUT=420
 readonly OFFLOADS=(gro gso tso tx)
 
 # Settings: from the answers file, prompts, or defaults. `settings_help` describes them.
-# Scale set names, as parcon's config accepts them (scaleSetNamePattern in internal/config, kept in step by a Go test):
+# Scale set names, as parcon's config accepts them (ScaleSetNamePattern in internal/config, kept in step by a Go test):
 # they become Proxmox tags and runs-on labels.
 readonly SCALE_SET_PATTERN='^[a-z0-9][a-z0-9._-]{0,62}$'
 

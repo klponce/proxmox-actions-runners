@@ -32,6 +32,29 @@ const (
 	proxmoxAPIPath = "/api2/json"
 )
 
+// Install defaults: what `parcon install` sets up when the user doesn't choose otherwise. They live here with the
+// controller's defaults so that every default has one home.
+const (
+	// DefaultScaleSetName is the scale set's name and its runs-on label.
+	DefaultScaleSetName = "proxmox-ubuntu-26.04"
+	// DefaultMinRunners and DefaultMaxRunners size the default install for one job at a time.
+	DefaultMinRunners = 0
+	DefaultMaxRunners = 1
+	// DefaultStorage and DefaultBridge are a fresh Proxmox VE install's VM storage and LAN bridge.
+	DefaultStorage = "local-lvm"
+	DefaultBridge  = "vmbr0"
+	// DefaultWorkerSubnet is the worker network behind the gateway VM: a /22 out of the way of common LANs.
+	DefaultWorkerSubnet = "10.251.0.0/22"
+	// DefaultVMIDStart and DefaultVMIDEnd bound the IDs of workers and templates.
+	DefaultVMIDStart = 10000
+	DefaultVMIDEnd   = 10099
+
+	// DefaultPool is the resource pool that holds templates and workers, and DefaultVNet the worker network's VNet,
+	// both created by the installer.
+	DefaultPool = "par-runners"
+	DefaultVNet = "parnet"
+)
+
 // DefaultWorker returns the GitHub-matching worker hardware.
 func DefaultWorker() Worker {
 	return Worker{

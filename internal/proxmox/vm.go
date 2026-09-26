@@ -2,6 +2,7 @@ package proxmox
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"sort"
@@ -20,6 +21,8 @@ type VM struct {
 	Status string
 	// MaxDiskBytes is the size of the root disk.
 	MaxDiskBytes int64
+	// MaxMemBytes is the VM's configured memory.
+	MaxMemBytes int64
 }
 
 // HasTag reports whether the VM has tag.
@@ -42,6 +45,7 @@ type resource struct {
 	Template pveBool `json:"template"`
 	Status   string  `json:"status"`
 	MaxDisk  pveInt  `json:"maxdisk"`
+	MaxMem   pveInt  `json:"maxmem"`
 }
 
 // ListVMs returns the QEMU VMs and templates on the client's node that the token can see, sorted by VMID.
@@ -50,9 +54,23 @@ func (c *Client) ListVMs(ctx context.Context) ([]VM, error) {
 	if err := c.get(ctx, "/cluster/resources", url.Values{"type": {"vm"}}, &resources); err != nil {
 		return nil, fmt.Errorf("list VMs: %w", err)
 	}
+	return vmsOnNode(resources, c.node), nil
+}
+
+// ParseResources decodes the VM entries of a /cluster/resources listing, such as the output of
+// `pvesh get /cluster/resources --type vm --output-format json`, into the QEMU VMs on node, sorted by VMID.
+func ParseResources(data []byte, node string) ([]VM, error) {
+	var resources []resource
+	if err := json.Unmarshal(data, &resources); err != nil {
+		return nil, fmt.Errorf("decode cluster resources: %w", err)
+	}
+	return vmsOnNode(resources, node), nil
+}
+
+func vmsOnNode(resources []resource, node string) []VM {
 	vms := make([]VM, 0, len(resources))
 	for _, r := range resources {
-		if r.Type != "qemu" || r.Node != c.node {
+		if r.Type != "qemu" || r.Node != node {
 			continue
 		}
 		vms = append(vms, VM{
@@ -63,10 +81,11 @@ func (c *Client) ListVMs(ctx context.Context) ([]VM, error) {
 			Template:     bool(r.Template),
 			Status:       r.Status,
 			MaxDiskBytes: int64(r.MaxDisk),
+			MaxMemBytes:  int64(r.MaxMem),
 		})
 	}
 	sort.Slice(vms, func(i, j int) bool { return vms[i].VMID < vms[j].VMID })
-	return vms, nil
+	return vms
 }
 
 // VMStatus is a VM's current state.

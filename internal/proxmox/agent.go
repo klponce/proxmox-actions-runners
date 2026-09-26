@@ -2,6 +2,7 @@ package proxmox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -72,34 +73,48 @@ func (c *Client) AgentExec(ctx context.Context, vmid int, command []string, stdi
 	statusPath := c.vmPath(vmid, "agent", "exec-status")
 	query := url.Values{"pid": {strconv.FormatInt(int64(started.PID), 10)}}
 	err := c.poll(ctx, func() (bool, error) {
-		var st struct {
-			Exited       pveBool `json:"exited"`
-			ExitCode     pveInt  `json:"exitcode"`
-			Signal       pveInt  `json:"signal"`
-			OutData      string  `json:"out-data"`
-			ErrData      string  `json:"err-data"`
-			OutTruncated pveBool `json:"out-truncated"`
-			ErrTruncated pveBool `json:"err-truncated"`
-		}
+		var st execStatus
 		if err := c.get(ctx, statusPath, query, &st); err != nil {
 			return false, err
 		}
-		if !st.Exited {
-			return false, nil
-		}
-		// Proxmox decodes the agent's base64 output before returning it.
-		result = ExecResult{
-			ExitCode:        int(st.ExitCode),
-			Signal:          int(st.Signal),
-			Stdout:          []byte(st.OutData),
-			Stderr:          []byte(st.ErrData),
-			StdoutTruncated: bool(st.OutTruncated),
-			StderrTruncated: bool(st.ErrTruncated),
-		}
-		return true, nil
+		result = st.result()
+		return bool(st.Exited), nil
 	})
 	if err != nil {
 		return ExecResult{}, fmt.Errorf("guest exec %q in VM %d: wait for exit: %w", command[0], vmid, err)
 	}
 	return result, nil
+}
+
+// execStatus is the guest agent's exec-status, from the API or from `qm guest exec`.
+type execStatus struct {
+	Exited       pveBool `json:"exited"`
+	ExitCode     pveInt  `json:"exitcode"`
+	Signal       pveInt  `json:"signal"`
+	OutData      string  `json:"out-data"`
+	ErrData      string  `json:"err-data"`
+	OutTruncated pveBool `json:"out-truncated"`
+	ErrTruncated pveBool `json:"err-truncated"`
+}
+
+// result converts the status. Proxmox decodes the agent's base64 output before returning it.
+func (st execStatus) result() ExecResult {
+	return ExecResult{
+		ExitCode:        int(st.ExitCode),
+		Signal:          int(st.Signal),
+		Stdout:          []byte(st.OutData),
+		Stderr:          []byte(st.ErrData),
+		StdoutTruncated: bool(st.OutTruncated),
+		StderrTruncated: bool(st.ErrTruncated),
+	}
+}
+
+// ParseAgentExecStatus decodes a guest agent exec-status, such as the JSON `qm guest exec` prints. exited is false
+// when the command was still running when the status was taken: `qm guest exec` then prints only the PID.
+func ParseAgentExecStatus(data []byte) (result ExecResult, exited bool, err error) {
+	var st execStatus
+	if err := json.Unmarshal(data, &st); err != nil {
+		return ExecResult{}, false, fmt.Errorf("decode guest exec status: %w", err)
+	}
+	return st.result(), bool(st.Exited), nil
 }
