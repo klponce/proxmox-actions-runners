@@ -15,6 +15,8 @@ setup() {
 	PAR_INSTALL_SOURCED=1
 	# shellcheck source=/dev/null # checked on its own
 	source "$INSTALL_SH"
+	SYS_NET="$BATS_TEST_TMPDIR/sys/class/net"
+	OFFLOAD_RULE="$BATS_TEST_TMPDIR/90-par-offloads.rules"
 	# bats needs -e to fail a test on its first failing line, but its own code reads unset variables.
 	set +u
 }

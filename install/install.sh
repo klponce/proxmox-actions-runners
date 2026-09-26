@@ -4,8 +4,9 @@
 #
 #   bash install.sh [install|upgrade|uninstall|check] [--answers FILE] [--yes] [--dry-run]
 #
-# It changes the host only through Proxmox's own tools (pveum, pvesh, qm) and creates only objects it can find again
-# by name or tag, so `uninstall` removes everything. Secrets never touch the host's disk or a command line.
+# It changes the host only where the project needs it, mostly through Proxmox's own tools (pveum, pvesh, qm), and
+# creates only objects and files it can find again by name or tag, so `uninstall` removes everything. Secrets never
+# touch the host's disk or a command line.
 #
 # shellcheck disable=SC2016 # Perl code and commands for the VMs are single-quoted on purpose.
 set -euo pipefail
@@ -33,6 +34,10 @@ readonly CA_FILE=$ETC/pve-ca.pem
 
 # Where Proxmox keeps the node's certificates. Tests point it elsewhere.
 PVE_DIR=/etc/pve
+# The host's network interfaces, and the udev rule that turns off the LAN NIC's offloads on a node that is itself a
+# VM (see tune_offloads). Tests point them elsewhere.
+SYS_NET=/sys/class/net
+OFFLOAD_RULE=/etc/udev/rules.d/90-par-offloads.rules
 
 # The token's role: exactly what internal/proxmox/access.go requires, on the runner pool, the storage, and the VNet.
 # A Go test keeps this list in sync with it.
@@ -62,6 +67,9 @@ readonly WORKER_MEMORY_MIB=8192
 # How long to wait, in seconds, for parcon.service to stop or restart: longer than its TimeoutStopSec in
 # deploy/parcon.service, since the controller finishes retirements in flight first. A test keeps the two in step.
 readonly CONTROLLER_STOP_TIMEOUT=420
+# The offloads tune_offloads turns off, by their names in `ethtool -K`. offloads_on knows them by their names in
+# `ethtool -k`.
+readonly OFFLOADS=(gro gso tso tx)
 
 # Settings: from the answers file, prompts, or defaults. `settings_help` describes them.
 # Scale set names, as parcon's config accepts them (scaleSetNamePattern in internal/config, kept in step by a Go test):
@@ -647,6 +655,74 @@ check_sdn() {
 		{ echo "/etc/network/interfaces doesn't source /etc/network/interfaces.d/*" && return 1; }
 }
 
+# virtio_ports prints the LAN bridge's ports that are virtio NICs, which it has when the node is itself a VM.
+virtio_ports() {
+	local port driver
+	for port in "$SYS_NET/$PAR_BRIDGE"/brif/*; do
+		port=${port##*/}
+		driver=$(readlink "$SYS_NET/$port/device/driver" 2>/dev/null) || continue
+		if [[ ${driver##*/} == virtio_net ]]; then
+			echo "$port"
+		fi
+	done
+}
+
+# offloads_on prints the OFFLOADS that are on for a NIC, by their names in `ethtool -k`.
+offloads_on() {
+	ethtool -k "$1" | awk -F ': ' '
+		$1 ~ /^(generic-receive-offload|generic-segmentation-offload|tcp-segmentation-offload|tx-checksumming)$/ &&
+			$2 ~ /^on/ { print $1 }'
+}
+
+# offload_args prints the arguments to `ethtool -K NIC` that turn the OFFLOADS on or off: offload_args on|off.
+offload_args() {
+	local offload args=()
+	for offload in "${OFFLOADS[@]}"; do
+		args+=("$offload" "$1")
+	done
+	echo "${args[*]}"
+}
+
+# offload_rule prints the udev rule that turns the OFFLOADS off on the given NICs each time one appears. It matches
+# NAME, not KERNEL, and sorts after 80-net-setup-link.rules, because that renames the NIC (to nic0, say) in the same
+# event, and RUN runs once it has.
+offload_rule() {
+	local port ethtool
+	ethtool=$(command -v ethtool)
+	echo "# Written by proxmox-actions-runners' install.sh, and removed by install.sh uninstall."
+	for port in "$@"; do
+		printf 'ACTION=="add", SUBSYSTEM=="net", NAME=="%s", RUN+="%s -K %s %s"\n' \
+			"$port" "$ethtool" "$port" "$(offload_args off)"
+	done
+}
+
+# offloads_pending prints what tune_offloads still has to do for the given NICs: the udev rule, and each NIC with an
+# offload on.
+offloads_pending() {
+	local port on
+	[[ -f $OFFLOAD_RULE && $(<"$OFFLOAD_RULE") == "$(offload_rule "$@")" ]] || echo "udev rule $OFFLOAD_RULE"
+	for port in "$@"; do
+		on=$(offloads_on "$port" | tr '\n' ' ')
+		[[ -z $on ]] || echo "$port: ${on% } on"
+	done
+}
+
+# check_offloads reports whether the LAN NIC's offloads are off on a node that is itself a VM. `check` warns while
+# they aren't; install and upgrade turn them off.
+check_offloads() {
+	local ports pending
+	mapfile -t ports < <(virtio_ports)
+	((${#ports[@]} > 0)) || { echo "not needed: no virtio NIC on $PAR_BRIDGE" && return 0; }
+	command -v ethtool >/dev/null || { echo "ethtool isn't installed, so they can't be turned off" && return 1; }
+	pending=$(offloads_pending "${ports[@]}" | paste -sd ';' - | sed 's/;/; /g')
+	[[ -n $pending ]] || { echo "off on ${ports[*]}" && return 0; }
+	if [[ $COMMAND == check ]]; then
+		echo "the node is a VM, and they aren't off for good ($pending); install and upgrade turn them off"
+		return 1
+	fi
+	echo "the node is a VM: they will be turned off on ${ports[*]}"
+}
+
 check_worker_subnet() {
 	local cidr
 	for cidr in $(ip -4 -o addr show | awk '{print $4}') $(ip -4 route show | awk '$1 != "default" {print $1}'); do
@@ -753,6 +829,7 @@ preflight() {
 	check hard "free space for downloads in $DOWNLOAD_DIR" check_download_space
 	check warn "memory" check_memory
 	check hard "LAN bridge $PAR_BRIDGE" check_bridge
+	check warn "LAN NIC offloads" check_offloads
 	check warn "API certificate" check_tls
 	check hard "SDN available" check_sdn
 	check hard "worker subnet $PAR_WORKER_SUBNET free" check_worker_subnet
@@ -816,6 +893,9 @@ Workers: VMIDs $PAR_VMID_START-$((PAR_VMID_END - RESERVED_VMIDS)) on $VNET ($PAR
 GitHub: scale set $PAR_SCALE_SET (runs-on: $PAR_LABELS) for ${PAR_GITHUB_URL:-the organization or repository you
   choose when you create and install the GitHub App}
 EOF
+	local offloads
+	offloads=$(offload_plan)
+	[[ -z $offloads ]] || printf 'Host:\n%s\n' "$offloads"
 	if ((${#WARNINGS[@]} > 0)); then
 		say "Warnings:"
 		printf '  %s\n' "${WARNINGS[@]}"
@@ -844,6 +924,54 @@ grant_acls() {
 	for path in "/pool/$RUNNER_POOL" "/storage/$PAR_STORAGE" "/sdn/zones/$ZONE/$VNET"; do
 		change pveum acl modify "$path" --users "$PVE_USER" --tokens "$PVE_USER!$TOKEN" --roles "$ROLE"
 	done
+}
+
+# offload_plan prints the plan's lines for tune_offloads, if it has anything to do.
+offload_plan() {
+	local ports
+	mapfile -t ports < <(virtio_ports)
+	((${#ports[@]} > 0)) && command -v ethtool >/dev/null || return 0
+	[[ -n $(offloads_pending "${ports[@]}") ]] || return 0
+	echo "  turn off offloads (${OFFLOADS[*]}) on ${ports[*]}, the virtio NIC under $PAR_BRIDGE, now and at each boot"
+	echo "    (udev rule $OFFLOAD_RULE): on a node that is itself a VM, they stall workers' downloads"
+}
+
+# tune_offloads turns off the offloads of the LAN bridge's virtio NICs when the node is itself a VM: now with ethtool,
+# and at each boot through a udev rule of our own. With them on, the NIC merges incoming packets (GRO) that the bridge
+# then forwards to the gateway VM, and workers' downloads stall at a few KB/s while the host's own run at full speed.
+tune_offloads() {
+	local ports
+	mapfile -t ports < <(virtio_ports)
+	((${#ports[@]} > 0)) || return 0
+	step "LAN NIC offloads"
+	if ! command -v ethtool >/dev/null; then
+		warn "ethtool isn't installed, so the offloads of ${ports[*]} stay on and workers' downloads may be slow"
+		return 0
+	fi
+	local rule port args
+	rule=$(offload_rule "${ports[@]}")
+	if [[ ! -f $OFFLOAD_RULE || $(<"$OFFLOAD_RULE") != "$rule" ]]; then
+		change install -m 0644 /dev/stdin "$OFFLOAD_RULE" <<<"$rule"
+	fi
+	read -r -a args <<<"$(offload_args off)"
+	for port in "${ports[@]}"; do
+		[[ -z $(offloads_on "$port") ]] || change ethtool -K "$port" "${args[@]}"
+	done
+}
+
+# offload_rule_ports prints the NICs the udev rule names.
+offload_rule_ports() { sed -n 's/.*NAME=="\([^"]*\)".*/\1/p' "$OFFLOAD_RULE"; }
+
+# remove_offload_rule removes the udev rule and turns the offloads back on for the NICs it names.
+remove_offload_rule() {
+	[[ -f $OFFLOAD_RULE ]] || return 0
+	local port args
+	read -r -a args <<<"$(offload_args on)"
+	for port in $(offload_rule_ports); do
+		[[ ! -e $SYS_NET/$port ]] || change ethtool -K "$port" "${args[@]}" ||
+			warn "turning the offloads of $port back on failed"
+	done
+	change rm -f "$OFFLOAD_RULE"
 }
 
 create_network() {
@@ -1357,6 +1485,7 @@ do_install() {
 	confirm "Install proxmox-actions-runners $PAR_VERSION with this plan?" || die "cancelled"
 	create_access
 	create_network
+	tune_offloads
 	download_images
 	import_template
 	create_gateway
@@ -1387,6 +1516,9 @@ load_installed_settings() {
 	PAR_VMID_START=$(sed -n 's/.*vmidRange: *{ *start: *\([0-9]*\).*/\1/p' <<<"$config")
 	PAR_VMID_END=$(sed -n 's/.*vmidRange:.*end: *\([0-9]*\).*/\1/p' <<<"$config")
 	[[ -n $PAR_STORAGE && -n $PAR_VMID_START && -n $PAR_VMID_END ]] || die "the controller's config is incomplete"
+	# The LAN bridge, from the gateway VM's LAN NIC.
+	PAR_BRIDGE=$(qm config "$GATEWAY_VMID" | sed -n 's/^net0: .*bridge=\([^,]*\).*/\1/p')
+	[[ -n $PAR_BRIDGE ]] || die "can't find the gateway VM's LAN bridge"
 }
 
 # replace_gateway recreates the gateway VM from the new image with the old one's VMID, NICs, address, and settings.
@@ -1444,6 +1576,7 @@ do_upgrade() {
 	((new_gateway == 0)) ||
 		say "  replace gateway VM $GATEWAY_VMID with the new image (workers lose their network for a minute or two)"
 	[[ $release == "$PAR_VERSION" ]] || say "  replace the parcon binary in controller VM $CONTROLLER_VMID and restart it"
+	offload_plan
 	((DRY_RUN)) && return 0
 	require_release
 	confirm "Upgrade with this plan?" || die "cancelled"
@@ -1456,6 +1589,7 @@ do_upgrade() {
 	import_template
 	((new_gateway == 0)) || replace_gateway
 	[[ $release == "$PAR_VERSION" ]] || upgrade_controller
+	tune_offloads
 	step "Done"
 	say "proxmox-actions-runners is at $PAR_VERSION."
 }
@@ -1506,6 +1640,8 @@ do_uninstall() {
 	say "  destroy the VMs tagged $TAG_MANAGED in $SYSTEM_POOL and $RUNNER_POOL, now: ${vms:-none}"
 	say "  remove pools $SYSTEM_POOL and $RUNNER_POOL, role $ROLE, user $PVE_USER with its token and ACLs"
 	say "  remove SDN VNet $VNET and zone $ZONE, then apply the SDN config"
+	[[ ! -f $OFFLOAD_RULE ]] ||
+		say "  remove the udev rule $OFFLOAD_RULE and turn the offloads of $(offload_rule_ports | paste -sd ' ' -) back on"
 	((DRY_RUN)) && return 0
 	confirm "Uninstall with this plan? This can't be undone." || die "cancelled"
 
@@ -1563,6 +1699,10 @@ do_uninstall() {
 			"config (Datacenter > SDN > Apply, or pvesh set /cluster/sdn) to remove $VNET and $ZONE from the host."
 	elif ((changed)); then
 		change pvesh set /cluster/sdn
+	fi
+	if [[ -f $OFFLOAD_RULE ]]; then
+		step "LAN NIC offloads"
+		remove_offload_rule
 	fi
 	step "Done"
 	say "proxmox-actions-runners is removed. The GitHub App remains; delete it in GitHub's settings if you like."

@@ -46,9 +46,9 @@ After that it:
 - imports the **runner template** from the runner image published with the release
 - registers the scale set with GitHub
 
-The host itself is barely touched. No packages, services, files, or snippets are added, only Proxmox objects, and
-`bash install.sh uninstall` removes all of them. The host doesn't route worker traffic, so the design doesn't
-depend on how your LAN, firewall, or host networking is set up. See [docs/install.md](docs/install.md) for the full
+The host itself is barely touched. No packages, services, or snippets are added, only Proxmox objects (and, on a
+node that is itself a VM, a udev rule for its NIC), and `bash install.sh uninstall` removes all of them. The host
+doesn't route worker traffic, so the design doesn't depend on how your LAN, firewall, or host networking is set up. See [docs/install.md](docs/install.md) for the full
 design.
 
 ## How it works
@@ -238,6 +238,13 @@ two in sync.
 
 To build from source, use the dev container in `.devcontainer/`, which has Go, Packer, and every other tool at
 pinned versions. See [AGENTS.md](AGENTS.md#development-environment).
+
+### Proxmox in a VM
+
+The node can itself be a VM, for example to keep the runners apart from your main Proxmox setup. Enable nested
+virtualization for it (CPU type `host`). The installer then turns off the offloads of the node's virtio NIC (GRO,
+GSO, TSO, and TX checksumming), with a udev rule that keeps them off after a reboot: with them on, workers'
+downloads stall at a few KB/s. `bash install.sh check` shows whether they are off.
 
 ## Limitations
 

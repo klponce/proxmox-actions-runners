@@ -83,12 +83,15 @@ Keep these true. If a change needs to break one, discuss it first.
 7. **Secrets never leak.** The GitHub App private key, the Proxmox API token, installation tokens, and JIT configs
    must never be logged, put in error messages, or stored in VM notes, tags, config, or cloud-init snippets. Pass
    JIT configs to the running VM only through the QEMU guest agent. Cloud-init carries only non-secret settings.
-8. **Minimal host footprint.** The installer changes the Proxmox host only through `pveum`, `qm`, `pvesh`, and
-   `pvesm`, and only to create objects it tags or names as ours: pools, role, user, token, ACLs, VMs, and the worker
-   network's SDN zone and VNet. It installs no packages, services, binaries, or snippets, and doesn't edit host
-   network or storage config by hand. The worker network has no host IP, SNAT, or DHCP, so the host never routes
-   worker traffic. Every host change must appear in the plan the installer prints, and `install.sh uninstall` must
-   remove it. Everything else runs inside the controller and gateway VMs.
+8. **Minimal host footprint.** The installer changes the Proxmox host only where the project needs it: to create
+   what it runs on (pools, role, user, token, ACLs, VMs, and the worker network's SDN zone and VNet, through `pveum`,
+   `qm`, `pvesh`, and `pvesm`), and to tune the host where the runners can't work well without it, such as turning
+   off the LAN NIC's offloads on a node that is itself a VM. A change that is merely convenient doesn't qualify, and
+   whatever can run inside the controller or gateway VM runs there. The installer installs no packages or services
+   and doesn't edit files that Proxmox or the user manages, such as `/etc/network/interfaces` or `storage.cfg`: a
+   change outside Proxmox's tools goes in a file of its own, named as ours. The worker network has no host IP, SNAT,
+   or DHCP, so the host never routes worker traffic. Every host change must appear in the plan the installer prints,
+   and `install.sh uninstall` must remove it.
 9. **Workers are isolated.** Workers attach only to the worker network. Their only way out is the gateway VM, which
    allows DHCP, DNS, and outbound internet traffic and drops everything else, including the LAN, the Proxmox host,
    the controller VM, and private and link-local ranges. The controller reaches workers only through the Proxmox API
@@ -209,10 +212,11 @@ expects, and the suite has already caught a missing privilege (`Pool.Audit`) tha
 
 See [docs/install.md](docs/install.md) for the full design.
 
-- Keep invariant 8. If a feature seems to need a new host change, put it in the controller VM instead, or discuss it
-  first.
+- Keep invariant 8. If a feature seems to need a new host change, first see whether it can live in the controller or
+  gateway VM. If it can't, and the runners need it, make it idempotent, list it in the plan, verify it in
+  `install.sh check`, and undo it in `uninstall`.
 - Preflight checks come first and change nothing. They include root, Proxmox VE 9.x, amd64, KVM, standalone node,
-  clock sync, tools, storage, space, the LAN bridge, SDN support, worker subnet overlap, and name or ID clashes. Add a
+  clock sync, tools, storage, space, the LAN bridge and its NIC's offloads, SDN support, worker subnet overlap, and name or ID clashes. Add a
   check whenever a later step could fail on host state.
 - Use Bash with `set -euo pipefail`, put the body in `main`, and call it on the last line so a truncated
   `curl | bash` download can't run.

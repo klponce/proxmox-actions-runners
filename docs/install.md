@@ -2,8 +2,8 @@
 
 The whole project installs with one script, [`install/install.sh`](../install/install.sh), run as root on a
 Proxmox VE 9 node. The script checks the host, creates an isolated worker network with a gateway VM, creates a small
-controller VM, imports the runner template, and registers the scale set. It changes the host only through Proxmox's
-own tools, and it can remove everything it created. It installs only from a release: the release workflow writes
+controller VM, imports the runner template, and registers the scale set. It changes the host only where the project
+needs it, almost entirely through Proxmox's own tools, and it can remove everything it created. It installs only from a release: the release workflow writes
 the version and the assets' checksums into it, and a copy from the source tree refuses to install.
 
 ## Goals
@@ -12,8 +12,10 @@ the version and the assets' checksums into it, and a copy from the source tree r
 - **Headless.** The installer runs in a root shell with no browser. The only browser step, creating the GitHub App,
   happens on any other device, and the user copies one code back.
 - **Minimal host footprint.** The host gets Proxmox objects (pools, a role, a user and token, ACLs, VMs, and an SDN
-  zone and VNet) and nothing else: no apt packages, no systemd units, no binaries, no cloud-init snippets, and no
-  hand edits to `/etc/network/interfaces` or `storage.cfg`.
+  zone and VNet), plus host tuning only where the runners need it: on a node that is itself a VM, a udev rule that
+  turns off the LAN NIC's offloads (see *Host NIC offloads*). No apt packages, no systemd units, no binaries, no
+  cloud-init snippets, and no edits to files Proxmox or the user manages, such as `/etc/network/interfaces` or
+  `storage.cfg`.
 - **Independent of the LAN.** Workers never share a network with the host or the LAN. A gateway VM connects their
   network to the internet, so the design works the same whatever the LAN, VLAN, or host firewall setup is.
 - **Safe to re-run.** A second run detects the existing install and upgrades it. `--dry-run` prints the plan and
@@ -139,7 +141,7 @@ include the agent avoids both changes to the host.
 | ----- | --- | ----- |
 | Running as root | `EUID` is 0 (`pveum` and `qm` need `root@pam`) | hard |
 | Proxmox VE 9.x | `pveversion` reports `pve-manager/9.*` | hard |
-| Running on a PVE node, not in a container or VM guest | `pveversion` present, `/etc/pve` mounted, `systemd-detect-virt --container` false | hard |
+| Running on a PVE node, not in a container | `pveversion` present, `/etc/pve` mounted, `systemd-detect-virt --container` false. A node that is itself a VM is fine | hard |
 | amd64 | `dpkg --print-architecture` is `amd64` | hard |
 | KVM available | `/dev/kvm` exists | hard |
 | Required tools present | `qm`, `pveum`, `pvesh`, `pvesm`, `curl`, `sha256sum`, `perl` (all ship with PVE) | hard |
@@ -152,6 +154,7 @@ include the agent avoids both changes to the host.
 | Download space | 6 GiB free in `/var/tmp`, on the host's root filesystem, where the images are downloaded before they are imported | hard |
 | Free memory and CPU | host RAM and threads against `maxRunners` × worker size plus existing VMs | warn |
 | LAN bridge | the bridge for the controller and gateway VMs exists. VLAN tag valid if set | hard |
+| LAN NIC offloads | on a node that is itself a VM (a virtio NIC under the LAN bridge), its offloads are off, now and at boot. `install` and `upgrade` turn them off; `check` warns until they are | warn |
 | API certificate | how the controller will verify it: the node's CA, the system CAs, or a pinned fingerprint for a certificate from a CA the host doesn't trust | warn if pinned |
 | SDN available | `ifupdown2` installed and `/etc/network/interfaces` sources `/etc/network/interfaces.d/*`, so applying SDN works | hard |
 | Worker subnet free | the worker subnet doesn't overlap any route or address on the host, or the LAN subnet given for the gateway | hard |
@@ -192,24 +195,25 @@ The controller image and the installer agree on this layout:
    The installer captures the token secret in a shell variable. It never writes it to the host's disk.
 5. **Worker network** (`pvesh`): create the simple zone `parzone` and the VNet `parnet` with no subnet, then apply
    the SDN config (`pvesh set /cluster/sdn`).
-6. **Download and verify images** into a temporary directory under `/var/tmp`, which is deleted on exit, including
+6. **Host NIC offloads**, only on a node that is itself a VM: see *Host NIC offloads*.
+7. **Download and verify images** into a temporary directory under `/var/tmp`, which is deleted on exit, including
    on failure.
-7. **Import the runner template** in `par-runners` from `par-runner-<ver>.qcow2` into the first free VMID of the
+8. **Import the runner template** in `par-runners` from `par-runner-<ver>.qcow2` into the first free VMID of the
    reserved IDs at the end of the range (`qm create` + `qm set --scsi0 <storage>:0,import-from=<file>`), with a
    cloud-init drive and the guest agent enabled. Tag it `par-managed`, `par-template`,
    `par-tv-<import time in Unix seconds>`, and `par-rv-<actions/runner version>` (from the image's manifest), and
    convert it to a template. See *Runner image*.
-8. **Create the gateway VM** in `par-system` from `par-gateway-<ver>.qcow2`: 1 vCPU, 1 GiB RAM, a 6 GiB disk (the
+9. **Create the gateway VM** in `par-system` from `par-gateway-<ver>.qcow2`: 1 vCPU, 1 GiB RAM, a 6 GiB disk (the
    image's size), `net0` on the LAN bridge, and `net1` on `parnet`. Use the built-in cloud-init drive for hostname
    and the LAN address only, tag it `par-managed,par-gateway`, and start it. Once it has finished booting (the guest agent
    answers and `systemctl is-system-running --wait` returns), pipe
    the worker subnet and the ranges to block (the LAN bridge's networks, every address the host has on any
    interface, and the controller VM) into `par-gateway-configure` through `qm guest exec --pass-stdin` (see
    *Gateway and controller images*), then check that it serves DHCP on `parnet` and reaches the internet.
-9. **Create the controller VM** in `par-system` from `parcon-<ver>.qcow2`: 2 vCPU, 2 GiB RAM, a 6 GiB disk (the
+10. **Create the controller VM** in `par-system` from `parcon-<ver>.qcow2`: 2 vCPU, 2 GiB RAM, a 6 GiB disk (the
    image's size). Use Proxmox's built-in cloud-init drive for hostname and network only (no user data, no
    snippets), tag it `par-managed,par-controller`, and start it.
-10. **Configure the controller** through the guest agent once it has finished booting. Secrets go through
+11. **Configure the controller** through the guest agent once it has finished booting. Secrets go through
     `qm guest exec --pass-stdin`, so they never appear on a command line or on the host's disk:
     - `/etc/proxmox-actions-runners/config.yaml` with the settings, but no `github.app` yet (see *Controller VM
       contract*)
@@ -223,7 +227,7 @@ The controller image and the installer agree on this layout:
     pinned by fingerprint (`tlsFingerprint`), which preflight warns about: its renewal needs a config edit. The installer then runs `parcon check proxmox` in the VM as
     `parcon`. It confirms the Proxmox VE version, that the token has every privilege it needs on the pool, storage,
     and VNet, and that the storage accepts VM disks.
-11. **Create the GitHub App** with the manifest flow described under *GitHub App setup*. The code the user pastes is
+12. **Create the GitHub App** with the manifest flow described under *GitHub App setup*. The code the user pastes is
     passed to `parcon github app create` in the controller VM, so the App's private key goes straight from GitHub
     into the controller VM and never passes through the host. The installer then waits for the user to install the
     App (`parcon github app wait-installation`), learns from the installation which organization or repository the
@@ -231,13 +235,13 @@ The controller image and the installer agree on this layout:
     the key is in the VM, so a re-run after a failure keeps waiting for the same App rather than creating another. The installer then runs `parcon check github` in the VM. This confirms that the App
     credentials produce an installation token and can reach the org or repo. It then enables and starts
     `parcon.service`.
-12. **Smoke test.** The installer clones one worker from the template into a reserved VMID, tagged
+13. **Smoke test.** The installer clones one worker from the template into a reserved VMID, tagged
     `par-managed,par-build` so the reconcile loop leaves it alone, waits for it to finish booting, and confirms
     through `qm guest exec` that the worker got a DHCP lease, reaches GitHub, and can't reach the Proxmox API or the
     controller VM. It then destroys the clone and waits for the controller to log `scale set session opened`, which
     it does once the scale set is registered and its listener session is open. A re-run first destroys a clone a
     failed run left.
-13. **Summary.** Print the `runs-on:` label, the controller and gateway VMs' IDs and IPs, and the upgrade and
+14. **Summary.** Print the `runs-on:` label, the controller and gateway VMs' IDs and IPs, and the upgrade and
     uninstall commands. (The metrics URL and its certificate's fingerprint come with the metrics endpoint, which is
     deferred.)
 
@@ -440,6 +444,20 @@ The gateway is a single point of failure for worker networking. The controller's
 stay queued and workers that never register, and `install.sh check` tests it. Its OS updates itself with
 `unattended-upgrades`, and `install.sh upgrade` replaces it with a new image.
 
+### Host NIC offloads
+
+The node may itself be a VM, for example to keep the runners apart from a main Proxmox setup. Its NIC is then a
+virtio NIC under the LAN bridge, and its offloads (GRO, GSO, TSO, and TX checksumming) are on by default. The NIC
+merges incoming packets that the bridge then forwards to the gateway VM, which NATs them to the workers, and
+workers' downloads stall at a few KB/s while the host's own run at full speed.
+
+On such a node (a port of the LAN bridge whose driver is `virtio_net`), `install` and `upgrade` turn those offloads
+off with `ethtool -K`, and write `/etc/udev/rules.d/90-par-offloads.rules` so they stay off after a reboot. The rule
+matches the NIC by the name Proxmox gives it (such as `nic0`) and sorts after `80-net-setup-link.rules`, which
+renames it. This is a file of our own rather than a `post-up` line in `/etc/network/interfaces`, which Proxmox's GUI
+rewrites. `check` warns while the offloads are on or the rule is missing, and `uninstall` removes the rule and turns
+the offloads back on. On a node that isn't a VM, none of this happens.
+
 ## Upgrade and uninstall
 
 Each VM the installer creates carries a `par-release-<version>` tag, and the controller VM gets its tag last, so
@@ -456,10 +474,13 @@ install (the `par-system` pool exists), it continues it.
     network for the minute or two this takes.
   - The release's runner image is imported as a new template, and the controller removes the old one once its
     workers are gone.
+  - On a node that is itself a VM, the LAN NIC's offloads are turned off if they aren't yet (see *Host NIC
+    offloads*).
 - **Uninstall** first stops the controller and deletes the scale set in GitHub (`parcon github scaleset delete` in
   the controller VM, which also unregisters its runners). It then destroys every VM tagged `par-managed` in the two
   pools, clones before templates, removes the ACLs, token, user, role, and pools, and removes the `parzone` zone and
-  `parnet` VNet and applies the SDN config. It doesn't touch anything it didn't create. The GitHub App stays; delete
+  `parnet` VNet and applies the SDN config. On a node that is itself a VM, it removes the udev rule that keeps the LAN
+  NIC's offloads off and turns them back on. It doesn't touch anything it didn't create. The GitHub App stays; delete
   it in GitHub's settings if you no longer need it.
 
 ## Script conventions
