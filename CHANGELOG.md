@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/klponce/proxmox-actions-runners/compare/v0.2.0...v0.2.1) (2026-09-27)
+
+
+### Bug fixes
+
+* **controller:** don't let a slow GitHub stall cleanup and new workers ([905c63c](https://github.com/klponce/proxmox-actions-runners/commit/905c63c781730c888ec626ad484029a445af4c67))
+* **controller:** don't let a slow GitHub stall cleanup and new workers ([49fe079](https://github.com/klponce/proxmox-actions-runners/commit/49fe079e93daa904ac4d1dd12c6d3e8a101936c9))
+
 ## [0.2.0](https://github.com/klponce/proxmox-actions-runners/compare/v0.1.1...v0.2.0) (2026-09-27)
 
 
