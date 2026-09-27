@@ -23,7 +23,16 @@ const (
 	retireTimeout = 5 * time.Minute
 	// agentPollInterval is how often a booting worker's guest agent is pinged.
 	agentPollInterval = 2 * time.Second
+	// githubTimeout bounds each call the controller makes to GitHub. actions/scaleset's own limit is 5 minutes per
+	// attempt with 4 retries, so a GitHub endpoint that hangs would otherwise hold a worker operation, or the reconcile
+	// loop, for over 25 minutes. A call that times out is retried by a later pass.
+	githubTimeout = 30 * time.Second
 )
+
+// withGitHubTimeout bounds a call to GitHub by the controller's GitHub timeout.
+func (c *Controller) withGitHubTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, c.githubTimeout)
+}
 
 // errRunnerBusy stops a retirement whose runner is in the middle of a job.
 var errRunnerBusy = errors.New("runner is running a job")
@@ -104,17 +113,46 @@ func (c *Controller) startRetire(ctx context.Context, s *scaleSetState, vm proxm
 	})
 }
 
-// retire unregisters a VM's runner, if it has one, then stops and destroys the VM. Each step tolerates the thing
-// already being gone, so a retirement interrupted by a crash is simply repeated.
+// retire retires a VM and its runner. Each step tolerates the thing already being gone, so a retirement interrupted
+// by a crash is simply repeated.
+//
+// Without force, the runner is unregistered first, so GitHub can't hand it a job while its VM goes; a runner in a job
+// stops the retirement. With force (a worker that ran its job, outlived maxLifetime, or failed to build), the VM goes
+// first, whatever GitHub says or however slowly it answers, and the runner is unregistered afterwards if GitHub
+// allows. An ephemeral runner's registration ends with its job anyway.
 func (c *Controller) retire(ctx context.Context, vmid int, running bool, runnerName string, force bool) error {
-	if runnerName != "" {
-		if err := c.removeRunner(ctx, runnerName); err != nil && !force {
+	if runnerName != "" && !force {
+		if err := c.removeRunner(ctx, runnerName); err != nil {
 			return err
 		}
-		for _, s := range c.scaleSets {
-			s.forget(runnerName)
-		}
+		c.forgetRunner(runnerName)
 	}
+	if err := c.destroyVM(ctx, vmid, running); err != nil {
+		return err
+	}
+	c.mu.Lock()
+	delete(c.lastRunnerCheck, vmid)
+	c.mu.Unlock()
+	c.logger.InfoContext(ctx, "worker destroyed", slog.Int("vmid", vmid), slog.String("runnerName", runnerName))
+	if runnerName != "" && force {
+		if err := c.removeRunner(ctx, runnerName); err != nil {
+			c.logger.InfoContext(ctx, "unregistering a destroyed worker's runner failed; GitHub removes it once its "+
+				"job ends", slog.Int("vmid", vmid), slog.String("runnerName", runnerName),
+				slog.String("error", err.Error()))
+		}
+		c.forgetRunner(runnerName)
+	}
+	return nil
+}
+
+func (c *Controller) forgetRunner(name string) {
+	for _, s := range c.scaleSets {
+		s.forget(name)
+	}
+}
+
+// destroyVM stops a VM if it runs, then destroys it.
+func (c *Controller) destroyVM(ctx context.Context, vmid int, running bool) error {
 	if running {
 		// If the stop fails, the VM may have powered itself off or be gone already; Destroy tells.
 		if err := c.pve.Stop(ctx, vmid); err != nil {
@@ -122,14 +160,7 @@ func (c *Controller) retire(ctx context.Context, vmid int, running bool, runnerN
 				slog.String("error", err.Error()))
 		}
 	}
-	if err := c.destroy(ctx, vmid); err != nil {
-		return err
-	}
-	c.mu.Lock()
-	delete(c.lastRunnerCheck, vmid)
-	c.mu.Unlock()
-	c.logger.InfoContext(ctx, "worker destroyed", slog.Int("vmid", vmid), slog.String("runnerName", runnerName))
-	return nil
+	return c.destroy(ctx, vmid)
 }
 
 // destroy destroys a VM, counting one that is already gone as destroyed, so a retirement or prune that races with
@@ -166,6 +197,8 @@ func (c *Controller) listed(ctx context.Context, vmid int) (bool, error) {
 
 // removeRunner unregisters a runner by name. It returns errRunnerBusy if the runner is running a job.
 func (c *Controller) removeRunner(ctx context.Context, name string) error {
+	ctx, cancel := c.withGitHubTimeout(ctx)
+	defer cancel()
 	runner, err := c.gh.RunnerByName(ctx, name)
 	if err != nil {
 		return fmt.Errorf("find runner: %w", err)
@@ -264,7 +297,9 @@ func (c *Controller) create(ctx context.Context, s *scaleSetState, template prox
 		return fmt.Errorf("grow disk: %w", err)
 	}
 
-	jit, err := c.gh.GenerateJITConfig(ctx, s.id, name)
+	ghCtx, cancel := c.withGitHubTimeout(ctx)
+	jit, err := c.gh.GenerateJITConfig(ghCtx, s.id, name)
+	cancel()
 	if err != nil {
 		return fmt.Errorf("register runner: %w", err)
 	}

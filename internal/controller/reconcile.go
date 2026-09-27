@@ -15,6 +15,11 @@ import (
 // maxRunnerChecksPerPass bounds the GitHub lookups one pass makes, so a large pool doesn't slow the loop down.
 const maxRunnerChecksPerPass = 10
 
+// runnerCheckBudget bounds the time one pass spends looking up runners in GitHub. The lookups run in the loop, so
+// while GitHub is slow, the checks left over wait for a later pass rather than holding up the rest of this one:
+// retiring finished workers and creating new ones.
+const runnerCheckBudget = 20 * time.Second
+
 // view is what one pass sees in Proxmox.
 type view struct {
 	// template is the newest runner template, or nil if there is none.
@@ -82,13 +87,15 @@ func (c *Controller) reconcile(ctx context.Context) error {
 	}
 
 	checks := 0
+	checkCtx, cancelChecks := context.WithTimeout(ctx, c.runnerCheckBudget)
+	defer cancelChecks()
 	for name, workers := range v.workers {
 		s := c.scaleSets[name] // nil for a scale set no longer configured
 		for _, w := range workers {
 			if c.isBusy(w.vm.VMID) {
 				continue
 			}
-			if reason, force := c.retireReason(ctx, s, w, now, &checks); reason != "" {
+			if reason, force := c.retireReason(checkCtx, s, w, now, &checks); reason != "" {
 				c.startRetire(ctx, s, w.vm, w.name, force, reason)
 			}
 		}
@@ -137,8 +144,9 @@ func (c *Controller) retireReason(ctx context.Context, s *scaleSetState, w worke
 	}
 
 	// A ready, running worker whose runner is gone from GitHub has nothing left to do: its runner finished a job
-	// but the VM didn't power off, or someone removed the runner.
-	if age < c.runnerCheckAfter || *checks >= maxRunnerChecksPerPass || !c.runnerCheckDue(w.vm.VMID, now) {
+	// but the VM didn't power off, or someone removed the runner. ctx carries the pass's budget for these lookups.
+	if age < c.runnerCheckAfter || *checks >= maxRunnerChecksPerPass || ctx.Err() != nil ||
+		!c.runnerCheckDue(w.vm.VMID, now) {
 		return "", false
 	}
 	*checks++

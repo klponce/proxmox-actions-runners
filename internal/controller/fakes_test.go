@@ -318,6 +318,26 @@ type fakeGitHub struct {
 	releaseCalls int
 	// releaseBlock, if set, holds each lookup until it is closed.
 	releaseBlock chan struct{}
+	// hang makes runner lookups and removals hang until their context ends, as GitHub's runner API sometimes does.
+	hang bool
+}
+
+// hung reports whether the fake hangs, and if so waits for ctx to end.
+func (f *fakeGitHub) hung(ctx context.Context) error {
+	f.mu.Lock()
+	hang := f.hang
+	f.mu.Unlock()
+	if !hang {
+		return nil
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (f *fakeGitHub) setHang(hang bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hang = hang
 }
 
 func newFakeGitHub() *fakeGitHub {
@@ -347,7 +367,10 @@ func (f *fakeGitHub) GenerateJITConfig(_ context.Context, _ int, name string) (g
 	return newJIT(f.nextID, name), nil
 }
 
-func (f *fakeGitHub) RunnerByName(_ context.Context, name string) (*github.Runner, error) {
+func (f *fakeGitHub) RunnerByName(ctx context.Context, name string) (*github.Runner, error) {
+	if err := f.hung(ctx); err != nil {
+		return nil, fmt.Errorf("find runner %q: %w", name, err)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	id, ok := f.runners[name]
@@ -357,7 +380,10 @@ func (f *fakeGitHub) RunnerByName(_ context.Context, name string) (*github.Runne
 	return &github.Runner{ID: id, Name: name}, nil
 }
 
-func (f *fakeGitHub) RemoveRunner(_ context.Context, id int64) error {
+func (f *fakeGitHub) RemoveRunner(ctx context.Context, id int64) error {
+	if err := f.hung(ctx); err != nil {
+		return fmt.Errorf("remove runner %d: %w", id, err)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for name, rid := range f.runners {
