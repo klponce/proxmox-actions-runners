@@ -73,7 +73,7 @@ reaches into them through the guest agent for what it does.
 | `parcon check` | Check the node and the controller. `parcon check network` checks the worker network from a throwaway worker |
 | `parcon uninstall` | Remove everything, `parcon` included. The GitHub App stays |
 
-The settings you can change so far are `runners.max`, `worker.cores`, and `worker.memory`.
+The settings you can change so far are `runners.max`, `worker.cores`, `worker.memory`, and `worker.maxLifetime`.
 
 ## How it works
 
@@ -130,6 +130,20 @@ size plus `freeDiskGiB` (14 by default), because a clone's disk can grow but can
 
 Change them with `parcon config set worker.cores 4` and `parcon config set worker.memory 16GiB` on the Proxmox host.
 New workers get the new hardware; running ones finish their jobs as they are.
+
+A worker is destroyed after 6 hours, job or not, which matches GitHub-hosted runners. For longer jobs, raise it with
+`parcon config set worker.maxLifetime 12h` (up to `5d`, GitHub's limit for self-hosted runners), and give those jobs
+a `timeout-minutes` above their length, since GitHub cancels a job after 360 minutes by default on any runner:
+
+```yaml
+jobs:
+  build:
+    runs-on: proxmox-ubuntu-26.04
+    timeout-minutes: 720
+```
+
+The new limit applies to running workers too: raising it gives them more time, and lowering it destroys any already
+older than the new limit.
 
 `parcon` renders the controller's config, `/etc/proxmox-actions-runners/config.yaml` in the controller VM, from its
 settings on the host, and rewrites it whenever they change, so don't edit it by hand. The config can do more than

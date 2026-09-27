@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 
@@ -89,6 +90,9 @@ type ScaleSet struct {
 	RunnerGroup string   `yaml:"runnerGroup"`
 	MinRunners  int      `yaml:"minRunners"`
 	MaxRunners  int      `yaml:"maxRunners"`
+	// MaxLifetime is how long a worker may live, job included, before it is destroyed. Zero means
+	// config.DefaultMaxLifetime.
+	MaxLifetime time.Duration `yaml:"maxLifetime,omitempty"`
 }
 
 // Default returns the settings of a default install. The values come from internal/config, the one home of every
@@ -278,6 +282,10 @@ func (s *Settings) Validate() error {
 		ss.RunnerGroup != config.DefaultRunnerGroup {
 		add("scaleSet.runnerGroup", "repository runners must use the runner group %q", config.DefaultRunnerGroup)
 	}
+	if l := ss.MaxLifetime; l != 0 && (l < config.MinMaxLifetime || l > config.MaxMaxLifetime) {
+		add("scaleSet.maxLifetime", "%s must be %s to %s", l, config.FormatLifetime(config.MinMaxLifetime),
+			config.FormatLifetime(config.MaxMaxLifetime))
+	}
 	if ss.MinRunners < 0 {
 		add("scaleSet.minRunners", "must not be negative")
 	}
@@ -301,6 +309,14 @@ func (s *Settings) Validate() error {
 		return &ValidationError{Problems: p}
 	}
 	return nil
+}
+
+// EffectiveMaxLifetime returns the worker lifetime in effect: the settings' value, or the default.
+func (s *Settings) EffectiveMaxLifetime() time.Duration {
+	if s.ScaleSet.MaxLifetime == 0 {
+		return config.DefaultMaxLifetime
+	}
+	return s.ScaleSet.MaxLifetime
 }
 
 // EffectiveWorker returns the worker hardware in effect: the settings' values, with defaults for those not set.

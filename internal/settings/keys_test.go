@@ -39,6 +39,14 @@ func TestSetKey(t *testing.T) {
 		{key: "worker.memory", value: "16GB", wantErr: "use GiB or MiB"},
 		{key: "worker.memory", value: "512MiB", wantErr: "must be at least 1GiB"},
 		{key: "worker.memory", value: "64GiB", wantErr: "this node has only 62GiB"},
+		{key: "worker.maxLifetime", value: "12h", want: "12h"},
+		{key: "worker.maxLifetime", value: "36h", want: "36h"},
+		{key: "worker.maxLifetime", value: "2d", want: "2d"},
+		{key: "worker.maxLifetime", value: "90m", want: "1h30m"},
+		{key: "worker.maxLifetime", value: "5d", want: "5d"},
+		{key: "worker.maxLifetime", value: "6d", wantErr: "must be 10m to 5d"},
+		{key: "worker.maxLifetime", value: "5m", wantErr: "must be 10m to 5d"},
+		{key: "worker.maxLifetime", value: "12", wantErr: "needs a number and a unit"},
 		{key: "worker.disk", value: "20GiB", wantErr: "unknown key"},
 	}
 	for _, tt := range tests {
@@ -48,7 +56,8 @@ func TestSetKey(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("set %s %q = %v, want %q", tt.key, tt.value, err, tt.wantErr)
 			}
-			if d := Default(); s.ScaleSet.MaxRunners != d.ScaleSet.MaxRunners || s.Worker != d.Worker {
+			if d := Default(); s.ScaleSet.MaxRunners != d.ScaleSet.MaxRunners ||
+				s.ScaleSet.MaxLifetime != d.ScaleSet.MaxLifetime || s.Worker != d.Worker {
 				t.Errorf("set %s %q changed the settings on error", tt.key, tt.value)
 			}
 			continue
@@ -80,7 +89,8 @@ func TestSetKeyChecksTheWholeSettings(t *testing.T) {
 
 func TestGetShowsDefaults(t *testing.T) {
 	s := Default()
-	for name, want := range map[string]string{"runners.max": "1", "worker.cores": "2", "worker.memory": "8GiB"} {
+	for name, want := range map[string]string{"runners.max": "1", "worker.cores": "2", "worker.memory": "8GiB",
+		"worker.maxLifetime": "6h"} {
 		k, err := Lookup(name)
 		if err != nil {
 			t.Fatal(err)

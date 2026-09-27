@@ -18,9 +18,10 @@ const (
 	MinMemoryMiB   = 1024
 	minFreeDiskGiB = 1
 
-	minMaxLifetime = 10 * time.Minute
-	// maxMaxLifetime is GitHub's job execution limit for self-hosted runners.
-	maxMaxLifetime = 5 * 24 * time.Hour
+	// MinMaxLifetime and MaxMaxLifetime bound a worker's lifetime. MaxMaxLifetime is GitHub's job execution limit for
+	// self-hosted runners.
+	MinMaxLifetime = 10 * time.Minute
+	MaxMaxLifetime = 5 * 24 * time.Hour
 )
 
 // ScaleSetNamePattern is what a scale set name must match. Names become runs-on labels and Proxmox tags, so they are
@@ -204,9 +205,9 @@ func (c *Config) validateScaleSets(v *validator) {
 		}
 		totalMaxRunners += max(s.MaxRunners, 0)
 
-		if s.MaxLifetime < minMaxLifetime || s.MaxLifetime > maxMaxLifetime {
-			v.addf(prefix+".maxLifetime", "%s is out of range [%s, %s]", s.MaxLifetime, minMaxLifetime,
-				maxMaxLifetime)
+		if s.MaxLifetime < MinMaxLifetime || s.MaxLifetime > MaxMaxLifetime {
+			v.addf(prefix+".maxLifetime", "%s is out of range [%s, %s]", s.MaxLifetime, MinMaxLifetime,
+				MaxMaxLifetime)
 		}
 		s.Worker.validate(v, prefix+".worker")
 	}

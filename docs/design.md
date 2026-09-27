@@ -170,8 +170,9 @@ safe to apply again after a crash:
   isn't a template. A failed creation cleans up after itself right away, and the scale set backs off before trying
   again.
 - **Finished workers.** A ready worker that powered itself off has run its job, and is destroyed.
-- **Maximum lifetime.** A worker older than `maxLifetime` (6 hours by default, the hosted job limit) is destroyed even
-  if its runner is still in a job.
+- **Maximum lifetime.** A worker older than `maxLifetime` (6 hours by default, the hosted job limit; `parcon config
+  set worker.maxLifetime` changes it, up to GitHub's 5-day limit for self-hosted jobs) is destroyed even if its runner
+  is still in a job.
 - **Missing runners.** A ready, running worker whose runner is no longer registered in GitHub is destroyed. The check
   starts 10 minutes after creation and repeats every 5 minutes, with a bounded number of lookups per pass.
 - **Removed scale sets.** Workers of a scale set that is no longer in the config are retired once they're idle, and

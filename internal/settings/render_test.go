@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/klponce/proxmox-actions-runners/internal/config"
 	"github.com/klponce/proxmox-actions-runners/internal/hostsys"
@@ -78,5 +79,21 @@ func TestControllerConfigRefusesWhatTheControllerWould(t *testing.T) {
 	s.ScaleSet.MaxRunners = 200 // more than the VMID range holds
 	if _, _, err := ControllerConfig(&s, testEnv); err == nil || !strings.Contains(err.Error(), "vmidRange") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+func TestControllerConfigMaxLifetime(t *testing.T) {
+	s := Default()
+	c, data, err := ControllerConfig(&s, testEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The default is left to the controller's config, the one home of defaults.
+	if c.ScaleSets[0].MaxLifetime != config.DefaultMaxLifetime || strings.Contains(string(data), "maxLifetime") {
+		t.Errorf("default: %s\n%s", c.ScaleSets[0].MaxLifetime, data)
+	}
+	s.ScaleSet.MaxLifetime = 36 * time.Hour
+	if c, _, err = ControllerConfig(&s, testEnv); err != nil || c.ScaleSets[0].MaxLifetime != 36*time.Hour {
+		t.Errorf("36h: %v, %v", c.ScaleSets[0].MaxLifetime, err)
 	}
 }

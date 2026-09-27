@@ -543,7 +543,7 @@ func (r *Report) Render(w io.Writer, now time.Time) {
 		if s.IsDefault {
 			def = " (default)"
 		}
-		p("  %-14s %s%s", s.Key, s.Value, def)
+		p("  %-19s %s%s", s.Key, s.Value, def)
 	}
 	for _, w := range r.SettingsWarnings {
 		p("  WARN  %s", w)

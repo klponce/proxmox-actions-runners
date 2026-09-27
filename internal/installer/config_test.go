@@ -167,7 +167,7 @@ func TestStatus(t *testing.T) {
 		"jobs: 1 waiting, 1 running; runners: 1 (1 busy, 0 idle)",
 		"template 10096 has actions/runner 2.338.0, the latest",
 		"Workers: 1 of at most 1, 1 ready", "10000  ready    12m",
-		"worker.memory  8GiB (default)",
+		"worker.memory       8GiB (default)", "worker.maxLifetime  6h (default)",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("status lacks %q:\n%s", want, out.String())
@@ -198,5 +198,21 @@ func TestStatus(t *testing.T) {
 	if !r.Failed() || !strings.Contains(out.String(), "WARN  the controller's config doesn't match the settings") ||
 		!strings.Contains(out.String(), "FAIL  template 10096 has actions/runner 2.338.0, but 2.339.0 came out 25d ago") {
 		t.Errorf("status:\n%s", out.String())
+	}
+}
+
+func TestSetConfigMaxLifetime(t *testing.T) {
+	ti := installed(t)
+	must(t, ti.SetConfig(context.Background(), "worker.maxLifetime", "36h"))
+	cfg, err := config.Parse([]byte(ti.controller(t).files[config.DefaultPath]))
+	if err != nil || cfg.ScaleSets[0].MaxLifetime != 36*time.Hour {
+		t.Fatalf("controller config: %+v, %v", cfg, err)
+	}
+	if !ti.node.ran("qm guest exec 101 --timeout 480 -- systemctl try-restart parcon.service") {
+		t.Error("the controller wasn't restarted")
+	}
+	if out := ti.stdout.String(); !strings.Contains(out, "worker.maxLifetime: 6h -> 36h, which applies to every "+
+		"worker, running ones included") {
+		t.Errorf("output:\n%s", out)
 	}
 }
