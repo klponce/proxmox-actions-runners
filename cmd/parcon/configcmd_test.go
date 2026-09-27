@@ -56,10 +56,11 @@ func TestConfigGet(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"KEY            VALUE  DEFAULT  DESCRIPTION",
-		"runners.max    1      1        the most worker VMs at once, and so the most jobs at once",
-		"worker.cores   2      2        vCPUs per worker VM",
-		"worker.memory  16GiB  8GiB     memory per worker VM",
+		"KEY                 VALUE  DEFAULT  DESCRIPTION",
+		"runners.max         1      1        the most worker VMs at once, and so the most jobs at once",
+		"worker.cores        2      2        vCPUs per worker VM",
+		"worker.maxLifetime  6h     6h       how long a worker VM may live, its job included, before it is destroyed",
+		"worker.memory       16GiB  8GiB     memory per worker VM",
 		"parcon config describe <key>",
 	} {
 		if !strings.Contains(out, want) {
@@ -67,7 +68,7 @@ func TestConfigGet(t *testing.T) {
 		}
 	}
 	if _, errOut, err := onHost(t, &s, "config", "get", "worker.disk"); outcomeOf(err) != usageError ||
-		!strings.Contains(errOut, "the keys are runners.max, worker.cores, worker.memory") {
+		!strings.Contains(errOut, "the keys are runners.max, worker.cores, worker.maxLifetime, worker.memory") {
 		t.Errorf("unknown key: %v, %s", err, errOut)
 	}
 	if _, _, err := onHost(t, nil, "config", "get", "worker.cores"); err == nil ||

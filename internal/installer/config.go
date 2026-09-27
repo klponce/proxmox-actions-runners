@@ -49,7 +49,7 @@ func (in *Installer) SetConfig(ctx context.Context, key, value string) error {
 		return err
 	}
 	defer unlock()
-	in.Out.Say("%s: %s -> %s", key, before, after)
+	in.Out.Say("%s: %s -> %s, which applies %s", key, before, after, k.Applies)
 	return in.apply(ctx, s)
 }
 

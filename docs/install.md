@@ -242,7 +242,7 @@ The controller image, `parcon` on the host, and the controller agree on this lay
 | `network` | the bridge, VLAN, API address, the VMs' LAN addresses and router, the worker subnet | install flags |
 | `proxmox` | the storage and the VMID range | install flags |
 | `github` | the organization or repository, and the App's Client ID, installation ID, and slug (for its install link) | the install, as it learns them |
-| `scaleSet` | the name, labels, runner group, and the most and fewest workers | install flags, `runners.max` |
+| `scaleSet` | the name, labels, runner group, the most and fewest workers, and how long a worker may live | install flags, `runners.max`, `worker.maxLifetime` |
 | `worker` | worker hardware; a field left out uses the GitHub-matching default | `worker.cores`, `worker.memory` |
 
 It holds nothing secret. `parcon` renders the controller's `config.yaml` from it together with what it reads from
@@ -257,6 +257,7 @@ node (for example, no more vCPUs than the node has), a default, and says when a 
 | --- | ------ | ------- |
 | `runners.max` | 1 to the number of worker IDs in the VMID range, and at least `minRunners` | 1 |
 | `worker.cores` | 1 to the node's CPU threads | 2 |
+| `worker.maxLifetime` | 10m to 5d (GitHub's job limit for self-hosted runners), such as `12h`, `1h30m`, or `2d` | 6h |
 | `worker.memory` | 1GiB to the node's memory, in GiB or MiB, such as `8GiB` or `12288MiB` | 8GiB |
 
 `parcon config set` refuses a value outside them with the key's description, the same text `parcon config describe`
@@ -268,6 +269,12 @@ total than the node has. For a value it accepts, it:
 3. saves the settings;
 4. restarts `parcon.service` and waits for its scale set session. Running workers keep their jobs: a restarted
    controller adopts them. New workers get the new hardware.
+
+`worker.maxLifetime` is the exception to "running workers keep their jobs": the controller checks every worker's age
+against the current limit on every pass, so raising it gives running jobs more time at once, and lowering it destroys
+any worker already older than the new limit, even in the middle of its job. A job that runs longer than 6 hours also
+needs `timeout-minutes` in its workflow: GitHub cancels a job after 360 minutes unless the workflow allows more,
+whatever runs it.
 
 Adding a key means adding it to the registry in `internal/settings/keys.go`.
 

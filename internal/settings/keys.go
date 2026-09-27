@@ -38,7 +38,7 @@ type Key struct {
 var ErrUnknownKey = errors.New("unknown key")
 
 // Keys are the settings users can change, sorted by name.
-var Keys = []Key{runnersMax, workerCores, workerMemory}
+var Keys = []Key{runnersMax, workerCores, workerMaxLifetime, workerMemory}
 
 // Lookup finds a key by name.
 func Lookup(name string) (Key, error) {
@@ -181,6 +181,36 @@ var workerMemory = Key{
 		return nil
 	},
 	Applies: appliesToNewWorkers,
+}
+
+var workerMaxLifetime = Key{
+	Name:    "worker.maxLifetime",
+	Summary: "how long a worker VM may live, its job included, before it is destroyed",
+	Allowed: func(*Settings, Limits) string {
+		return fmt.Sprintf("a duration from %s to %s (GitHub's job limit for self-hosted runners), such as 12h, "+
+			"1h30m, or 2d. GitHub also cancels a job after its timeout-minutes, 360 (6h) unless the workflow sets "+
+			"more, so a job that runs longer needs both", config.FormatLifetime(config.MinMaxLifetime),
+			config.FormatLifetime(config.MaxMaxLifetime))
+	},
+	Default: config.FormatLifetime(config.DefaultMaxLifetime) + ", the job limit on GitHub-hosted runners",
+	Get: func(s *Settings) (string, bool) {
+		d := s.EffectiveMaxLifetime()
+		return config.FormatLifetime(d), d == config.DefaultMaxLifetime
+	},
+	Set: func(s *Settings, value string, _ Limits) error {
+		d, err := config.ParseLifetime(value)
+		if err != nil {
+			return err
+		}
+		if d < config.MinMaxLifetime || d > config.MaxMaxLifetime {
+			return fmt.Errorf("must be %s to %s", config.FormatLifetime(config.MinMaxLifetime),
+				config.FormatLifetime(config.MaxMaxLifetime))
+		}
+		s.ScaleSet.MaxLifetime = d
+		return nil
+	},
+	Applies: "to every worker, running ones included: the controller restarts, and a worker already older than a " +
+		"lower limit is destroyed, even in the middle of its job",
 }
 
 // Warning is a combination of settings that is allowed but likely to cause trouble on this node.

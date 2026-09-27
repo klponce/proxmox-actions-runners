@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefaultIsValid(t *testing.T) {
@@ -23,6 +24,7 @@ func TestSaveAndLoad(t *testing.T) {
 	s := Default()
 	s.GitHub = GitHub{ConfigURL: "https://github.com/my-org", App: App{ClientID: "Iv23liEXAMPLE", InstallationID: 7}}
 	s.ScaleSet.Labels = []string{"null", "true"}
+	s.ScaleSet.MaxLifetime = 36 * time.Hour
 	s.Worker.MemoryMiB = 16384
 	if err := s.Save(path); err != nil {
 		t.Fatal(err)
@@ -35,7 +37,7 @@ func TestSaveAndLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.GitHub != s.GitHub || got.Worker != s.Worker || strings.Join(got.ScaleSet.Labels, ",") != "null,true" {
+	if got.GitHub != s.GitHub || got.Worker != s.Worker || got.ScaleSet.MaxLifetime != 36*time.Hour || strings.Join(got.ScaleSet.Labels, ",") != "null,true" {
 		t.Errorf("Load = %+v", got)
 	}
 }
@@ -67,6 +69,7 @@ func TestValidateReportsEveryProblem(t *testing.T) {
 	s.ScaleSet.RunnerGroup = "big ones"
 	s.ScaleSet.MinRunners = 3
 	s.Worker.MemoryMiB = 512
+	s.ScaleSet.MaxLifetime = time.Minute
 	var verr *ValidationError
 	if err := s.Validate(); !errors.As(err, &verr) {
 		t.Fatalf("Validate = %v", err)
@@ -74,7 +77,7 @@ func TestValidateReportsEveryProblem(t *testing.T) {
 	want := []string{
 		"network.bridge", "network.vlan", "network.controllerIP", "network.lanGateway", "network.workerSubnet",
 		"proxmox.storage", "proxmox.vmidRange", "scaleSet.name", "scaleSet.labels", "scaleSet.runnerGroup",
-		"scaleSet.minRunners", "worker.memoryMiB",
+		"scaleSet.maxLifetime", "scaleSet.minRunners", "worker.memoryMiB",
 	}
 	if len(verr.Problems) != len(want) {
 		t.Errorf("problems:\n%s", strings.Join(verr.Problems, "\n"))

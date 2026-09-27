@@ -74,8 +74,9 @@ Keep these true. If a change needs to break one, discuss it first.
 3. **Crash-safe.** The controller holds no state that it can't rebuild. On restart it rebuilds its view from
    Proxmox VM tags and metadata plus GitHub, then cleans up orphans such as VMs with no runner, runners with no VM,
    and half-created clones. A half-created clone is destroyed, not repaired.
-4. **Bounded lifetime.** Every worker has a hard `maxLifetime` (6 hours by default). The reaper destroys any managed
-   VM past that limit, or with no matching GitHub runner past a grace period, whatever state it is in.
+4. **Bounded lifetime.** Every worker has a hard `maxLifetime` (6 hours by default, `worker.maxLifetime` in
+   `parcon config`, at most GitHub's 5-day job limit). The reaper destroys any managed VM past that limit, or with no
+   matching GitHub runner past a grace period, whatever state it is in.
 5. **Only touch what we own.** Every managed VM is tagged, for example with `par-managed` and a scale set tag, and
    lives in the runner pool. The controller must never modify or delete an untagged VM. It must never modify an
    existing template: a new runner image is imported as a new template instead, and the controller deletes an old

@@ -47,6 +47,7 @@ func ControllerConfig(s *Settings, env Env) (*config.Config, []byte, error) {
 			RunnerGroup: s.ScaleSet.RunnerGroup,
 			MinRunners:  s.ScaleSet.MinRunners,
 			MaxRunners:  s.ScaleSet.MaxRunners,
+			MaxLifetime: s.ScaleSet.MaxLifetime,
 		}},
 	}
 	switch env.TLS.Mode {
