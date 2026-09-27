@@ -182,8 +182,17 @@ safe to apply again after a crash:
 - **Scaling down.** Surplus idle workers are retired oldest first. GitHub refuses to remove a runner that is running a
   job. The controller then counts that worker as busy, even if it missed the job's start, and picks another one.
 
-Retiring a worker unregisters its runner, stops the VM, and destroys it; each step accepts that its target may already
-be gone. VMIDs come from the configured range, lowest free first. An ID Proxmox reports as taken by a VM the token
+Retiring an idle worker unregisters its runner first, so GitHub can't hand it a job, then stops the VM and destroys
+it. A worker that ran its job, outlived `maxLifetime`, or failed to build is destroyed first and its runner
+unregistered afterwards, so cleanup never waits on GitHub. Each step accepts that its target may already be gone.
+
+- **A slow GitHub.** GitHub's runner API sometimes hangs for minutes, and `actions/scaleset` waits up to 5 minutes per
+  attempt, with retries. Every call the controller makes to GitHub gives up after 30 seconds instead, and is tried
+  again on a later pass. The runner checks run in the reconcile loop, so a pass spends at most 20 seconds on them
+  and leaves the rest for a later pass. A hung GitHub can delay scaling down, but not cleaning up finished workers
+  or creating new ones.
+
+VMIDs come from the configured range, lowest free first. An ID Proxmox reports as taken by a VM the token
 can't see is skipped from then on. On shutdown the controller finishes the operations in flight but leaves running
 workers alone, so restarting or upgrading it doesn't cancel jobs.
 

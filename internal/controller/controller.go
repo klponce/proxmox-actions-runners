@@ -105,6 +105,9 @@ type Controller struct {
 	retryBackoff     time.Duration
 	// agentPoll is how often a booting worker's guest agent is pinged.
 	agentPoll time.Duration
+	// githubTimeout bounds each GitHub call, and runnerCheckBudget a pass's runner lookups. Tests shorten them.
+	githubTimeout     time.Duration
+	runnerCheckBudget time.Duration
 
 	// scaleSets holds each configured scale set's state, by name.
 	scaleSets map[string]*scaleSetState
@@ -135,25 +138,27 @@ func New(opts Options) (*Controller, error) {
 		return nil, errors.New("controller: config, Proxmox client, and GitHub client are required")
 	}
 	c := &Controller{
-		cfg:              opts.Config,
-		pve:              opts.Proxmox,
-		gh:               opts.GitHub,
-		owner:            opts.Owner,
-		logger:           opts.Logger,
-		now:              opts.Now,
-		resync:           orDefault(opts.ResyncInterval, defaultResyncInterval),
-		bootTimeout:      orDefault(opts.BootTimeout, defaultBootTimeout),
-		runnerCheckAfter: orDefault(opts.RunnerCheckAfter, defaultRunnerCheckAfter),
-		runnerCheckEvery: orDefault(opts.RunnerCheckEvery, defaultRunnerCheckEvery),
-		retryBackoff:     orDefault(opts.RetryBackoff, defaultRetryBackoff),
-		agentPoll:        agentPollInterval,
-		scaleSets:        map[string]*scaleSetState{},
-		wake:             make(chan struct{}, 1),
-		busy:             map[int]string{},
-		foreign:          map[int]bool{},
-		lastRunnerCheck:  map[int]time.Time{},
-		statusPath:       opts.StatusPath,
-		status:           Status{Schema: StatusSchema, Version: opts.Version},
+		cfg:               opts.Config,
+		pve:               opts.Proxmox,
+		gh:                opts.GitHub,
+		owner:             opts.Owner,
+		logger:            opts.Logger,
+		now:               opts.Now,
+		resync:            orDefault(opts.ResyncInterval, defaultResyncInterval),
+		bootTimeout:       orDefault(opts.BootTimeout, defaultBootTimeout),
+		runnerCheckAfter:  orDefault(opts.RunnerCheckAfter, defaultRunnerCheckAfter),
+		runnerCheckEvery:  orDefault(opts.RunnerCheckEvery, defaultRunnerCheckEvery),
+		retryBackoff:      orDefault(opts.RetryBackoff, defaultRetryBackoff),
+		agentPoll:         agentPollInterval,
+		githubTimeout:     githubTimeout,
+		runnerCheckBudget: runnerCheckBudget,
+		scaleSets:         map[string]*scaleSetState{},
+		wake:              make(chan struct{}, 1),
+		busy:              map[int]string{},
+		foreign:           map[int]bool{},
+		lastRunnerCheck:   map[int]time.Time{},
+		statusPath:        opts.StatusPath,
+		status:            Status{Schema: StatusSchema, Version: opts.Version},
 	}
 	if c.logger == nil {
 		c.logger = slog.New(slog.DiscardHandler)
