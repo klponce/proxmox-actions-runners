@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.1](https://github.com/klponce/proxmox-actions-runners/compare/v0.1.0...v0.1.1) (2026-09-26)
+
+
+### Bug fixes
+
+* **config:** warn only about the key being set ([38d09dc](https://github.com/klponce/proxmox-actions-runners/commit/38d09dc974d9d87b21f5a9a3198d9a9056ea1884))
+* install link last, status progress, config set warnings ([7e258a3](https://github.com/klponce/proxmox-actions-runners/commit/7e258a306fefa8781b34866ebfe43bcbba73be58))
+* **install:** end with the App's install link while waiting for it ([1d15710](https://github.com/klponce/proxmox-actions-runners/commit/1d15710e766be121092225554c5e86ae97244be5))
+* **status:** say at once that it is collecting, and report each part as it comes in ([de7ec7d](https://github.com/klponce/proxmox-actions-runners/commit/de7ec7d20966c3b63df11219df2fd47041bd34d6))
+
 ## 0.1.0 (2026-09-26)
 
 
