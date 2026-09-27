@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0](https://github.com/klponce/proxmox-actions-runners/compare/v0.1.1...v0.2.0) (2026-09-27)
+
+
+### Features
+
+* **config:** make a worker's maximum lifetime configurable ([1458044](https://github.com/klponce/proxmox-actions-runners/commit/1458044ab0ca0477867748e3e0d0625fbab792f2))
+* **config:** make a worker's maximum lifetime configurable ([37a5cc9](https://github.com/klponce/proxmox-actions-runners/commit/37a5cc95b9d373fe8ec1e7e431613f3486b3d46f))
+
 ## [0.1.1](https://github.com/klponce/proxmox-actions-runners/compare/v0.1.0...v0.1.1) (2026-09-26)
 
 
