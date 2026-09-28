@@ -69,7 +69,7 @@ reaches into them through the guest agent for what it does.
 | `parcon config get --all` | Every setting you can change, with its value and default |
 | `parcon config set worker.memory 16GiB` | Change a setting. The controller restarts with it; running jobs keep going |
 | `parcon config describe worker.memory` | Which values a setting takes, and when a change applies |
-| `parcon update` | Update to the newest release, once its signature checks out. `--pre` includes pre-releases |
+| `parcon update` | Update to the newest release, once its signature checks out. `--pre` includes pre-releases, and `--force` runs every step again to repair an install |
 | `parcon check` | Check the node and the controller. `parcon check network` checks the worker network from a throwaway worker |
 | `parcon uninstall` | Remove everything, `parcon` included. The GitHub App stays |
 

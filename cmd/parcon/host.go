@@ -296,6 +296,8 @@ func runUpdate(args []string, stdout, stderr io.Writer) error {
 	var h hostFlags
 	h.register(fs, true)
 	pre := fs.Bool("pre", false, "consider pre-releases too, such as 0.2.0-rc.1")
+	force := fs.Bool("force", false, "run every step, even those already done for the release, to repair "+
+		"an install")
 	// Set by an older parcon that installed this one to finish the update it started. Not in the usage text.
 	cont := fs.Bool("continue", false, "")
 	if err := parseHostFlags(fs, args, stderr); err != nil {
@@ -311,5 +313,5 @@ func runUpdate(args []string, stdout, stderr io.Writer) error {
 	in.Yes, in.Assets = h.yes || *cont, h.assets
 	ctx, cancel := hostContext()
 	defer cancel()
-	return in.Update(ctx, installer.UpdateOptions{Pre: *pre, Continue: *cont})
+	return in.Update(ctx, installer.UpdateOptions{Pre: *pre, Continue: *cont, Force: *force})
 }
