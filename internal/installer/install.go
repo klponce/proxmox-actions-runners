@@ -98,6 +98,9 @@ func (in *Installer) install(ctx context.Context, s *settings.Settings, opts Ins
 	if err := in.tuneOffloads(ctx, s); err != nil {
 		return err
 	}
+	if err := in.tuneAsyncPF(ctx); err != nil {
+		return err
+	}
 	if in.stop("network") {
 		return nil
 	}
@@ -167,6 +170,7 @@ Status:    parcon status
 Settings:  parcon config get --all
 Update:    parcon update
 Uninstall: parcon uninstall`, s.GitHub.ConfigURL, runsOn, controller, addr, gateway)
+	in.rebootNote(ctx)
 	return nil
 }
 
@@ -207,7 +211,7 @@ func (in *Installer) printPlan(ctx context.Context, s *settings.Settings, warnin
 	p := func(format string, args ...any) { _, _ = fmt.Fprintf(w, format+"\n", args...) }
 	p("Host:")
 	p("  install parcon as %s, and its settings as %s", in.BinaryPath, in.SettingsPath)
-	for _, l := range in.offloadPlan(ctx, s) {
+	for _, l := range append(in.offloadPlan(ctx, s), in.asyncPFPlan(ctx)...) {
 		p("  %s", l)
 	}
 	p("Proxmox objects on node %s:", node)

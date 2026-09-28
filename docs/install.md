@@ -17,9 +17,10 @@ remove everything it created. It installs only from a signed release.
   happens on any other device, and the user copies one code back.
 - **Minimal host footprint.** The host gets `parcon` itself, its settings, Proxmox objects (pools, a role, a user
   and token, ACLs, VMs, and an SDN zone and VNet), and host tuning only where the runners need it: on a node that is
-  itself a VM, a udev rule that turns off the LAN NIC's offloads (see *Host NIC offloads*). No apt packages, no
-  services, no cloud-init snippets, and no edits to files Proxmox or the user manages, such as
-  `/etc/network/interfaces` or `storage.cfg`.
+  itself a VM, a udev rule that turns off the LAN NIC's offloads (see *Host NIC offloads*) and, on KVM, the
+  `no-kvm-apf` kernel parameter (see *Host KVM async page faults*). No apt packages, no services, no reboots, no
+  cloud-init snippets, and no edits to files Proxmox or the user manages, such as `/etc/network/interfaces` or
+  `storage.cfg`, except `/etc/kernel/cmdline` on a systemd-boot node, which has no room for a file of ours.
 - **Independent of the LAN.** Workers never share a network with the host or the LAN. A gateway VM connects their
   network to the internet, so the design works the same whatever the LAN, VLAN, or host firewall setup is.
 - **No-touch VMs.** Everything the user does, they do with `parcon` on the host. The controller VM keeps the secrets,
@@ -200,6 +201,7 @@ saved settings, skips the free space an install needs, and also runs the control
 | Free memory and CPU | host RAM and threads against `maxRunners` × worker size plus existing VMs | warn |
 | LAN bridge | the bridge for the controller and gateway VMs exists. VLAN tag valid if set | hard |
 | LAN NIC offloads | on a node that is itself a VM (a virtio NIC under the LAN bridge), its offloads are off, now and at boot. `parcon install` and `parcon update` turn them off; `parcon check` warns until they are | warn |
+| KVM async page faults | on a node that is a VM on KVM (`systemd-detect-virt --vm` prints `kvm`), the boot loader boots it with `no-kvm-apf`, and it booted with it. `parcon install` and `parcon update` set it; `parcon check` warns until they have and the node has rebooted | warn |
 | API certificate | how the controller will verify it: the node's CA, the system CAs, or a pinned fingerprint for a certificate from a CA the host doesn't trust | warn if pinned |
 | SDN available | `ifupdown2` installed and `/etc/network/interfaces` sources `/etc/network/interfaces.d/*`, so applying SDN works | hard |
 | Worker subnet free | the worker subnet doesn't overlap any route or address on the host, or the LAN subnet given for the gateway | hard |
@@ -295,7 +297,8 @@ Adding a key means adding it to the registry in `internal/settings/keys.go`.
    disk, a command line, or the output.
 6. **Worker network** (`pvesh`): create the simple zone `parzone` and the VNet `parnet` with no subnet, then apply
    the SDN config (`pvesh set /cluster/sdn`).
-7. **Host NIC offloads**, only on a node that is itself a VM: see *Host NIC offloads*.
+7. **Host NIC offloads**, only on a node that is itself a VM: see *Host NIC offloads*. Then **KVM async page
+   faults**, only on a node that is a VM on KVM: see *Host KVM async page faults*.
 8. **Verify the release**: download `SHA256SUMS` and `SHA256SUMS.sig` and check the signature. Each image is then
    downloaded when a step needs it, into a temporary directory under `/var/tmp` that is removed afterward, and checked
    against `SHA256SUMS`.
@@ -561,6 +564,35 @@ renames it. This is a file of our own rather than a `post-up` line in `/etc/netw
 rewrites. `parcon check` and `parcon status` warn while the offloads are on or the rule is missing, and
 `parcon uninstall` removes the rule and turns the offloads back on. On a node that isn't a VM, none of this happens.
 
+### Host KVM async page faults
+
+On a node that is itself a VM on KVM, the outer host sends the node's kernel an async page fault when a page of the
+node's memory isn't ready, because it is swapped out or being moved, so that the node can run something else
+meanwhile. A Linux guest takes one only while a program runs, but the node runs VMs of its own, the workers, and the
+outer host can deliver one while the node's kernel runs. The node then panics with "Host injected async #PF in
+kernel mode", or a task hangs for good waiting for a page the outer host never reports ready. Plenty of free memory
+on the outer host makes it rarer, not impossible.
+
+The kernel parameter `no-kvm-apf` turns them off: the outer host then pauses the vCPU until the page is ready, as for
+a guest without the feature. The rare wait costs microseconds to milliseconds, and the node keeps KVM's other
+paravirtual features. The test is `systemd-detect-virt --vm` printing `kvm`: hardware KVM is required on every node,
+and a node on another hypervisor never gets these faults.
+
+`parcon install` and `parcon update` set it for the node's next boot, for each boot loader the node has:
+
+- **GRUB** (`/etc/default/grub` exists): `/etc/default/grub.d/par-no-kvm-apf.cfg`, which appends it to
+  `GRUB_CMDLINE_LINUX`, then `update-grub`. Proxmox keeps its own kernel pin in the same directory.
+- **systemd-boot** (`/etc/kernel/cmdline` exists): it is appended to the file's first line, the one
+  `proxmox-boot-tool` reads. The file has no room for a file of ours, so this is the one file of the user's that
+  `parcon` edits.
+- Then, when `proxmox-boot-tool` keeps ESPs in sync (`/etc/kernel/proxmox-boot-uuids`), `proxmox-boot-tool refresh`.
+
+`parcon` never reboots the node: stopping it would kill running jobs. The plan and the end of install and update say
+to reboot it, and `parcon check` and `parcon status` warn until the running kernel has `no-kvm-apf`. On a node with
+neither boot loader, they warn and say to add it by hand. `parcon uninstall` removes the GRUB file and runs
+`update-grub`, and takes `no-kvm-apf` out of `/etc/kernel/cmdline`, even if the user had put it there; async page
+faults come back on at the next boot.
+
 ## Update and uninstall
 
 Each VM `parcon` creates carries a `par-release-<version>` tag, and the controller VM gets its tag last, so it marks
@@ -582,14 +614,15 @@ one with an unfinished install (the `par-system` pool exists), it continues it.
     release renders, restarts `parcon.service`, and waits for its session. The VM's OS updates itself with
     `unattended-upgrades`.
   - On a node that is itself a VM, the LAN NIC's offloads are turned off if they aren't yet (see *Host NIC
-    offloads*).
+    offloads*), and on KVM, `no-kvm-apf` is set for the next boot if it isn't yet (see *Host KVM async page faults*).
   - Each piece already at the release is left alone, so `parcon update` again continues an update that stopped. An
     install newer than the host's `parcon` is refused rather than downgraded.
 - **Uninstall** (`parcon uninstall`) first stops the controller and deletes the scale set in GitHub
   (`parcon github scaleset delete` in the controller VM, which also unregisters its runners). It then destroys every
   VM tagged `par-managed` in the two pools, clones before templates, removes the ACLs, token, user, role, and pools,
   and removes the `parzone` zone and `parnet` VNet and applies the SDN config. On a node that is itself a VM, it
-  removes the udev rule that keeps the LAN NIC's offloads off and turns them back on. Last, it removes the settings
+  removes the udev rule that keeps the LAN NIC's offloads off and turns them back on, and takes `no-kvm-apf` out of
+  the kernel command line. Last, it removes the settings
   and `/usr/local/bin/parcon`. It doesn't touch anything it didn't create. The GitHub App stays; delete it in
   GitHub's settings if you no longer need it.
 

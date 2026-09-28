@@ -94,10 +94,12 @@ Keep these true. If a change needs to break one, discuss it first.
    (`/usr/local/bin/parcon`) and its settings (`/etc/proxmox-actions-runners/settings.yaml`), what the runners run
    on (pools, role, user, token, ACLs, VMs, and the worker network's SDN zone and VNet, through `pveum`, `qm`,
    `pvesh`, and `pvesm`), and host tuning the runners can't work well without, such as turning off the LAN NIC's
-   offloads on a node that is itself a VM. A change that is merely convenient doesn't qualify, and whatever can run
-   inside the controller or gateway VM runs there. `parcon` runs no service on the host, installs no packages, and
-   doesn't edit files that Proxmox or the user manages, such as `/etc/network/interfaces` or `storage.cfg`: a change
-   outside Proxmox's tools goes in a file of its own, named as ours. The worker network has no host IP, SNAT, or
+   offloads and KVM's async page faults on a node that is itself a VM. A change that is merely convenient doesn't
+   qualify, and whatever can run inside the controller or gateway VM runs there. `parcon` runs no service on the
+   host, installs no packages, never reboots it, and doesn't edit files that Proxmox or the user manages, such as
+   `/etc/network/interfaces` or `storage.cfg`: a change outside Proxmox's tools goes in a file of its own, named as
+   ours. The one exception is `/etc/kernel/cmdline`, which has no room for a file of ours: on a systemd-boot node
+   that is itself a VM on KVM, `parcon` adds `no-kvm-apf` to it and `parcon uninstall` takes it out. The worker network has no host IP, SNAT, or
    DHCP, so the host never routes worker traffic. Every host change must appear in the plan `parcon` prints before
    it changes anything, and `parcon uninstall` must remove it.
 9. **Workers are isolated.** Workers attach only to the worker network. Their only way out is the gateway VM, which
@@ -239,7 +241,7 @@ See [docs/install.md](docs/install.md) for the full design.
   gateway VM. If it can't, and the runners need it, make it idempotent, list it in the plan, report it in
   `parcon check` and `parcon status`, and undo it in `uninstall`.
 - Preflight checks come first and change nothing. They include root, Proxmox VE 9.x, KVM, standalone node, clock
-  sync, tools, storage, space, the LAN bridge and its NIC's offloads, SDN support, worker subnet overlap, and name or
+  sync, tools, storage, space, the LAN bridge and its NIC's offloads, KVM async page faults, SDN support, worker subnet overlap, and name or
   ID clashes. Add a check whenever a later step could fail on host state.
 - Show the plan and ask before any change; `--dry-run` stops at the plan and `--yes` answers the question. Without
   a terminal, a question fails and names `--yes`: never guess an answer.
