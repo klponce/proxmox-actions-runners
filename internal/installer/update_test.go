@@ -127,7 +127,7 @@ func TestUpgradeBringsTheNodeToTheRelease(t *testing.T) {
 	}
 
 	installedV, _ := release.ParseVersion("0.2.0")
-	must(t, ti.Upgrade(context.Background(), installedV, true))
+	must(t, ti.Upgrade(context.Background(), installedV, true, false))
 	out := ti.stdout.String()
 	for _, want := range []string{"import the 0.3.0 runner template", "replace gateway VM 100 with the new image",
 		"replace parcon 0.2.0 in controller VM 101 with 0.3.0", "render the controller's config",
@@ -151,7 +151,7 @@ func TestUpgradeBringsTheNodeToTheRelease(t *testing.T) {
 	// Once there, another upgrade has nothing to do.
 	n.calls = nil
 	ti.stdout.Reset()
-	must(t, ti.Upgrade(context.Background(), v, true))
+	must(t, ti.Upgrade(context.Background(), v, true, false))
 	if !strings.Contains(ti.stdout.String(), "nothing needs updating") || n.ran("qm stop") {
 		t.Errorf("second upgrade:\n%s", ti.stdout)
 	}
@@ -160,7 +160,7 @@ func TestUpgradeBringsTheNodeToTheRelease(t *testing.T) {
 func TestUpgradeRefusesADowngrade(t *testing.T) {
 	ti := installed(t)
 	newer, _ := release.ParseVersion("0.9.0")
-	if err := ti.Upgrade(context.Background(), newer, true); err == nil || !strings.Contains(err.Error(), "newer than") {
+	if err := ti.Upgrade(context.Background(), newer, true, false); err == nil || !strings.Contains(err.Error(), "newer than") {
 		t.Errorf("Upgrade = %v", err)
 	}
 }

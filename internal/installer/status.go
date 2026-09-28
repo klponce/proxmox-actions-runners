@@ -316,6 +316,8 @@ func (in *Installer) systemVMStatus(ctx context.Context, vm proxmox.VM) *SystemV
 func (in *Installer) gatewayStatus(ctx context.Context, vm proxmox.VM) *SystemVMStatus {
 	st := in.systemVMStatus(ctx, vm)
 	if len(st.Findings) > 0 {
+		// It holds no state, so replacing it is always safe; a stopped update can leave it without a disk.
+		st.Findings = append(st.Findings, Finding{FAIL, "parcon update --force replaces it"})
 		return st
 	}
 	st.Findings = append(st.Findings, Finding{OK, fmt.Sprintf("running, release %s, %s", orNone(st.Release), orNone(st.Address))})

@@ -24,6 +24,9 @@ type UpdateOptions struct {
 	// Continue means this parcon was just installed by an update, which the user confirmed: it brings the node to
 	// its own release without looking for a newer one.
 	Continue bool
+	// Force redoes every piece of the update, even those already at the release, to repair an install that a
+	// stopped update or anything else left broken.
+	Force bool
 }
 
 // execBinary replaces this process with another program. Tests replace it.
@@ -53,7 +56,7 @@ func (in *Installer) Update(ctx context.Context, opts UpdateOptions) error {
 		}
 		in.Out.Say("The newest release is %s, and this parcon is %s.", latest.Version, in.Version)
 	}
-	return in.Upgrade(ctx, installed, opts.Continue)
+	return in.Upgrade(ctx, installed, opts.Continue, opts.Force)
 }
 
 // updateSelf installs the verified parcon of release v and runs it to update the node.
@@ -62,6 +65,9 @@ func (in *Installer) updateSelf(ctx context.Context, installed, v release.Versio
 	in.Out.Say("Update proxmox-actions-runners %s to %s:", installed, v)
 	in.Out.Say("  replace %s with parcon %s, from the release, once its signature checks out", in.BinaryPath, v)
 	in.Out.Say("  then, run by parcon %s: its runner template, gateway VM, and controller, as it plans them", v)
+	if opts.Force {
+		in.Out.Say("  (--force: all of them, even those already at %s)", v)
+	}
 	if in.Change.DryRun {
 		return nil
 	}
@@ -96,6 +102,9 @@ func (in *Installer) updateSelf(ctx context.Context, installed, v release.Versio
 	if opts.Pre {
 		args = append(args, "--pre")
 	}
+	if opts.Force {
+		args = append(args, "--force")
+	}
 	return execBinary(in.BinaryPath, args)
 }
 
@@ -106,8 +115,9 @@ type upgradeStep struct {
 }
 
 // Upgrade brings the node from release installed to this parcon's release: the runner template, the gateway VM,
-// the controller's parcon and config, and the host's NIC offloads and KVM async page faults. Each piece already at this release is left alone.
-func (in *Installer) Upgrade(ctx context.Context, installed release.Version, confirmed bool) error {
+// the controller's parcon and config, and the host's NIC offloads and KVM async page faults. Each piece already at
+// this release is left alone, unless force redoes it.
+func (in *Installer) Upgrade(ctx context.Context, installed release.Version, confirmed, force bool) error {
 	if installed.Compare(in.Version) > 0 {
 		return fmt.Errorf("the node runs release %s, newer than this parcon %s; run parcon update", installed,
 			in.Version)
@@ -116,7 +126,7 @@ func (in *Installer) Upgrade(ctx context.Context, installed release.Version, con
 	if err != nil {
 		return err
 	}
-	steps, err := in.upgradeSteps(ctx, s)
+	steps, err := in.upgradeSteps(ctx, s, force)
 	if err != nil {
 		return err
 	}
@@ -153,15 +163,19 @@ func (in *Installer) Upgrade(ctx context.Context, installed release.Version, con
 	return nil
 }
 
-// upgradeSteps works out what an upgrade to this release has to do. None means the node is at this release.
-func (in *Installer) upgradeSteps(ctx context.Context, s *settings.Settings) ([]upgradeStep, error) {
+// upgradeSteps works out what an upgrade to this release has to do. None means the node is at this release. With
+// force, every step runs, even one already done for this release: it imports the runner template again, replaces
+// the gateway VM (or creates it, if it is gone), reinstalls the controller's parcon and config, and runs the host
+// tuning. The safety checks stay: the release's signature, the plan and its question, the lock, and the controller's
+// check of its new config.
+func (in *Installer) upgradeSteps(ctx context.Context, s *settings.Settings, force bool) ([]upgradeStep, error) {
 	vms, err := in.vms(ctx)
 	if err != nil {
 		return nil, err
 	}
-	gateway, ok := findSystemVM(vms, vmtags.Gateway)
-	if !ok {
-		return nil, errors.New("the install has no gateway VM; run parcon uninstall and parcon install")
+	gateway, hasGateway := findSystemVM(vms, vmtags.Gateway)
+	if !hasGateway && !force {
+		return nil, errors.New("the install has no gateway VM; run parcon update --force to create it")
 	}
 	controller, ok := findSystemVM(vms, vmtags.Controller)
 	if !ok || controller.Status != "running" {
@@ -206,19 +220,42 @@ func (in *Installer) upgradeSteps(ctx context.Context, s *settings.Settings) ([]
 		steps = append(steps, upgradeStep{plan: fmt.Sprintf("install parcon %s as %s", in.Version, in.BinaryPath),
 			do: func(context.Context) error { return in.installBinary() }})
 	}
-	if !hasTemplate {
+	if !hasTemplate || force {
+		again := ""
+		if hasTemplate {
+			again = " again"
+		}
 		steps = append(steps, upgradeStep{
-			plan: fmt.Sprintf("import the %s runner template; the controller removes old ones once unused", in.Version),
+			plan: fmt.Sprintf("import the %s runner template%s; the controller removes old ones once unused",
+				in.Version, again),
 			do: func(ctx context.Context) error {
 				a, err := fetch(ctx)
 				if err != nil {
 					return err
 				}
-				return in.importTemplate(ctx, s, a)
+				return in.importTemplate(ctx, s, a, force)
 			},
 		})
 	}
-	if !gateway.HasTag(in.releaseTag()) {
+	if !hasGateway {
+		steps = append(steps, upgradeStep{
+			plan: "create the gateway VM from the new image (workers have no network until it is up)",
+			do: func(ctx context.Context) error {
+				a, err := fetch(ctx)
+				if err != nil {
+					return err
+				}
+				vmid, err := in.createGateway(ctx, s, func() (string, error) {
+					return in.get(ctx, a, gatewayImage(in.Version))
+				})
+				if err != nil {
+					return err
+				}
+				addr, _ := in.agentIPv4(ctx, controller.VMID)
+				return in.configureGateway(ctx, vmid, s, addr)
+			},
+		})
+	} else if force || !gateway.HasTag(in.releaseTag()) {
 		steps = append(steps, upgradeStep{
 			plan: fmt.Sprintf("replace gateway VM %d with the new image (workers lose their network for a minute "+
 				"or two)", gateway.VMID),
@@ -231,7 +268,7 @@ func (in *Installer) upgradeSteps(ctx context.Context, s *settings.Settings) ([]
 			},
 		})
 	}
-	if needBinary {
+	if needBinary || force {
 		steps = append(steps, upgradeStep{
 			plan: fmt.Sprintf("replace parcon %s in controller VM %d with %s", controllerVersion, controller.VMID,
 				in.Version),
@@ -244,7 +281,7 @@ func (in *Installer) upgradeSteps(ctx context.Context, s *settings.Settings) ([]
 			},
 		})
 	}
-	if needBinary || configDrift {
+	if needBinary || configDrift || force {
 		steps = append(steps, upgradeStep{
 			plan: "render the controller's config from the settings, restart the controller, and wait for its session",
 			do: func(ctx context.Context) error {
@@ -256,11 +293,17 @@ func (in *Installer) upgradeSteps(ctx context.Context, s *settings.Settings) ([]
 			},
 		})
 	}
-	if offloads != nil {
+	if offloads != nil || force {
+		if offloads == nil {
+			offloads = []string{"check the LAN NIC's offloads, and turn them off if the node is a VM"}
+		}
 		steps = append(steps, upgradeStep{plan: strings.Join(offloads, "\n  "),
 			do: func(ctx context.Context) error { return in.tuneOffloads(ctx, s) }})
 	}
-	if asyncPF != nil {
+	if asyncPF != nil || force {
+		if asyncPF == nil {
+			asyncPF = []string{"check KVM async page faults, and set no-kvm-apf if the node is a VM on KVM"}
+		}
 		steps = append(steps, upgradeStep{plan: strings.Join(asyncPF, "\n  "), do: in.tuneAsyncPF})
 	}
 	if len(steps) == 0 && controller.HasTag(in.releaseTag()) {
@@ -278,7 +321,9 @@ func (in *Installer) upgradeSteps(ctx context.Context, s *settings.Settings) ([]
 }
 
 // replaceGateway recreates the gateway VM from the new image with the old one's VMID, NICs (their MACs too), and
-// address, and configures it. The gateway holds no state beyond what the settings say.
+// address, and configures it. The gateway holds no state beyond what the settings say, which also stand in for what
+// a gateway that a stopped run left half-created lacks. Its disks go too, even one that run imported but never
+// attached.
 func (in *Installer) replaceGateway(ctx context.Context, vmid, controller int, s *settings.Settings,
 	a *release.Assets,
 ) error {
@@ -299,10 +344,20 @@ func (in *Installer) replaceGateway(ctx context.Context, vmid, controller int, s
 	if err := in.run(ctx, "qm", "stop", id); err != nil {
 		return err
 	}
-	if err := in.run(ctx, "qm", "destroy", id, "--purge", "1"); err != nil {
+	if err := in.run(ctx, "qm", "destroy", id, "--purge", "1", "--destroy-unreferenced-disks", "1"); err != nil {
 		return err
 	}
-	spec := in.gatewaySpec(in.Version, cfg["net0"], cfg["ipconfig0"], cfg["net1"])
+	net0, ipconfig0, net1 := cfg["net0"], cfg["ipconfig0"], cfg["net1"]
+	if net0 == "" {
+		net0 = netConfig(s)
+	}
+	if ipconfig0 == "" {
+		ipconfig0 = ipConfig(s, s.Network.GatewayIP)
+	}
+	if net1 == "" {
+		net1 = "virtio,bridge=" + VNet
+	}
+	spec := in.gatewaySpec(in.Version, net0, ipconfig0, net1)
 	if err := in.createSystemVM(ctx, vmid, spec, image, s.Proxmox.Storage); err != nil {
 		return err
 	}

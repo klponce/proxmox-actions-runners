@@ -35,9 +35,10 @@ func (in *Installer) Install(ctx context.Context, opts InstallOptions) error {
 		return err
 	} else if ok && v.Compare(in.Version) < 0 {
 		// install.sh from a newer release, on a node with an older install: update it to this release.
-		return in.Upgrade(ctx, v, false)
+		return in.Upgrade(ctx, v, false, false)
 	} else if ok {
-		return fmt.Errorf("%w: release %s; run parcon update to update it, or parcon status to see it", ErrInstalled, v)
+		return fmt.Errorf("%w: release %s; run parcon update to update it, parcon update --force to redo it, or "+
+			"parcon status to see it", ErrInstalled, v)
 	}
 	s := opts.Settings
 	if saved, err := settings.Load(in.SettingsPath); err == nil {
@@ -111,7 +112,7 @@ func (in *Installer) install(ctx context.Context, s *settings.Settings, opts Ins
 		return err
 	}
 	defer cleanup()
-	if err := in.importTemplate(ctx, s, assets); err != nil {
+	if err := in.importTemplate(ctx, s, assets, false); err != nil {
 		return err
 	}
 	gateway, err := in.createGateway(ctx, s, func() (string, error) {

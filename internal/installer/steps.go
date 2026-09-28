@@ -188,24 +188,30 @@ func freeReservedVMID(vms []proxmox.VM, r config.VMIDRange) (int, error) {
 }
 
 // importTemplate imports the runner image as a new template in the reserved VMIDs, unless one from this release
-// exists. The template tags come first, so a failed import is found and replaced by the next run; the controller
-// only clones a VM that Proxmox reports as a template.
-func (in *Installer) importTemplate(ctx context.Context, s *settings.Settings, a *release.Assets) error {
+// exists and again is false. The template tags come first, so a failed import is found and replaced by the next
+// run; the controller only clones a VM that Proxmox reports as a template, and removes older ones once unused.
+func (in *Installer) importTemplate(ctx context.Context, s *settings.Settings, a *release.Assets, again bool) error {
 	in.Out.Step("Runner template")
 	vms, err := in.vms(ctx)
 	if err != nil {
 		return err
 	}
-	if t := tagged(vms, RunnerPool, in.releaseTag()); len(t) > 0 {
-		if t[0].Template {
-			in.Out.Say("    template %d is from this release", t[0].VMID)
-			return nil
+	for _, t := range tagged(vms, RunnerPool, in.releaseTag()) {
+		if t.Template {
+			if !again {
+				in.Out.Say("    template %d is from this release", t.VMID)
+				return nil
+			}
+			// Workers may still use it: the controller removes it once they are gone.
+			in.Out.Say("    template %d is from this release; importing a new one anyway", t.VMID)
+			continue
 		}
-		in.Out.Say("    VM %d is a template import a failed run left; importing again", t[0].VMID)
-		if err := in.run(ctx, "qm", "destroy", strconv.Itoa(t[0].VMID), "--purge", "1"); err != nil {
+		in.Out.Say("    VM %d is a template import a failed run left; importing again", t.VMID)
+		if err := in.run(ctx, "qm", "destroy", strconv.Itoa(t.VMID), "--purge", "1",
+			"--destroy-unreferenced-disks", "1"); err != nil {
 			return err
 		}
-		vms = slices.DeleteFunc(vms, func(vm proxmox.VM) bool { return vm.VMID == t[0].VMID })
+		vms = slices.DeleteFunc(vms, func(vm proxmox.VM) bool { return vm.VMID == t.VMID })
 	}
 	image, err := in.get(ctx, a, runnerImage(in.Version))
 	if err != nil {

@@ -26,7 +26,8 @@ remove everything it created. It installs only from a signed release.
 - **No-touch VMs.** Everything the user does, they do with `parcon` on the host. The controller VM keeps the secrets,
   which never leave it; the host keeps the settings, which hold none.
 - **Safe to re-run.** A second `parcon install` continues an install that stopped, and `parcon update` continues an
-  update that stopped. `--dry-run` prints the plan and changes nothing.
+  update that stopped. `parcon update --force` runs every step of an update again, to repair what a run that was
+  killed partway or anything else left broken. `--dry-run` prints the plan and changes nothing.
 - **Signed updates.** `parcon update` installs only a release whose checksums carry a signature from a key built
   into `parcon`.
 - **Reversible.** `parcon uninstall` removes every object `parcon` or the controller created, found by tag and name,
@@ -87,7 +88,7 @@ After the install, `parcon` in `/usr/local/bin` does the rest:
 | `parcon config set <key> <value>` | Change a setting and apply it: the controller restarts with it |
 | `parcon config describe [<key>]` | Which values a setting takes, and when a change applies |
 | `parcon config apply` | Push the settings to the controller again, for example after the API's pinned certificate was renewed |
-| `parcon update [--pre] [--yes] [--dry-run]` | Update to the newest release, or pre-release with `--pre` |
+| `parcon update [--pre] [--force] [--yes] [--dry-run]` | Update to the newest release, or pre-release with `--pre`. `--force` runs every step, even those already done for the release |
 | `parcon check` | Every check below, and after an install, the controller's own checks |
 | `parcon check network` | The worker network check from step 14, on demand |
 | `parcon check config\|proxmox\|github\|template` | One of the controller's checks, run in the controller VM |
@@ -617,6 +618,14 @@ one with an unfinished install (the `par-system` pool exists), it continues it.
     offloads*), and on KVM, `no-kvm-apf` is set for the next boot if it isn't yet (see *Host KVM async page faults*).
   - Each piece already at the release is left alone, so `parcon update` again continues an update that stopped. An
     install newer than the host's `parcon` is refused rather than downgraded.
+  - `--force` runs every step, even one already done for the release, whether or not a newer release exists: it
+    imports the runner template again (the controller removes the old one once unused), replaces the gateway VM or
+    creates it if it is gone, reinstalls the controller's `parcon` and config, and runs the host tuning. It repairs
+    what the release tags can't show, such as a gateway whose replacement was killed after the VM was created and
+    tagged. The safety checks stay: the release's signature, the plan and its question, the lock, and the
+    controller's check of its new config. The controller VM itself must be running, since an update never replaces
+    it; a broken one needs `parcon uninstall` and `parcon install`. A replaced system VM's disks all go, including
+    one an interrupted import left unattached (`qm destroy --destroy-unreferenced-disks 1`).
 - **Uninstall** (`parcon uninstall`) first stops the controller and deletes the scale set in GitHub
   (`parcon github scaleset delete` in the controller VM, which also unregisters its runners). It then destroys every
   VM tagged `par-managed` in the two pools, clones before templates, removes the ACLs, token, user, role, and pools,

@@ -208,7 +208,7 @@ func TestUpgradeTurnsAsyncPFOff(t *testing.T) {
 	ti.Self = ti.BinaryPath
 	ti.stdout.Reset()
 	v, _ := release.ParseVersion("0.2.0")
-	must(t, ti.Upgrade(context.Background(), v, true))
+	must(t, ti.Upgrade(context.Background(), v, true, false))
 	out := ti.stdout.String()
 	for _, want := range []string{"turn off KVM async page faults from the next boot", "$ update-grub",
 		"Reboot the node when no job runs"} {
