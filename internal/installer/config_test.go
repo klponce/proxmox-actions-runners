@@ -149,7 +149,7 @@ func TestStatus(t *testing.T) {
 	}
 	for _, want := range []string{"ok    node pve1, its settings, and its VMs (", "ok    gateway VM 100 (",
 		"ok    controller VM 101 (", "ok    the latest release on GitHub (",
-		"ok    the host's Proxmox objects and NIC offloads (",
+		"ok    the host's Proxmox objects and tuning (",
 		"ok    the runner template against actions/runner's latest release ("} {
 		if !strings.Contains(progress, want) {
 			t.Errorf("progress lacks %q:\n%s", want, progress)

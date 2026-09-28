@@ -66,6 +66,9 @@ type fakeNode struct {
 	routes  string // ip -j -4 route show
 	// offloadsOn are the NICs whose offloads are on.
 	offloadsOn map[string]bool
+	// kvmGuest makes the node a VM on KVM. update-grub writes grubCfg, with no-kvm-apf if grubDropIn exists.
+	kvmGuest            bool
+	grubDropIn, grubCfg string
 
 	// guest handles commands run in a VM; nil means the defaults in guestDefault.
 	guest func(vm *fakeVM, argv []string, stdin []byte) (exit int, stdout, stderr string, handled bool)
@@ -162,7 +165,18 @@ func (n *fakeNode) run(c pvecli.Cmd) (string, error) {
 	case "timedatectl":
 		return "yes\n", nil
 	case "systemd-detect-virt":
-		return "", fmt.Errorf("none")
+		if n.kvmGuest && slices.Contains(a, "--vm") {
+			return "kvm\n", nil
+		}
+		return "none\n", fmt.Errorf("exit status 1")
+	case "update-grub":
+		cmdline := "root=/dev/mapper/pve-root ro quiet"
+		if _, err := os.Stat(n.grubDropIn); err == nil {
+			cmdline += " no-kvm-apf"
+		}
+		return "", os.WriteFile(n.grubCfg, []byte("linux /boot/vmlinuz-7.0.2-6-pve "+cmdline+"\n"), 0o644)
+	case "proxmox-boot-tool":
+		return "", nil
 	case "dpkg-query":
 		return "install ok installed", nil
 	}
@@ -536,6 +550,13 @@ func newTestInstaller(t *testing.T) *testInstaller {
 		KVM:        filepath.Join(dir, "kvm"),
 		UdevRule:   filepath.Join(dir, "udev/90-par-offloads.rules"),
 		Ethtool:    filepath.Join(dir, "sbin/ethtool"),
+
+		ProcCmdline:   filepath.Join(dir, "proc/cmdline"),
+		GrubDefaults:  filepath.Join(dir, "default/grub"),
+		GrubDropIn:    filepath.Join(dir, "default/grub.d/par-no-kvm-apf.cfg"),
+		GrubCfg:       filepath.Join(dir, "boot/grub/grub.cfg"),
+		KernelCmdline: filepath.Join(dir, "kernel/cmdline"),
+		BootUUIDs:     filepath.Join(dir, "kernel/proxmox-boot-uuids"),
 	}
 	must(t, os.MkdirAll(filepath.Join(paths.PVEDir, "nodes/pve1"), 0o755))
 	must(t, os.MkdirAll(filepath.Join(paths.SysNet, "vmbr0/bridge"), 0o755))
@@ -547,6 +568,7 @@ func newTestInstaller(t *testing.T) *testInstaller {
 	writeNodeCert(t, paths.PVEDir)
 
 	node := newFakeNode(t, paths.SysNet)
+	node.grubDropIn, node.grubCfg = paths.GrubDropIn, paths.GrubCfg
 	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
 	out := &term.Out{W: stdout, Err: stderr}
 	scripted := &term.Scripted{}

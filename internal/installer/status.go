@@ -166,7 +166,7 @@ func (in *Installer) Status(ctx context.Context) (*Report, error) {
 			progress("  %s  %s (%s)", levelLabel(level), name, since(began))
 		})
 	}
-	part("the host's Proxmox objects and NIC offloads", func() StatusLevel {
+	part("the host's Proxmox objects and tuning", func() StatusLevel {
 		r.Host = in.hostFindings(ctx, s)
 		return worst(r.Host)
 	})
@@ -273,12 +273,20 @@ func (in *Installer) hostFindings(ctx context.Context, s *settings.Settings) []F
 	} else {
 		f = append(f, Finding{OK, fmt.Sprintf("pools, role, token, and the worker network %s/%s", Zone, VNet)})
 	}
-	r := in.checkOffloads(ctx, s, ModeInstalled)
-	level := OK
-	if !r.ok {
-		level = WARN
+	for _, c := range []struct {
+		name string
+		r    result
+	}{
+		{"LAN NIC offloads", in.checkOffloads(ctx, s, ModeInstalled)},
+		{"KVM async page faults", in.checkAsyncPF(ctx, ModeInstalled)},
+	} {
+		level := OK
+		if !c.r.ok {
+			level = WARN
+		}
+		f = append(f, Finding{level, c.name + ": " + c.r.reason})
 	}
-	return append(f, Finding{level, "LAN NIC offloads: " + r.reason})
+	return f
 }
 
 // guest runs a command in a VM for status, and returns its trimmed output.

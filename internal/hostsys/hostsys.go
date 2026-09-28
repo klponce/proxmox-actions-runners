@@ -31,6 +31,14 @@ type Paths struct {
 	KVM        string // /dev/kvm
 	UdevRule   string // the offload rule, /etc/udev/rules.d/90-par-offloads.rules
 	Ethtool    string // /usr/sbin/ethtool
+
+	// The kernel command line: the running one, and where each boot loader takes it from.
+	ProcCmdline   string // /proc/cmdline
+	GrubDefaults  string // GRUB's settings, /etc/default/grub
+	GrubDropIn    string // parcon's GRUB settings, /etc/default/grub.d/par-no-kvm-apf.cfg
+	GrubCfg       string // the GRUB config update-grub writes, /boot/grub/grub.cfg
+	KernelCmdline string // systemd-boot's command line, /etc/kernel/cmdline
+	BootUUIDs     string // the ESPs proxmox-boot-tool keeps in sync, /etc/kernel/proxmox-boot-uuids
 }
 
 // DefaultPaths are the real paths.
@@ -43,6 +51,13 @@ func DefaultPaths() Paths {
 		KVM:        "/dev/kvm",
 		UdevRule:   "/etc/udev/rules.d/90-par-offloads.rules",
 		Ethtool:    "/usr/sbin/ethtool",
+
+		ProcCmdline:   "/proc/cmdline",
+		GrubDefaults:  "/etc/default/grub",
+		GrubDropIn:    "/etc/default/grub.d/par-no-kvm-apf.cfg",
+		GrubCfg:       "/boot/grub/grub.cfg",
+		KernelCmdline: "/etc/kernel/cmdline",
+		BootUUIDs:     "/etc/kernel/proxmox-boot-uuids",
 	}
 }
 
@@ -209,6 +224,13 @@ func (s System) PVEVersion(ctx context.Context) (string, error) {
 func (s System) InContainer(ctx context.Context) bool {
 	_, err := s.Exec.Run(ctx, pvecli.C("systemd-detect-virt", "--container", "--quiet"))
 	return err == nil
+}
+
+// KVMGuest reports whether this host is itself a VM on KVM, which is what gives it KVM's paravirtual features,
+// such as async page faults.
+func (s System) KVMGuest(ctx context.Context) bool {
+	out, err := s.Exec.Run(ctx, pvecli.C("systemd-detect-virt", "--vm"))
+	return err == nil && strings.TrimSpace(string(out)) == "kvm"
 }
 
 // PackageInstalled reports whether a Debian package is installed.

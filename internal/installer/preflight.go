@@ -97,6 +97,7 @@ func (in *Installer) Preflight(ctx context.Context, s *settings.Settings, mode M
 		{Warn, "memory", func() result { return in.checkMemory(ctx, s) }},
 		{Hard, "LAN bridge " + s.Network.Bridge, func() result { return in.checkBridge(ctx, s) }},
 		{Warn, "LAN NIC offloads", func() result { return in.checkOffloads(ctx, s, mode) }},
+		{Warn, "KVM async page faults", func() result { return in.checkAsyncPF(ctx, mode) }},
 		{Warn, "API certificate", func() result { return in.checkTLS() }},
 		{Hard, "SDN available", func() result { return in.checkSDN(ctx) }},
 		{Hard, "worker subnet " + s.Network.WorkerSubnet + " free", func() result { return in.checkWorkerSubnet(ctx, s) }},

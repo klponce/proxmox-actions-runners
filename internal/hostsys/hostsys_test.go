@@ -25,6 +25,23 @@ func testPaths(t *testing.T) Paths {
 	}
 }
 
+func TestKVMGuest(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		exec *pvecli.FakeExec
+		want bool
+	}{
+		{"kvm", (&pvecli.FakeExec{}).Reply("systemd-detect-virt --vm", "kvm\n"), true},
+		{"qemu without kvm", (&pvecli.FakeExec{}).Reply("systemd-detect-virt --vm", "qemu\n"), false},
+		{"vmware", (&pvecli.FakeExec{}).Reply("systemd-detect-virt --vm", "vmware\n"), false},
+		{"bare metal", (&pvecli.FakeExec{}).Fail("systemd-detect-virt --vm"), false},
+	} {
+		if got := (System{Exec: tt.exec}).KVMGuest(context.Background()); got != tt.want {
+			t.Errorf("%s: KVMGuest = %v", tt.name, got)
+		}
+	}
+}
+
 func TestAddrsAndRoutes(t *testing.T) {
 	fake := (&pvecli.FakeExec{}).
 		Reply("ip -j -4 addr show", `[{"ifname":"lo","addr_info":[{"local":"127.0.0.1","prefixlen":8}]},

@@ -54,7 +54,7 @@ confirmation, and changes nothing before that (`--dry-run` stops at the plan). A
 stopped.
 
 The host itself is barely touched: `parcon`, its settings, Proxmox objects, and, on a node that is itself a VM, a
-udev rule for its NIC. No packages or services are added, and `parcon uninstall` removes all of it. The host
+udev rule for its NIC and a kernel parameter. No packages or services are added, and `parcon uninstall` removes all of it. The host
 doesn't route worker traffic, so the design doesn't depend on how your LAN, firewall, or host networking is set
 up. See [docs/install.md](docs/install.md) for the full design.
 
@@ -287,7 +287,11 @@ pinned versions. See [AGENTS.md](AGENTS.md#development-environment).
 The node can itself be a VM, for example to keep the runners apart from your main Proxmox setup. Enable nested
 virtualization for it (CPU type `host`). `parcon install` and `parcon update` then turn off the offloads of the
 node's virtio NIC (GRO, GSO, TSO, and TX checksumming), with a udev rule that keeps them off after a reboot: with
-them on, workers' downloads stall at a few KB/s. `parcon status` shows whether they are off.
+them on, workers' downloads stall at a few KB/s.
+
+On KVM, they also add `no-kvm-apf` to the node's kernel command line, which turns off KVM's async page faults: with
+workers running, one can panic the node ("Host injected async #PF in kernel mode"). It takes effect when you next
+reboot the node; `parcon` doesn't reboot it. `parcon status` shows whether both are done.
 
 ## Limitations
 

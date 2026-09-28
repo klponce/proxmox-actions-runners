@@ -106,7 +106,7 @@ type upgradeStep struct {
 }
 
 // Upgrade brings the node from release installed to this parcon's release: the runner template, the gateway VM,
-// the controller's parcon and config, and the host's NIC offloads. Each piece already at this release is left alone.
+// the controller's parcon and config, and the host's NIC offloads and KVM async page faults. Each piece already at this release is left alone.
 func (in *Installer) Upgrade(ctx context.Context, installed release.Version, confirmed bool) error {
 	if installed.Compare(in.Version) > 0 {
 		return fmt.Errorf("the node runs release %s, newer than this parcon %s; run parcon update", installed,
@@ -149,6 +149,7 @@ func (in *Installer) Upgrade(ctx context.Context, installed release.Version, con
 	}
 	in.Out.Step("Done")
 	in.Out.Say("proxmox-actions-runners is at %s.", in.Version)
+	in.rebootNote(ctx)
 	return nil
 }
 
@@ -183,6 +184,7 @@ func (in *Installer) upgradeSteps(ctx context.Context, s *settings.Settings) ([]
 	configDrift := err != nil || strings.TrimSpace(string(have)) != strings.TrimSpace(string(want))
 	needBinary := controllerVersion != in.Version.String()
 	offloads := in.offloadPlan(ctx, s)
+	asyncPF := in.asyncPFPlan(ctx)
 
 	// The release's assets are fetched once, by the first step that needs them, and removed by the last step.
 	var assets *release.Assets
@@ -257,6 +259,9 @@ func (in *Installer) upgradeSteps(ctx context.Context, s *settings.Settings) ([]
 	if offloads != nil {
 		steps = append(steps, upgradeStep{plan: strings.Join(offloads, "\n  "),
 			do: func(ctx context.Context) error { return in.tuneOffloads(ctx, s) }})
+	}
+	if asyncPF != nil {
+		steps = append(steps, upgradeStep{plan: strings.Join(asyncPF, "\n  "), do: in.tuneAsyncPF})
 	}
 	if len(steps) == 0 && controller.HasTag(in.releaseTag()) {
 		return nil, nil

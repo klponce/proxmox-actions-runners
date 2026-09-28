@@ -45,7 +45,7 @@ func vmids(vms []proxmox.VM) string {
 }
 
 // Uninstall removes everything parcon and the controller created: the scale set in GitHub, the VMs, the Proxmox
-// objects, the worker network, the offload rule, the settings, and parcon itself, last. The GitHub App stays.
+// objects, the worker network, the offload rule, no-kvm-apf, the settings, and parcon itself, last. The GitHub App stays.
 func (in *Installer) Uninstall(ctx context.Context) error {
 	vms, err := in.vms(ctx)
 	if err != nil {
@@ -72,6 +72,9 @@ func (in *Installer) Uninstall(ctx context.Context) error {
 		PVEUser)
 	in.Out.Say("  remove SDN VNet %s and zone %s, then apply the SDN config", VNet, Zone)
 	if line := in.offloadRemovePlan(); line != "" {
+		in.Out.Say("  %s", line)
+	}
+	if line := in.asyncPFRemovePlan(); line != "" {
 		in.Out.Say("  %s", line)
 	}
 	in.Out.Say("  remove %s and %s", in.SettingsPath, in.BinaryPath)
@@ -122,6 +125,9 @@ func (in *Installer) Uninstall(ctx context.Context) error {
 		return err
 	}
 	if err := in.removeOffloads(ctx); err != nil {
+		return err
+	}
+	if err := in.removeAsyncPF(ctx); err != nil {
 		return err
 	}
 
