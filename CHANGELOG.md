@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/klponce/proxmox-actions-runners/compare/v0.2.1...v0.3.0) (2026-09-28)
+
+
+### Features
+
+* **installer:** turn off KVM async page faults on a node that is a VM ([245eed8](https://github.com/klponce/proxmox-actions-runners/commit/245eed86fe1d4cb4d8a8be19d212b8cef664f199))
+* **installer:** turn off KVM async page faults on a node that is a VM ([14048aa](https://github.com/klponce/proxmox-actions-runners/commit/14048aaf48b76afe2d654436b29a173b990b07a9))
+
 ## [0.2.1](https://github.com/klponce/proxmox-actions-runners/compare/v0.2.0...v0.2.1) (2026-09-27)
 
 
