@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/klponce/proxmox-actions-runners/compare/v0.3.0...v0.4.0) (2026-09-28)
+
+
+### Features
+
+* **installer:** add parcon update --force to run every step again ([9f0f5c6](https://github.com/klponce/proxmox-actions-runners/commit/9f0f5c6b64782ad79f535e22a7d5175f479698fc))
+* **installer:** add parcon update --force to run every step again ([0b6f06b](https://github.com/klponce/proxmox-actions-runners/commit/0b6f06b9816215bb8d302b449daeed0a85d6835e))
+
 ## [0.3.0](https://github.com/klponce/proxmox-actions-runners/compare/v0.2.1...v0.3.0) (2026-09-28)
 
 
