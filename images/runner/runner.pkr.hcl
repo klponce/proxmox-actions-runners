@@ -12,13 +12,13 @@
 
 variable "runner_version" {
   type        = string
-  default     = "2.337.0"
+  default     = "2.338.1"
   description = "actions/runner release to install. Update together with runner_sha256, within 30 days of a release."
 }
 
 variable "runner_sha256" {
   type        = string
-  default     = "70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613"
+  default     = "08e9ccb3604d2462c24b5e33604dc30810296ca15cc65f23cffd4317eb144c37"
   description = "SHA-256 of actions-runner-linux-x64-<runner_version>.tar.gz."
 }
 
