@@ -1,9 +1,11 @@
 #!/usr/bin/env bats
-# bump-runner.sh, with curl, git, and gh stubbed and the pin file copied.
+# bump-runner.sh, with curl, git, and gh stubbed and the pin file copied and pinned to 2.337.0, so the tests don't
+# depend on the real pin.
 
 bats_require_minimum_version 1.5.0
 
 REPO="$BATS_TEST_DIRNAME/../../.."
+OLD_SUM=$(printf old | sha256sum | cut -d' ' -f1)
 NEW_SUM=$(printf new | sha256sum | cut -d' ' -f1)
 
 setup() {
@@ -18,6 +20,8 @@ setup() {
 	# shellcheck source=/dev/null
 	source "$REPO/.github/scripts/bump-runner.sh"
 	set +u
+	pin runner_version 2.337.0
+	pin runner_sha256 "$OLD_SUM"
 	stub git ''
 	stub gh ''
 }
