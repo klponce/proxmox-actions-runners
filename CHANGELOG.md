@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1](https://github.com/klponce/proxmox-actions-runners/compare/v0.4.0...v0.4.1) (2026-10-27)
+
+
+### Bug fixes
+
+* **images:** update actions/runner to 2.338.2 ([ab53621](https://github.com/klponce/proxmox-actions-runners/commit/ab536212d51b00382c57f9fe49d48a1685a80a5f))
+* **images:** update actions/runner to 2.338.2 ([d2be4d4](https://github.com/klponce/proxmox-actions-runners/commit/d2be4d4dcde8d731ff9723c1ec3fc53e4b8e0634))
+
 ## [0.4.0](https://github.com/klponce/proxmox-actions-runners/compare/v0.3.0...v0.4.0) (2026-09-28)
 
 
